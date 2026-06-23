@@ -1,0 +1,212 @@
+# Historical Data Migration Pipeline
+#
+# This pipeline is MANUAL ONLY — it must never trigger on push or merge request.
+# Trigger it from: GitLab → CI/CD → Pipelines → Run pipeline
+#
+# ── Required CI/CD variables (set in GitLab project Settings → CI/CD → Variables) ──
+#   KUBECONFIG          File-type variable containing the kubeconfig for the target cluster
+#   MIGRATION_IMAGE     Full image ref, e.g. registry.example.com/chat-migration:v1.0.0
+#   NAMESPACE           Kubernetes namespace (default: migration)
+#
+# ── Pipeline flow ────────────────────────────────────────────────────────────
+#
+#   setup         → apply ConfigMap to the cluster (manual start)
+#       │
+#   phase-1       → users / rooms / subscriptions / avatars  (all parallel)
+#       │
+#   phase-2       → room-members / thread-rooms / thread-subscriptions  (all parallel)
+#       │             thread-rooms is the critical gate (slowest — scans 216M messages)
+#   confirm-index → MANUAL GATE: operator creates the index, then approves to continue
+#       │
+#   phase-3       → messages-by-id / messages-by-room / pinned-messages / thread-messages
+#                   (all parallel, all write to Cassandra)
+#
+# Each job deletes any stale K8s Job from a previous run, applies the new Job,
+# and blocks (kubectl wait) until the pod completes or the timeout is reached.
+# The pod itself resumes from its checkpoint on restart — no data is re-written.
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "web"'   # "Run pipeline" button in GitLab UI
+    - if: '$CI_PIPELINE_SOURCE == "api"'   # triggered via GitLab API / trigger token
+    - when: never                          # block all other sources (push, MR, schedule)
+
+stages:
+  - setup
+  - phase-1
+  - phase-2
+  - confirm-index
+  - phase-3
+
+variables:
+  NAMESPACE: "migration"
+  MIGRATION_DIR: "k8s/migration"
+  # Per-phase kubectl wait timeouts. Adjust if your cluster is slower.
+  PHASE1_TIMEOUT: "2h"
+  PHASE2_TIMEOUT: "6h"    # thread-rooms scans 216M messages — allow plenty of time
+  PHASE3_TIMEOUT: "10h"   # Cassandra writes are the dominant cost
+
+# ── Shared kubectl setup ──────────────────────────────────────────────────────
+# KUBECONFIG is a GitLab "File" type variable — its value is written to a temp
+# file automatically and the env var holds the path to that file.
+.kubectl:
+  image: bitnami/kubectl:latest
+  before_script:
+    - kubectl cluster-info   # fail fast if cluster is unreachable
+
+# Apply a K8s Job manifest with the image substituted, then wait for completion.
+.run-job: &run-job |
+  set -e
+  kubectl delete job "$JOB_NAME" -n "$NAMESPACE" --ignore-not-found
+  sed "s|\${MIGRATION_IMAGE}|$MIGRATION_IMAGE|g" "$MANIFEST" | kubectl apply -f -
+  kubectl wait --for=condition=complete "job/$JOB_NAME" \
+    -n "$NAMESPACE" --timeout="$WAIT_TIMEOUT"
+
+# ── Stage: setup ──────────────────────────────────────────────────────────────
+# Applies the ConfigMap so all subsequent jobs have the correct env vars.
+# The Secret must be applied separately (fill real credentials, do not commit).
+setup:apply-configmap:
+  extends: .kubectl
+  stage: setup
+  when: manual             # explicit operator action required to start the migration
+  allow_failure: false
+  script:
+    - kubectl apply -f $MIGRATION_DIR/namespace.yaml
+    - kubectl apply -f $MIGRATION_DIR/configmap.yaml
+    - echo "ConfigMap applied. Verify CUTOFF_TIMESTAMP and MESSAGE_START_DATE_MS are correct:"
+    - kubectl get configmap migration-config -n $NAMESPACE -o yaml
+
+# ── Stage: phase-1 ────────────────────────────────────────────────────────────
+# All four jobs run in parallel. Stage completes when ALL four are done.
+# Typical duration: ~25 minutes (dominated by subscriptions ~7.4M docs).
+
+phase-1:users:
+  extends: .kubectl
+  stage: phase-1
+  timeout: 1h
+  script:
+    - JOB_NAME=migrate-users MANIFEST=$MIGRATION_DIR/jobs/01-users.yaml WAIT_TIMEOUT=$PHASE1_TIMEOUT
+    - *run-job
+
+phase-1:rooms:
+  extends: .kubectl
+  stage: phase-1
+  timeout: 1h
+  script:
+    - JOB_NAME=migrate-rooms MANIFEST=$MIGRATION_DIR/jobs/01-rooms.yaml WAIT_TIMEOUT=$PHASE1_TIMEOUT
+    - *run-job
+
+phase-1:subscriptions:
+  extends: .kubectl
+  stage: phase-1
+  timeout: 2h     # ~7.4M subscriptions takes ~25 min
+  script:
+    - JOB_NAME=migrate-subscriptions MANIFEST=$MIGRATION_DIR/jobs/01-subscriptions.yaml WAIT_TIMEOUT=$PHASE1_TIMEOUT
+    - *run-job
+
+phase-1:avatars:
+  extends: .kubectl
+  stage: phase-1
+  timeout: 30m    # negligible volume
+  script:
+    - JOB_NAME=migrate-avatars MANIFEST=$MIGRATION_DIR/jobs/01-avatars.yaml WAIT_TIMEOUT=$PHASE1_TIMEOUT
+    - *run-job
+
+# ── Stage: phase-2 ────────────────────────────────────────────────────────────
+# All three jobs run in parallel. Stage completes when ALL three are done.
+# thread-rooms is the critical gate — it is the slowest (scans 216M source messages).
+# Typical duration: 30–60 minutes.
+
+phase-2:room-members:
+  extends: .kubectl
+  stage: phase-2
+  timeout: 2h
+  script:
+    - JOB_NAME=migrate-room-members MANIFEST=$MIGRATION_DIR/jobs/02-room-members.yaml WAIT_TIMEOUT=$PHASE2_TIMEOUT
+    - *run-job
+
+phase-2:thread-rooms:
+  extends: .kubectl
+  stage: phase-2
+  timeout: 6h     # critical gate — scans all thread-root messages in the window
+  script:
+    - JOB_NAME=migrate-thread-rooms MANIFEST=$MIGRATION_DIR/jobs/02-thread-rooms.yaml WAIT_TIMEOUT=$PHASE2_TIMEOUT
+    - *run-job
+
+phase-2:thread-subscriptions:
+  extends: .kubectl
+  stage: phase-2
+  timeout: 2h
+  script:
+    - JOB_NAME=migrate-thread-subscriptions MANIFEST=$MIGRATION_DIR/jobs/02-thread-subscriptions.yaml WAIT_TIMEOUT=$PHASE2_TIMEOUT
+    - *run-job
+
+# ── Stage: confirm-index ──────────────────────────────────────────────────────
+# Phase 3 Cassandra jobs do 80-100M lookups on thread_rooms.parentMessageId.
+# Without this index every lookup is a full collection scan — Phase 3 will be
+# orders of magnitude slower.
+#
+# The operator must:
+#   1. SSH to a host with mongosh access to the TARGET MongoDB.
+#   2. Run: db.thread_rooms.createIndex({ parentMessageId: 1 })
+#   3. Verify: db.thread_rooms.getIndexes()
+#   4. Click the ▶ Play button on this job in GitLab to unblock Phase 3.
+
+confirm-index:ready:
+  stage: confirm-index
+  when: manual          # pipeline pauses here until operator clicks Play
+  allow_failure: false
+  image: alpine:latest
+  script:
+    - |
+      echo "======================================================"
+      echo "  MANUAL ACTION REQUIRED"
+      echo "======================================================"
+      echo ""
+      echo "  Run on target MongoDB before clicking Play:"
+      echo ""
+      echo "    use chat"
+      echo "    db.thread_rooms.createIndex({ parentMessageId: 1 })"
+      echo ""
+      echo "  Verify with:"
+      echo "    db.thread_rooms.getIndexes()"
+      echo ""
+      echo "  Once the index build is complete, click Play to start Phase 3."
+      echo "======================================================"
+
+# ── Stage: phase-3 ────────────────────────────────────────────────────────────
+# All four Cassandra jobs run in parallel. Stage completes when ALL four are done.
+# messages-by-id and messages-by-room are the dominant cost (~80-100M rows each).
+# Typical duration: 1.5–2 hours (2-year window) or 45 min–1 hour (1-year window).
+
+phase-3:messages-by-id:
+  extends: .kubectl
+  stage: phase-3
+  timeout: 10h
+  script:
+    - JOB_NAME=migrate-messages-by-id MANIFEST=$MIGRATION_DIR/jobs/03-messages-by-id.yaml WAIT_TIMEOUT=$PHASE3_TIMEOUT
+    - *run-job
+
+phase-3:messages-by-room:
+  extends: .kubectl
+  stage: phase-3
+  timeout: 10h
+  script:
+    - JOB_NAME=migrate-messages-by-room MANIFEST=$MIGRATION_DIR/jobs/03-messages-by-room.yaml WAIT_TIMEOUT=$PHASE3_TIMEOUT
+    - *run-job
+
+phase-3:pinned-messages:
+  extends: .kubectl
+  stage: phase-3
+  timeout: 4h
+  script:
+    - JOB_NAME=migrate-pinned-messages MANIFEST=$MIGRATION_DIR/jobs/03-pinned-messages.yaml WAIT_TIMEOUT=$PHASE3_TIMEOUT
+    - *run-job
+
+phase-3:thread-messages:
+  extends: .kubectl
+  stage: phase-3
+  timeout: 6h
+  script:
+    - JOB_NAME=migrate-thread-messages MANIFEST=$MIGRATION_DIR/jobs/03-thread-messages.yaml WAIT_TIMEOUT=$PHASE3_TIMEOUT
+    - *run-job
