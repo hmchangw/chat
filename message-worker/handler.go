@@ -55,10 +55,7 @@ func (h *Handler) HandleJetStreamMsg(ctx context.Context, msg jetstream.Msg) {
 			"subject", msg.Subject(), "bytes", len(msg.Data()), "stream_wait_ms", streamWaitMs)
 	}
 
-	// Migrated events carry X-Migration: live. message-worker still persists them (it IS the
-	// history writer) and still materializes thread_rooms (no source equivalent), but it must NOT
-	// re-derive thread-subscription state or re-emit live thread side-effects — the source already
-	// accounted for those and the collections migration owns the subscription docs. See processMessage.
+	// Migrated (X-Migration: live) events are persisted, but downstream thread side-effects are suppressed (see processMessage).
 	isMigration := natsutil.IsMigrationLiveHeader(msg.Headers())
 	if err := h.processMessage(ctx, msg.Data(), isMigration); err != nil {
 		slog.Log(ctx, logctx.LevelFlow, "message-worker nak", "phase", "nak", "request_id", natsutil.RequestIDFromContext(ctx))
@@ -127,10 +124,8 @@ func (h *Handler) processMessage(ctx context.Context, data []byte, isMigration b
 			return fmt.Errorf("save thread message: %w", err)
 		}
 		debugFlowPersisted(ctx, evt.Message.ID, true)
-		// The tcount badge is a live "reply added" notification. For migrated events the source
-		// already delivered the reply (broadcast-worker skips X-Migration: live), so re-emitting it
-		// here — on a subject that carries no migration header — would re-notify during cutover.
-		// The durable count is already persisted by SaveThreadMessage; only the live badge is suppressed.
+		// Suppress the live tcount badge for migrated replies: the source already delivered it, and the
+		// badge carries no migration header so broadcast-worker would re-notify. The count is persisted above.
 		if newTcount != nil && !isMigration {
 			if err := h.publishThreadReplyEvent(ctx, &evt.Message, *newTcount); err != nil {
 				return fmt.Errorf("publish thread reply event: %w", err)
@@ -212,16 +207,12 @@ func (h *Handler) handleFirstThreadReply(ctx context.Context, msg *model.Message
 	// Parent author joins the thread's replyAccounts set so they appear as a
 	// follower in notification-worker and history-service's "following" feed,
 	// even before they reply themselves. $addToSet dedups against the replier seed.
-	// replyAccounts lives on thread_rooms (message-worker-owned, not migrated), so this
-	// runs for migrated events too.
 	if err := h.threadStore.AddReplyAccounts(ctx, threadRoomID, []string{parentSender.Account}); err != nil {
 		return fmt.Errorf("add parent author to thread room replyAccounts: %w", err)
 	}
 
-	// thread_subscriptions are owned by the collections migration for X-Migration: live events
-	// (rocketchat_subscriptions / tsmc_thread_subscriptions are migrated unfiltered). Re-deriving
-	// them here would dup-key the unique (threadRoomId,userAccount) index and clobber the source's
-	// read/mention state, so skip all subscription inserts + cross-site inbox publish for migrated replies.
+	// Skip thread_subscription writes + cross-site inbox for migrated replies: the collections migration
+	// owns them (migrated unfiltered); re-deriving here would dup-key the unique (threadRoomId,userAccount).
 	if !isMigration {
 		parentOwnerSite, err := h.lookupOwnerSiteID(ctx, parentSender.ID, "first-reply parent")
 		if err != nil {
@@ -281,9 +272,7 @@ func (h *Handler) handleSubsequentThreadReply(ctx context.Context, msg *model.Me
 		return "", fmt.Errorf("get existing thread room: %w", err)
 	}
 
-	// parentFound drives the replyAccounts merge below; we still resolve the parent sender for
-	// migrated events (for replyAccounts), but skip every thread_subscription write + cross-site
-	// inbox publish — the collections migration owns those (see handleFirstThreadReply).
+	// Migrated replies: resolve the parent for replyAccounts, but skip all thread_subscription writes (collections owns them).
 	parentFound := true
 	parentSender, err := h.store.GetMessageSender(ctx, msg.ThreadParentMessageID)
 	switch {
@@ -427,10 +416,7 @@ func (h *Handler) markThreadMentions(ctx context.Context, msg *model.Message, th
 		if p.UserID == msg.UserID {
 			continue
 		}
-		// hasMention lives on thread_subscriptions, owned by the collections migration for
-		// X-Migration: live events. Skip the per-mention sub write + cross-site inbox publish so we
-		// don't clobber the source's read state — but still collect the account for replyAccounts below
-		// (thread_rooms is message-worker-owned), so the mentioned user follows the thread.
+		// Migrated replies skip the hasMention write + inbox (collections owns it); still collect accounts for replyAccounts.
 		if !isMigration {
 			sub := h.buildThreadSubscription(msg, threadRoomID, p.UserID, p.Account, eventSiteID, msg.CreatedAt)
 			sub.HasMention = true

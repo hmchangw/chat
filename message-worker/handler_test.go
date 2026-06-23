@@ -423,10 +423,8 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			// Migrated (X-Migration: live) first thread reply: message-worker persists the reply and
-			// creates the thread_room (no source equivalent), but must NOT write thread_subscriptions
-			// — those are owned by the collections migration (subs migrated unfiltered). A raw
-			// InsertThreadSubscription here would also dup-key the (threadRoomId,userAccount) index.
+			// Migrated first reply: persists + creates thread_room, but writes no thread_subscriptions
+			// (collections owns them; a raw insert would dup-key the (threadRoomId,userAccount) index).
 			name:      "migrated first thread reply — persists + creates room, skips subscription writes",
 			data:      threadData,
 			migration: true,
@@ -435,8 +433,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(nil)
 				store.EXPECT().GetMessageSender(gomock.Any(), "msg-1").
 					Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
-				// No InsertThreadSubscription, no parent owner-site lookup (FindUserByID u-parent),
-				// no MarkThreadSubscriptionMention — all suppressed for migrated events.
+				// No InsertThreadSubscription / owner-site lookup / MarkThreadSubscriptionMention — all suppressed for migrated events.
 				store.EXPECT().SaveThreadMessage(gomock.Any(), &threadMsg, &expectedSender, "site-a", gomock.Any()).
 					Return((*int)(nil), nil)
 			},
@@ -452,8 +449,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 					Return(&model.ThreadRoom{ID: "tr-1"}, nil)
 				store.EXPECT().GetMessageSender(gomock.Any(), "msg-1").
 					Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
-				// No UpsertThreadSubscription, no owner-site lookup. replyAccounts (replier + parent) and
-				// the lastMsg pointer are still written — they live on thread_rooms, not subscriptions.
+				// No UpsertThreadSubscription/owner-site lookup; replyAccounts + lastMsg pointer still written (thread_rooms, not subs).
 				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-1", "msg-2", []string{"alice", "parent-user"}, now).Return(nil)
 				store.EXPECT().SaveThreadMessage(gomock.Any(), &threadMsg, &expectedSender, "site-a", "tr-1").
 					Return((*int)(nil), nil)
@@ -563,10 +559,8 @@ func TestHandler_ProcessMessage_ThreadReply_PublishesBadgeEvent(t *testing.T) {
 	assert.True(t, badgeEvt.NewThreadLastMsgAt.Equal(now), "NewThreadLastMsgAt must equal reply CreatedAt")
 }
 
-// TestHandler_ProcessMessage_MigratedThreadReply_SuppressesBadgeAndOutbox verifies that a migrated
-// (X-Migration: live) thread reply persists and bumps the room but publishes NOTHING — neither the
-// live tcount badge nor any cross-site thread-subscription outbox. The source already delivered the
-// reply, so re-emitting either would re-notify users already on the new platform during cutover.
+// TestHandler_ProcessMessage_MigratedThreadReply_SuppressesBadgeAndOutbox verifies a migrated thread
+// reply persists + bumps the room but publishes nothing — no tcount badge, no cross-site sub inbox.
 func TestHandler_ProcessMessage_MigratedThreadReply_SuppressesBadgeAndOutbox(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	user := &model.User{ID: "u-1", Account: "alice", SiteID: "site-a", EngName: "Alice Wang", ChineseName: "愛麗絲"}
