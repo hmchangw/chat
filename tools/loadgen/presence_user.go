@@ -34,15 +34,24 @@ type presenceUser struct {
 // bye, so no seeding is required.
 func presenceAccount(i int) string { return fmt.Sprintf("u-%06d", i) }
 
-func newPresenceUser(idx int, siteID string) *presenceUser {
-	account := presenceAccount(idx)
+// newPresenceUserForAccount builds a presenceUser bound to an explicit account
+// (connID = "c-"+account). idx is -1 because there is no synthetic index; this
+// is used by daily, whose users carry real fixture accounts. The daily emitter
+// never reads idx, so the sentinel is safe.
+func newPresenceUserForAccount(account, siteID string) *presenceUser {
 	return &presenceUser{
-		idx:     idx,
+		idx:     -1,
 		account: account,
 		connID:  "c-" + account,
 		siteID:  siteID,
 		status:  model.StatusOffline,
 	}
+}
+
+func newPresenceUser(idx int, siteID string) *presenceUser {
+	u := newPresenceUserForAccount(presenceAccount(idx), siteID)
+	u.idx = idx
+	return u
 }
 
 func mustMarshal(v any) []byte {

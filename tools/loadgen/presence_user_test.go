@@ -66,3 +66,20 @@ func TestPresenceUser_ByeOffline(t *testing.T) {
 	assert.Equal(t, model.StatusOffline, tr.expect)
 	assert.Equal(t, model.StatusOffline, u.status)
 }
+
+func TestNewPresenceUserForAccount(t *testing.T) {
+	u := newPresenceUserForAccount("user-42", "site-x")
+	assert.Equal(t, "user-42", u.account)
+	assert.Equal(t, "c-user-42", u.connID)
+	assert.Equal(t, "site-x", u.siteID)
+	assert.Equal(t, model.StatusOffline, u.status)
+	assert.Equal(t, -1, u.idx)
+}
+
+func TestNewPresenceUser_DelegatesAndKeepsIndex(t *testing.T) {
+	u := newPresenceUser(7, "site-y")
+	assert.Equal(t, presenceAccount(7), u.account)
+	assert.Equal(t, "c-"+presenceAccount(7), u.connID)
+	assert.Equal(t, 7, u.idx)
+	assert.Equal(t, model.StatusOffline, u.status)
+}
