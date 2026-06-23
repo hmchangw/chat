@@ -1,0 +1,40 @@
+# Phase 2 — thread_rooms  (CRITICAL GATE — Phase 3 cannot start until this completes)
+# Source:  rocketchat.rocketchat_message (where tcount > 0, within MESSAGE time window)
+#          + rocketchat.tsmc_thread_subscriptions (to collect reply accounts per thread)
+# Target:  chat.thread_rooms  (DERIVED — no equivalent source collection)
+# Depends: chat.users must exist (Phase 1 must complete first)
+#
+# This job scans ALL thread-root messages in the MESSAGE_START_DATE_MS → CUTOFF_TIMESTAMP
+# window and derives one thread_rooms document per thread.
+# It also computes lastMsgAt / lastMsgId per thread inline during the scan.
+#
+# After this job completes, run-migration.sh creates an index before Phase 3:
+#   db.thread_rooms.createIndex({ parentMessageId: 1 })
+# This index is required by all four Phase 3 Cassandra jobs for fast lookups.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate-thread-rooms
+  namespace: migration
+spec:
+  backoffLimit: 10
+  activeDeadlineSeconds: 14400  # up to 4 hours — scans 216M messages for tcount > 0
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: migrate-thread-rooms
+        image: ${MIGRATION_IMAGE}
+        command: ["/migrate-thread-rooms"]
+        envFrom:
+        - configMapRef:
+            name: migration-config
+        - secretRef:
+            name: migration-secrets
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+          limits:
+            cpu: "2"
+            memory: "1Gi"

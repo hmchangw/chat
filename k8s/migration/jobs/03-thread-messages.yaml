@@ -1,0 +1,39 @@
+# Phase 3 — Cassandra: thread_messages_by_thread
+# Source:  rocketchat.rocketchat_message  (where tmid is set, i.e. thread replies only)
+# Target:  Cassandra keyspace chat, table thread_messages_by_thread
+# Depends: chat.thread_rooms must be complete (Phase 2 gate) — thread_room_id comes from here
+#
+# Primary key: (thread_room_id, created_at, message_id)
+# Used for: loading all replies inside a thread conversation
+#
+# Messages where thread_room_id cannot be resolved (thread root outside the
+# migration window) are skipped — the thread context would be missing anyway.
+#
+# Volume: subset of windowed messages (replies only)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate-thread-messages
+  namespace: migration
+spec:
+  backoffLimit: 10
+  activeDeadlineSeconds: 10800  # 3-hour hard cap
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: migrate-thread-messages
+        image: ${MIGRATION_IMAGE}
+        command: ["/migrate-thread-messages"]
+        envFrom:
+        - configMapRef:
+            name: migration-config
+        - secretRef:
+            name: migration-secrets
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+          limits:
+            cpu: "2"
+            memory: "1Gi"

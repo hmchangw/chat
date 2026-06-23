@@ -1,0 +1,31 @@
+# Phase 2 — room_members
+# Source:  rocketchat.tsmc_room_members
+# Target:  chat.room_members
+# Depends: chat.users must exist (Phase 1 must complete first)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate-room-members
+  namespace: migration
+spec:
+  backoffLimit: 10
+  activeDeadlineSeconds: 3600   # ~1.45M members takes ~5 min
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: migrate-room-members
+        image: ${MIGRATION_IMAGE}
+        command: ["/migrate-room-members"]
+        envFrom:
+        - configMapRef:
+            name: migration-config
+        - secretRef:
+            name: migration-secrets
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
+          limits:
+            cpu: "1"
+            memory: "512Mi"

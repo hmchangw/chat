@@ -1,0 +1,31 @@
+# Phase 1 — rooms
+# Source:  rocketchat.rocketchat_room + rocketchat.rocketchat_subscription (for metadata)
+# Target:  chat.rooms
+# Depends: nothing (reads source only)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate-rooms
+  namespace: migration
+spec:
+  backoffLimit: 10
+  activeDeadlineSeconds: 3600   # ~1M rooms takes ~3-4 min
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: migrate-rooms
+        image: ${MIGRATION_IMAGE}
+        command: ["/migrate-rooms"]
+        envFrom:
+        - configMapRef:
+            name: migration-config
+        - secretRef:
+            name: migration-secrets
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
+          limits:
+            cpu: "1"
+            memory: "512Mi"

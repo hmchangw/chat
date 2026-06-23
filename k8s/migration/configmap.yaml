@@ -1,0 +1,48 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: migration-config
+  namespace: migration
+data:
+  # ── Site / Database names ────────────────────────────────────────────────────
+  SITE_ID: "site1"          # Your nextgen site identifier
+  SOURCE_DB: "rocketchat"   # Source MongoDB database name
+  TARGET_DB: "chat"         # Target MongoDB database name
+  CHECKPOINT_DB: "migration" # MongoDB database used to store per-job checkpoints
+
+  # ── Batch sizes ──────────────────────────────────────────────────────────────
+  BATCH_SIZE: "500"         # Documents per upsert batch for MongoDB jobs
+  CASSANDRA_KEYSPACE: "chat"
+
+  # ── Time boundary ────────────────────────────────────────────────────────────
+  #
+  # CUTOFF_TIMESTAMP
+  #   Unix milliseconds. ALL collections are migrated up to (and including) this
+  #   point in time. The oplog connector captures its resume token at this same
+  #   point and replays every write that happened after it.
+  #
+  #   Set this ONCE before the run and do not change it mid-migration.
+  #   The oplog connector must be started with the same value.
+  #
+  #   To get the current unix-ms:
+  #     date -u +%s%3N           # Linux
+  #     gdate -u +%s%3N          # macOS (brew install coreutils)
+  #
+  CUTOFF_TIMESTAMP: "REPLACE_ME"   # e.g. 1750636800000 = 2026-06-23T00:00:00Z
+
+  # MESSAGE_START_DATE_MS
+  #   Unix milliseconds. Applies ONLY to Cassandra message tables and the
+  #   thread_rooms derivation (Phase 2 + Phase 3).
+  #
+  #   Messages older than this date will NOT be copied to Cassandra — users
+  #   will not see chat history before this date after cut-over.
+  #   MongoDB collections (users, rooms, subscriptions, etc.) are unaffected.
+  #
+  #   Example: migrate last 1 year of messages from a 2026-06-23 cutoff:
+  #     MESSAGE_START_DATE_MS = 1750636800000 - (365 * 24 * 3600 * 1000)
+  #                           = 1719100800000  (2024-06-23T00:00:00Z)
+  #
+  #   Example: migrate from 2025-01-01:
+  #     date -u -d "2025-01-01T00:00:00Z" +%s%3N  → 1735689600000
+  #
+  MESSAGE_START_DATE_MS: "REPLACE_ME"  # e.g. 1735689600000 = 2025-01-01T00:00:00Z

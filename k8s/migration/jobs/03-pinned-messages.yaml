@@ -1,0 +1,36 @@
+# Phase 3 — Cassandra: pinned_messages_by_room
+# Source:  rocketchat.rocketchat_message  (where pinned=true, within message window)
+# Target:  Cassandra keyspace chat, table pinned_messages_by_room
+# Depends: chat.thread_rooms must be complete (Phase 2 gate)
+#
+# Primary key: (room_id, pinned_at, message_id)
+# Used for: listing pinned messages in a room
+#
+# Volume: small subset of total messages — completes quickly
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate-pinned-messages
+  namespace: migration
+spec:
+  backoffLimit: 10
+  activeDeadlineSeconds: 7200   # 2-hour hard cap; pinned messages are a small fraction
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: migrate-pinned-messages
+        image: ${MIGRATION_IMAGE}
+        command: ["/migrate-pinned-messages"]
+        envFrom:
+        - configMapRef:
+            name: migration-config
+        - secretRef:
+            name: migration-secrets
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
+          limits:
+            cpu: "1"
+            memory: "512Mi"

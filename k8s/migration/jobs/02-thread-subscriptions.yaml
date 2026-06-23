@@ -1,0 +1,37 @@
+# Phase 2 — thread_subscriptions
+# Source:  rocketchat.tsmc_thread_subscriptions
+# Target:  chat.thread_subscriptions
+# Depends: chat.users must exist (Phase 1)
+#          chat.thread_rooms should exist to resolve threadRoomId for legacy docs
+#          (run after 02-thread-rooms in run-migration.sh)
+#
+# If a source document has threadRoomId already set, it is copied directly.
+# If it is empty (legacy docs), the job looks up chat.thread_rooms by parentMessageId
+# to derive the value. Threads outside the message window are skipped with a warning.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate-thread-subscriptions
+  namespace: migration
+spec:
+  backoffLimit: 10
+  activeDeadlineSeconds: 3600   # ~2.4M docs takes ~8 min
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: migrate-thread-subscriptions
+        image: ${MIGRATION_IMAGE}
+        command: ["/migrate-thread-subscriptions"]
+        envFrom:
+        - configMapRef:
+            name: migration-config
+        - secretRef:
+            name: migration-secrets
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
+          limits:
+            cpu: "1"
+            memory: "512Mi"

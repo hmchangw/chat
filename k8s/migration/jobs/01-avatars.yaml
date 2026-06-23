@@ -1,0 +1,31 @@
+# Phase 1 — avatars
+# Source:  rocketchat.rocketchat_avatars
+# Target:  chat.rocketchat_avatars  (direct copy, same schema)
+# Depends: nothing (reads source only)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate-avatars
+  namespace: migration
+spec:
+  backoffLimit: 10
+  activeDeadlineSeconds: 600    # negligible volume (< 1 min)
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: migrate-avatars
+        image: ${MIGRATION_IMAGE}
+        command: ["/migrate-avatars"]
+        envFrom:
+        - configMapRef:
+            name: migration-config
+        - secretRef:
+            name: migration-secrets
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "128Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"

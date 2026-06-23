@@ -1,0 +1,40 @@
+# Phase 3 — Cassandra: messages_by_room
+# Source:  rocketchat.rocketchat_message  (filtered to MESSAGE_START_DATE_MS → CUTOFF_TIMESTAMP)
+# Target:  Cassandra keyspace chat, table messages_by_room
+# Depends: chat.thread_rooms must be complete (Phase 2 gate) — used to resolve thread_room_id
+#
+# Primary key: (room_id, bucket, created_at, message_id)
+# bucket = floor(created_at_unix_ms / bucket_window_ms) — default window 72 hours
+# Used for: room history timeline (loading messages in a room chronologically)
+#
+# NOTE: BATCH_SIZE for this job is intentionally lower (env var or default 200) because
+# each message also writes the bucket field, which requires a small calculation.
+#
+# Estimated volume: ~80-100M rows for 2-year window, ~40-60M for 1-year window
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate-messages-by-room
+  namespace: migration
+spec:
+  backoffLimit: 10
+  activeDeadlineSeconds: 21600  # 6-hour hard cap
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: migrate-messages-by-room
+        image: ${MIGRATION_IMAGE}
+        command: ["/migrate-messages-by-room"]
+        envFrom:
+        - configMapRef:
+            name: migration-config
+        - secretRef:
+            name: migration-secrets
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+          limits:
+            cpu: "2"
+            memory: "1Gi"

@@ -1,0 +1,36 @@
+# Phase 3 — Cassandra: messages_by_id
+# Source:  rocketchat.rocketchat_message  (filtered to MESSAGE_START_DATE_MS → CUTOFF_TIMESTAMP)
+# Target:  Cassandra keyspace chat, table messages_by_id
+# Depends: chat.thread_rooms must be complete (Phase 2 gate) — used to resolve thread_room_id
+#
+# Primary key: message_id
+# Used for: direct message lookup by ID (edit, delete, reply, quote)
+#
+# Estimated volume: ~80-100M rows for 2-year window, ~40-60M for 1-year window
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate-messages-by-id
+  namespace: migration
+spec:
+  backoffLimit: 10
+  activeDeadlineSeconds: 21600  # 6-hour hard cap
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: migrate-messages-by-id
+        image: ${MIGRATION_IMAGE}
+        command: ["/migrate-messages-by-id"]
+        envFrom:
+        - configMapRef:
+            name: migration-config
+        - secretRef:
+            name: migration-secrets
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "512Mi"
+          limits:
+            cpu: "2"
+            memory: "1Gi"
