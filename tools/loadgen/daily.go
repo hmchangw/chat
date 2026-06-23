@@ -445,6 +445,9 @@ func activateUsers(ctx context.Context, env *stepEnv, from, to int) {
 		if poolAdded && env.publish != nil {
 			startEmitter(ctx, env, u, i)
 		}
+		if env.presencePool != nil && u.presence != nil {
+			emitPresence(env, u.presence, u.presence.hello(nowMillis()))
+		}
 		env.activatedCount.Add(1)
 	}
 }
@@ -478,13 +481,28 @@ func startEmitter(ctx context.Context, env *stepEnv, u *userState, userIdx int) 
 
 		tick := time.NewTicker(1 * time.Second)
 		defer tick.Stop()
+
+		// Optional presence ping ticker (own interval, independent of the 1s
+		// Markov tick). Only armed when --presence is on.
+		var presenceC <-chan time.Time
+		if env.presencePool != nil && u.presence != nil && env.presenceHeartbeat > 0 {
+			pt := time.NewTicker(env.presenceHeartbeat)
+			defer pt.Stop()
+			presenceC = pt.C
+		}
+
 		for {
 			select {
 			case <-ctx.Done():
 				return
+			case <-presenceC:
+				emitPresence(env, u.presence, u.presence.ping(nowMillis()))
+				continue
 			case <-tick.C:
 			}
+			wasActive := u.active
 			u.step(r)
+			presenceFlip(env, u, wasActive)
 			if !u.active {
 				continue
 			}
@@ -568,6 +586,16 @@ func emitPresence(env *stepEnv, u *presenceUser, tr presenceTransition) {
 		return
 	}
 	env.presenceCollector.Expect(u.account, tr.expect, sentAt)
+}
+
+// presenceFlip emits an activity transition when the user's active state
+// changed this tick. active->idle => away; idle->active => not away. No-op when
+// presence is disabled or the state didn't change.
+func presenceFlip(env *stepEnv, u *userState, wasActive bool) {
+	if env.presencePool == nil || u.presence == nil || u.active == wasActive {
+		return
+	}
+	emitPresence(env, u.presence, u.presence.setAway(!u.active, nowMillis()))
 }
 
 // runDailyForTest is the testable variant: takes an envFactory so tests can

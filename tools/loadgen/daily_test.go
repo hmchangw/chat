@@ -225,3 +225,29 @@ func TestEmitPresence_RecordsExpectation(t *testing.T) {
 	assert.Equal(t, int64(1), c.Attempted())
 	assert.Equal(t, int64(1), c.Failed())
 }
+
+func TestPresenceFlip_EmitsActivityOnChange(t *testing.T) {
+	c := newPresenceCollector()
+	env := &stepEnv{presenceCollector: c, presencePool: &presencePool{collector: c}}
+	u := &userState{Account: "user-1", presence: newPresenceUserForAccount("user-1", "site-test")}
+	// Bring presence online first (hello), so activity transitions can measure.
+	emitPresence(env, u.presence, u.presence.hello(nowMillis()))
+	c.Reset()
+
+	// active unchanged -> no emit.
+	u.active = true
+	presenceFlip(env, u, true)
+	assert.Equal(t, int64(0), c.Attempted())
+
+	// changed true->false -> setAway(true) -> away (measurable).
+	u.active = false
+	presenceFlip(env, u, true)
+	assert.Equal(t, int64(1), c.Attempted())
+}
+
+func TestPresenceFlip_NoPoolIsNoop(t *testing.T) {
+	env := &stepEnv{} // presencePool nil
+	u := &userState{Account: "user-1", presence: newPresenceUserForAccount("user-1", "site-test")}
+	u.active = false
+	presenceFlip(env, u, true) // changed, but no pool -> must not panic and no-op
+}
