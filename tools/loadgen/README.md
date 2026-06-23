@@ -545,6 +545,17 @@ loadgen daily \
   --csv=results.csv
 ```
 
+**Optional presence load:** `--presence` makes each daily user also maintain
+presence (a `hello` on activation, a `ping` every `--presence-heartbeat`, and an
+activity flip on each active↔idle Markov transition). Presence latency/errors
+are reported **observationally** — a `presence:` line under each step and
+`presence_*` CSV columns — and never affect the daily PASS/TRIP/INCONCLUSIVE
+verdict. Off by default; absent the flag, the daily run is unchanged.
+
+```bash
+loadgen daily --preset=daily-heavy --presence --presence-heartbeat=30s --csv=daily.csv
+```
+
 ### Environment variables
 
 Read by the base loadgen `config` struct (env vars, not flags):
