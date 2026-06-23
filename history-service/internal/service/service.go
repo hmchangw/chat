@@ -15,7 +15,7 @@ import (
 	"github.com/hmchangw/chat/pkg/subject"
 )
 
-//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageReader,MessageWriter,MessageRepository,SubscriptionRepository,RoomRepository,EventPublisher,ThreadRoomRepository,UserStore,CustomEmojiStore
+//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . MessageReader,MessageWriter,MessageRepository,SubscriptionRepository,RoomRepository,EventPublisher,ThreadRoomRepository,ThreadSubscriptionRepository,UserStore,CustomEmojiStore
 
 type MessageReader interface {
 	GetMessagesBefore(ctx context.Context, roomID string, before time.Time, floor time.Time, pageReq cassrepo.PageRequest) (cassrepo.Page[models.Message], error)
@@ -83,6 +83,12 @@ type ThreadRoomRepository interface {
 	GetMinThreadUserLastSeenAt(ctx context.Context, threadRoomID string) (*time.Time, error)
 }
 
+// ThreadSubscriptionRepository lists a user's thread subscriptions on this site,
+// the per-site leaf of the cross-site thread inbox.
+type ThreadSubscriptionRepository interface {
+	ListUserThreadSubscriptions(ctx context.Context, account string, cursorLastMsgAt *time.Time, cursorThreadRoomID string, limit int) ([]mongorepo.ThreadSubRow, bool, error)
+}
+
 // UserStore resolves the calling user's full profile for ReactorInfo and the Participant on the canonical event.
 type UserStore interface {
 	FindUserByAccount(ctx context.Context, account string) (*pkgmodel.User, error)
@@ -101,6 +107,7 @@ type HistoryService struct {
 	rooms              RoomRepository
 	publisher          EventPublisher
 	threadRooms        ThreadRoomRepository
+	threadSubs         ThreadSubscriptionRepository
 	users              UserStore
 	emojiValidator     *emoji.Validator // owns the CustomEmojiStore lookup; reused per request
 	historyFloor       time.Duration    // from MESSAGE_HISTORY_FLOOR_DAYS
@@ -115,6 +122,7 @@ func New(
 	rooms RoomRepository,
 	pub EventPublisher,
 	threadRooms ThreadRoomRepository,
+	threadSubs ThreadSubscriptionRepository,
 	users UserStore,
 	customEmojis CustomEmojiStore,
 	cfg *config.Config,
@@ -126,6 +134,7 @@ func New(
 		rooms:              rooms,
 		publisher:          pub,
 		threadRooms:        threadRooms,
+		threadSubs:         threadSubs,
 		users:              users,
 		emojiValidator:     emoji.NewValidator(customEmojis),
 		historyFloor:       time.Duration(cfg.MessageHistoryFloorDays) * 24 * time.Hour,
@@ -166,9 +175,11 @@ func (s *HistoryService) RegisterHandlers(r *natsrouter.Router, siteID string) {
 	natsrouter.Register(r, subject.MigrationInternalMsgDelete(siteID), func(c *natsrouter.Context, req pkgmodel.MigrationDeleteRequest) (*pkgmodel.MigrationAck, error) {
 		return s.MigrationDeleteMessage(c, siteID, req)
 	})
+	natsrouter.Register(r, subject.ThreadSubscriptionListSubscribe(siteID), s.ListThreadSubscriptions)
 }
 
 // Compile-time checks.
 var _ MessageRepository = (*cassrepo.Repository)(nil)
 var _ SubscriptionRepository = (*mongorepo.SubscriptionRepo)(nil)
 var _ RoomRepository = (*mongorepo.RoomRepo)(nil)
+var _ ThreadSubscriptionRepository = (*mongorepo.ThreadSubscriptionRepo)(nil)

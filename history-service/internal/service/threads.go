@@ -9,6 +9,7 @@ import (
 
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
 	"github.com/hmchangw/chat/history-service/internal/models"
+	"github.com/hmchangw/chat/history-service/internal/mongorepo"
 	"github.com/hmchangw/chat/pkg/errcode"
 	pkgmodel "github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/mongoutil"
@@ -143,6 +144,137 @@ func (s *HistoryService) GetThreadMessages(c *natsrouter.Context, req models.Get
 		ParentMessage:     msg,
 		MinUserLastSeenAt: minMs,
 	}, nil
+}
+
+// threadUnread reports whether a thread has activity the user hasn't seen: a nil
+// lastSeenAt (never opened) is always unread, otherwise lastMsgAt must be newer.
+func threadUnread(lastMsgAt time.Time, lastSeenAt *time.Time) bool {
+	if lastSeenAt == nil {
+		return true
+	}
+	return lastMsgAt.After(*lastSeenAt)
+}
+
+// ListThreadSubscriptions is the per-site leaf of the cross-site thread inbox:
+// it returns the account's thread subscriptions on this site, newest activity
+// first, hydrated with each thread's parent and last message plus the owning
+// room's name/type. Server-to-server.
+// NATS: chat.server.request.thread.{siteID}.subscription.list
+func (s *HistoryService) ListThreadSubscriptions(c *natsrouter.Context, req pkgmodel.ThreadSubscriptionListRequest) (*pkgmodel.ThreadSubscriptionListResponse, error) {
+	if req.Account == "" {
+		return nil, errcode.BadRequest("account is required")
+	}
+	c.WithLogValues("account", req.Account)
+
+	limit := req.Limit
+	if limit <= 0 {
+		limit = defaultPageSize
+	}
+	if limit > maxPageSize {
+		limit = maxPageSize
+	}
+
+	var cursorTs *time.Time
+	if req.CursorLastMsgAt != nil {
+		t := time.UnixMilli(*req.CursorLastMsgAt).UTC()
+		cursorTs = &t
+	}
+
+	rows, hasMore, err := s.threadSubs.ListUserThreadSubscriptions(c, req.Account, cursorTs, req.CursorThreadRoomID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing thread subscriptions: %w", err)
+	}
+	if len(rows) == 0 {
+		return &pkgmodel.ThreadSubscriptionListResponse{Items: []pkgmodel.ThreadListItem{}, HasMore: false}, nil
+	}
+
+	msgIDs, roomIDs := threadListLookupKeys(rows)
+
+	// Hydrate message bodies from Cassandra (room name/type already rode in on
+	// the rows via the aggregation's rooms $lookup).
+	msgs, err := s.msgReader.GetMessagesByIDs(c, msgIDs)
+	if err != nil {
+		return nil, fmt.Errorf("hydrating thread list messages: %w", err)
+	}
+
+	msgByID := make(map[string]models.Message, len(msgs))
+	for i := range msgs {
+		msgByID[msgs[i].MessageID] = msgs[i]
+	}
+
+	// Access window per distinct room (the user is an active member, so the
+	// lookup is cheap and bounded by the page's distinct rooms).
+	accessSince := make(map[string]*time.Time, len(roomIDs))
+	for _, rid := range roomIDs {
+		since, _, err := s.subscriptions.GetHistorySharedSince(c, req.Account, rid)
+		if err != nil {
+			return nil, fmt.Errorf("loading access window for room %s: %w", rid, err)
+		}
+		accessSince[rid] = since
+	}
+
+	items := make([]pkgmodel.ThreadListItem, 0, len(rows))
+	for i := range rows {
+		row := rows[i]
+		since := accessSince[row.RoomID]
+		parent, hasParent := msgByID[row.ParentMessageID]
+		// Drop threads whose parent predates the user's access window.
+		if hasParent && since != nil && parent.CreatedAt.Before(*since) {
+			continue
+		}
+		item := pkgmodel.ThreadListItem{
+			SiteID:          row.SiteID,
+			RoomID:          row.RoomID,
+			RoomName:        row.RoomName,
+			RoomType:        row.RoomType,
+			ThreadRoomID:    row.ThreadRoomID,
+			ParentMessageID: row.ParentMessageID,
+			HasMention:      row.HasMention,
+			Unread:          threadUnread(row.LastMsgAt, row.LastSeenAt),
+			LastMsgAt:       row.LastMsgAt.UTC().UnixMilli(),
+		}
+		if row.LastSeenAt != nil {
+			ms := row.LastSeenAt.UTC().UnixMilli()
+			item.LastSeenAt = &ms
+		}
+		if hasParent {
+			redactUnavailableQuote(&parent, since)
+			item.ParentMessage = &parent
+		}
+		if last, ok := msgByID[row.LastMsgID]; ok {
+			redactUnavailableQuote(&last, since)
+			item.LastMessage = &last
+		}
+		items = append(items, item)
+	}
+
+	return &pkgmodel.ThreadSubscriptionListResponse{Items: items, HasMore: hasMore}, nil
+}
+
+// threadListLookupKeys collects the distinct message IDs (parents ∪ last) and
+// distinct room IDs the page needs hydrated.
+func threadListLookupKeys(rows []mongorepo.ThreadSubRow) (msgIDs, roomIDs []string) {
+	msgSeen := make(map[string]struct{}, len(rows)*2)
+	roomSeen := make(map[string]struct{}, len(rows))
+	addMsg := func(id string) {
+		if id == "" {
+			return
+		}
+		if _, dup := msgSeen[id]; dup {
+			return
+		}
+		msgSeen[id] = struct{}{}
+		msgIDs = append(msgIDs, id)
+	}
+	for i := range rows {
+		addMsg(rows[i].ParentMessageID)
+		addMsg(rows[i].LastMsgID)
+		if _, dup := roomSeen[rows[i].RoomID]; !dup {
+			roomSeen[rows[i].RoomID] = struct{}{}
+			roomIDs = append(roomIDs, rows[i].RoomID)
+		}
+	}
+	return msgIDs, roomIDs
 }
 
 // validateThreadFilter normalizes an empty filter to "all" so clients can omit the field.

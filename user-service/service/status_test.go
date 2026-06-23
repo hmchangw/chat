@@ -142,9 +142,10 @@ func TestPublishStatus_SkipsEmptyDest(t *testing.T) {
 	users := mocks.NewMockUserRepository(ctrl)
 	apps := mocks.NewMockAppRepository(ctrl)
 	rooms := mocks.NewMockRoomClient(ctrl)
+	history := mocks.NewMockHistoryClient(ctrl)
 	pub := mocks.NewMockEventPublisher(ctrl)
 	cfg := &config.Config{SiteID: "site-a", AllSiteIDs: []string{"site-a", "", "site-b"}, MaxSubscriptionLimit: 1000}
-	svc := New(subs, users, apps, rooms, pub, cfg)
+	svc := New(subs, users, apps, rooms, history, pub, cfg)
 	// Only "site-b" must receive a publish; self "site-a" and the blank "" are skipped.
 	pub.EXPECT().Publish(gomock.Any(), subject.InboxExternal("site-b", model.InboxUserStatusUpdated), gomock.Any()).Return(nil)
 	svc.publishStatus(ctx("alice", "site-a"), "alice", "busy", nil)

@@ -11,7 +11,7 @@ import (
 	"github.com/hmchangw/chat/user-service/models"
 )
 
-//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . SubscriptionRepository,UserRepository,AppRepository,RoomClient,EventPublisher
+//go:generate mockgen -destination=mocks/mock_repository.go -package=mocks . SubscriptionRepository,UserRepository,AppRepository,RoomClient,HistoryClient,EventPublisher
 
 // SubscriptionRepository is the consumer-defined interface for subscription persistence (botDM app-subscription rows included).
 type SubscriptionRepository interface {
@@ -39,10 +39,16 @@ type AppRepository interface {
 	GetAppsByAssistants(ctx context.Context, botAccounts []string) (map[string]*model.App, error)
 }
 
-// RoomClient is the consumer-defined interface for room-service RPC calls.
+// RoomClient is the consumer-defined interface for room-service / room-worker RPC calls.
 type RoomClient interface {
 	GetRoomsInfo(ctx context.Context, siteID string, roomIDs []string) ([]model.RoomInfo, error)
 	CreateDMRoom(ctx context.Context, account, otherAccount string, roomType model.RoomType) (model.Subscription, error)
+}
+
+// HistoryClient is the consumer-defined interface for per-site history-service
+// RPCs, fanned out across sites by the thread-inbox aggregator.
+type HistoryClient interface {
+	GetThreadList(ctx context.Context, siteID string, req model.ThreadSubscriptionListRequest) (model.ThreadSubscriptionListResponse, error)
 }
 
 // EventPublisher is the consumer-defined interface for fire-and-forget
@@ -59,6 +65,7 @@ type UserService struct {
 	users           UserRepository
 	apps            AppRepository
 	rooms           RoomClient
+	history         HistoryClient
 	pub             EventPublisher
 	siteID          string
 	allSiteIDs      []string
@@ -67,12 +74,13 @@ type UserService struct {
 }
 
 // New constructs a UserService with the given dependencies and configuration.
-func New(subs SubscriptionRepository, users UserRepository, apps AppRepository, rooms RoomClient, pub EventPublisher, cfg *config.Config) *UserService {
+func New(subs SubscriptionRepository, users UserRepository, apps AppRepository, rooms RoomClient, history HistoryClient, pub EventPublisher, cfg *config.Config) *UserService {
 	return &UserService{
 		subs:            subs,
 		users:           users,
 		apps:            apps,
 		rooms:           rooms,
+		history:         history,
 		pub:             pub,
 		siteID:          cfg.SiteID,
 		allSiteIDs:      cfg.AllSiteIDs,
@@ -88,6 +96,7 @@ func (s *UserService) RegisterHandlers(r *natsrouter.Router) {
 	natsrouter.Register(r, subject.UserProfileGetByNamePattern(s.siteID), s.GetProfileByName)
 	natsrouter.Register(r, subject.UserStatusSetPattern(s.siteID), s.SetStatus)
 	natsrouter.Register(r, subject.UserSubscriptionListPattern(s.siteID), s.ListSubscriptions)
+	natsrouter.Register(r, subject.UserThreadListPattern(s.siteID), s.ListUserThreads)
 	natsrouter.Register(r, subject.UserSubscriptionGetChannelsPattern(s.siteID), s.GetChannels)
 	natsrouter.Register(r, subject.UserSubscriptionGetDMPattern(s.siteID), s.GetDM)
 	natsrouter.Register(r, subject.UserSubscriptionGetByRoomIDPattern(s.siteID), s.GetByRoomID)

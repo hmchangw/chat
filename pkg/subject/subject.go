@@ -246,6 +246,19 @@ func ThreadUnreadSummary(siteID string) string {
 	return fmt.Sprintf("chat.server.request.room.%s.thread.unread.summary", siteID)
 }
 
+// ThreadSubscriptionList is the server-to-server request subject for the per-site
+// leaf of the cross-site thread inbox: the user-service aggregator fans out one
+// request per candidate site to history-service. Mirrors RoomsInfoBatch.
+func ThreadSubscriptionList(siteID string) string {
+	return fmt.Sprintf("chat.server.request.thread.%s.subscription.list", siteID)
+}
+
+// ThreadSubscriptionListSubscribe is the per-site subscription subject
+// history-service uses to receive ThreadSubscriptionList requests.
+func ThreadSubscriptionListSubscribe(siteID string) string {
+	return fmt.Sprintf("chat.server.request.thread.%s.subscription.list", siteID)
+}
+
 // RoomKeyEnsure is the server-to-server request subject for the room key ensure
 // RPC. Callers send a RoomKeyEnsureRequest and receive a RoomKeyEnsureResponse
 // confirming the room has a key pair in Valkey at the returned version.
@@ -947,6 +960,23 @@ func UserSubscriptionList(account, siteID string) string {
 
 func UserSubscriptionListPattern(siteID string) string {
 	return fmt.Sprintf("chat.user.{account}.request.user.%s.subscription.list", siteID)
+}
+
+// UserThreadList is the concrete client-facing subject for the cross-site thread
+// inbox RPC. siteID is the CALLER's own home site — the site that holds the
+// user's federated subscriptions and runs the aggregator. Pair with
+// UserThreadListPattern for user-service's registration.
+func UserThreadList(account, siteID string) string {
+	if !isValidAccountToken(account) {
+		panic("invalid account token: contains NATS wildcard characters")
+	}
+	return fmt.Sprintf("chat.user.%s.request.user.%s.thread.list", account, siteID)
+}
+
+// UserThreadListPattern is the natsrouter pattern user-service registers for the
+// thread inbox RPC (siteID baked in, account left as {account}).
+func UserThreadListPattern(siteID string) string {
+	return fmt.Sprintf("chat.user.{account}.request.user.%s.thread.list", siteID)
 }
 
 func UserSubscriptionSetAppSubscription(account, siteID string) string {
