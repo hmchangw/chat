@@ -762,3 +762,25 @@ that recovered within SLO.
 ```
 loadgen presence-storm --users=20000 --storm-steps=0.1,0.25,0.5,1.0 --storm-mode=graceful
 ```
+
+### presence-capacity — find max concurrent online users
+
+Cumulatively ramps a synthetic population through `--steps`. Each step
+activates the delta of new users (each `hello`, which measures connect-edge
+latency), then holds with every user online and heartbeating, counting
+**false offlines** (users the service wrongly swept offline) and **ping
+sustainability**. Reports the largest N held without tripping.
+
+- Connect-edge latency (`hello`→`online`) is measured during activation; the
+  steady-state hold has no transitions to time.
+- False offlines are the ceiling signal. A loadgen-induced ping shortfall
+  reads INCONCLUSIVE, never TRIP, so the load box is never mistaken for a
+  service limit.
+
+Graded on connect p95/p99 (`--connect-p95-ms` / `--connect-p99-ms`), false-
+offline rate (`--false-offline-rate`), connect error rate (`--error-rate`),
+with a ping-sustainability + GC-pause INCONCLUSIVE guard.
+
+```
+loadgen presence-capacity --steps=10k,20k,50k,100k,200k --hold=120s --csv=cap.csv
+```
