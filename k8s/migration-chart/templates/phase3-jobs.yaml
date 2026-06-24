@@ -42,7 +42,7 @@ spec:
           sleep {{ .Values.phase3SleepSeconds }}
           echo "[migrate-messages-by-id] DONE"
         {{- include "migration.commonEnv" . | nindent 8 }}
-        {{- include "migration.cassandraEnv" . | nindent 8 }}
+        {{- include "migration.cassandraEnv" . | nindent 10 }}
         resources:
           requests: { cpu: "100m", memory: "64Mi" }
           limits:   { cpu: "200m", memory: "128Mi" }
@@ -84,7 +84,7 @@ spec:
           sleep {{ .Values.phase3SleepSeconds }}
           echo "[migrate-messages-by-room] DONE"
         {{- include "migration.commonEnv" . | nindent 8 }}
-        {{- include "migration.cassandraEnv" . | nindent 8 }}
+        {{- include "migration.cassandraEnv" . | nindent 10 }}
         resources:
           requests: { cpu: "100m", memory: "64Mi" }
           limits:   { cpu: "200m", memory: "128Mi" }
@@ -123,7 +123,7 @@ spec:
           sleep {{ .Values.phase3SleepSeconds }}
           echo "[migrate-pinned-messages] DONE"
         {{- include "migration.commonEnv" . | nindent 8 }}
-        {{- include "migration.cassandraEnv" . | nindent 8 }}
+        {{- include "migration.cassandraEnv" . | nindent 10 }}
         resources:
           requests: { cpu: "100m", memory: "64Mi" }
           limits:   { cpu: "200m", memory: "128Mi" }
@@ -162,7 +162,7 @@ spec:
           sleep {{ .Values.phase3SleepSeconds }}
           echo "[migrate-thread-messages] DONE"
         {{- include "migration.commonEnv" . | nindent 8 }}
-        {{- include "migration.cassandraEnv" . | nindent 8 }}
+        {{- include "migration.cassandraEnv" . | nindent 10 }}
         resources:
           requests: { cpu: "100m", memory: "64Mi" }
           limits:   { cpu: "200m", memory: "128Mi" }
