@@ -166,8 +166,8 @@ Three services own the surface (**REVISED 2026-06-24** — Q18 reversed, admin s
 - **Passwords:** `bcrypt(sha256_hex(plaintext))`, **cost = 10**.
 - **Tokens (dual-format during hybrid phase, Part II §4.6):**
   - Legacy tokens: opaque random, stored `base64(sha256(rawToken))` — byte-for-byte RC compatibility.
-  - Native v1 tokens: `bp1_<43-char base64url of 32 random bytes>`, stored `base64(HMAC-SHA-256(server_secret, rawToken))`.
-  - Validator dispatches on the `bp1_` prefix; legacy fallback only for prefix-less tokens.
+  - Native v1 tokens: `bp_<43-char base64url of 32 random bytes>`, stored `base64(HMAC-SHA-256(server_secret, rawToken))`.
+  - Validator dispatches on the `bp_` prefix; legacy fallback only for prefix-less tokens.
 - **IDs must be preserved from legacy** — no remapping layer (the v2 Go repo already preserves the 17-char `_id`).
 - **Provisioning-gated login.** After credential verification, the account's `{userId, siteId}` must exist in this site's `users` collection; otherwise `403 account_not_provisioned`. Mirrors the auth-service gate introduced in PR #295. Controlled by `REQUIRE_PROVISIONED=true` (default); fail-closed on store errors.
 - **Single home site per bot.** A bot is provisioned at exactly one site (its home site), identified by `siteId` on its user record. Login is accepted only at that site's `botplatform-service`. Cross-site interaction happens via NATS supercluster federation, never via cross-site login.
@@ -185,7 +185,7 @@ Three services own the surface (**REVISED 2026-06-24** — Q18 reversed, admin s
 **Dual-token validation (during migration):**
 - **Accept old Rocket.Chat tokens** (imported, validated against the same store).
 - **Issue new botplatform tokens** on every fresh login.
-- **Gradually phase out old tokens** — as bots re-login they get new `bp1_` tokens; FIFO cap eviction (§5.6) pushes the older imported legacy tokens out first when an account hits cap. Once telemetry shows no live legacy tokens (zero `scheme:"legacy"` validate hits), legacy acceptance can be switched off outright.
+- **Gradually phase out old tokens** — as bots re-login they get new `bp_` tokens; FIFO cap eviction (§5.6) pushes the older imported legacy tokens out first when an account hits cap. Once telemetry shows no live legacy tokens (zero `scheme:"legacy"` validate hits), legacy acceptance can be switched off outright.
 
 ---
 
@@ -260,7 +260,7 @@ Source: [`login-old-vs-new.drawio`](./diagrams/login-old-vs-new.drawio) · PNG: 
 
 ![Token generation & validation — dual-scheme (legacy + v1)](./diagrams/token-gen-validate-flow.drawio.png)
 
-Top half = generation pipeline (login → bcrypt verify → 32 bytes random → base64url → `bp1_` prefix → HMAC-SHA-256 storage hash → INSERT sessions). Bottom half = validation with prefix-dispatch (Valkey cache hot path, Mongo cold path, legacy-store fallback only for pre-prefix tokens). Embedded rationale block in the middle explains why each design choice — see Part II §4.6.
+Top half = generation pipeline (login → bcrypt verify → 32 bytes random → base64url → `bp_` prefix → HMAC-SHA-256 storage hash → INSERT sessions). Bottom half = validation with prefix-dispatch (Valkey cache hot path, Mongo cold path, legacy-store fallback only for pre-prefix tokens). Embedded rationale block in the middle explains why each design choice — see Part II §4.6.
 
 Source: [`token-gen-validate-flow.drawio`](./diagrams/token-gen-validate-flow.drawio) · PNG: [`token-gen-validate-flow.drawio.png`](./diagrams/token-gen-validate-flow.drawio.png)
 
@@ -372,9 +372,9 @@ The legacy system is Rocket.Chat. Confirmed behavior the migration must honor:
 | Bot/admin **identity** | Stays in the shared `users` collection (roles distinguish admin/bot/user) | Every downstream service resolves accounts through the cached `userstore`; a second identity collection forces double lookups and breaks display-name/federation resolution. |
 | **Password material** | `users.services.password.bcrypt` (legacy schema path, in-place; DECIDED 2026-06-24, §4.1) | Internal-only system; bot passwords are machine-generated with strong entropy → bcrypt-10 is computationally infeasible to reverse. Collapsing into `users` eliminates schema migration for the password side, the credentials-extraction step, and every "credentials vs identity" coherency problem. Reasoning + accepted costs in §4.4. |
 | **Sessions** | New `sessions` collection, **one doc per session** keyed by a per-row token hash. Dual-hash scheme (§4.6): legacy rows use `base64(sha256(token))`, native `v1` rows use `base64(HMAC-SHA-256(server_secret, token))`. **Configurable per-account cap with FIFO eviction by `issuedAt`** — default 100, env-tunable via `SESSIONS_MAX_PER_ACCOUNT` (§5.6). **Sessions are permanent** until cap-evicted or admin-revoked; no time-based expiry. **Validate is pure read** — Valkey hit (refreshing in-memory TTL via `GETEX`) or Mongo `findOne({_id: hash})` on miss; no Mongo writes on the hot path. | O(1) lookup independent of session count (validate reads sessions by `_id` regardless of cap); per-session + per-account revocation. Bounded users-doc size (sessions can't bloat the identity doc that every nextgen service caches). Cap bounds account-scope growth (essential since sessions are permanent); FIFO naturally targets old orphaned tokens from prior pod restarts. Bot SDKs that don't auto-relogin on 401 stay working forever as long as the session row exists. Dual hash preserves bit-for-bit legacy compatibility while raising the storage-leak bar for new tokens. Replaces the legacy hardcoded 50-cap stored as a `loginTokens[]` array on the user doc (O(n) scan per validate). |
-| **Token wire format** | Native `v1` tokens carry a `bp1_` namespace prefix (`bp1_<43-char base64url of 32 random bytes>`); legacy tokens unchanged (§4.6) | Prefix unlocks a single-store fast path for native tokens (no legacy fallback lookup), enables forward-versioning (`bp2_`…), and is detected by every standard secret-scanner. |
+| **Token wire format** | Per-class unversioned prefixes: **`bp_<43-char base64url>`** for bot session tokens, **`ad_<43-char base64url>`** for admin session tokens; legacy tokens unchanged (§4.6) | Class is self-evident from the `X-Auth-Token` prefix — no DB lookup needed to know whether the bearer is bot or admin. Unlocks a single-store fast path (no legacy fallback lookup), and the prefix is detected by every standard secret-scanner. **No version digit** (`bp_`, not `bp1_`) — the login mechanism isn't planned to rotate; YAGNI. |
 | **Scope** | Both surfaces (password on `users`, sessions collection) are **account-agnostic** (admins *and* bots) | The legacy login authenticates admins too — shared password-login infrastructure, not bot-only. |
-| **NATS JWT** | **Minted by `auth-service` only** — never by `botplatform-service`, never returned from `/api/v1/login` or `/dev-login`. `auth-service POST /auth` is extended with a `kind` discriminator: `kind:"sso"` mints from an OIDC bearer (existing humans), `kind:"bot"` mints from a bp1_ session token (after `auth-service` calls `botplatform-service /v1/auth/validate`). See §5.2. **Only flow B (bot account used inside the chat frontend) needs this** — flow A pure-REST bot SDK pods never request a JWT. | Single signing key, single minter (blast-radius isolation, §7 Option B rationale). The bot SDK is REST-only — JWT mint stays out of the login surface. Reuses the existing JWT machinery and grants infrastructure on `auth-service`; bot-kind just adds one validator branch that delegates to `botplatform-service`. |
+| **NATS JWT** | **Minted by `auth-service` only** — never by `botplatform-service`, never returned from `/api/v1/login` or `/dev-login`. `auth-service POST /auth` takes a `kind` discriminator with **three values**: `sso` (OIDC bearer → `chat.user.{account}.>`), `bot` (`bp_…` session token → `chat.bot.{token}.>`), `admin` (`ad_…` session token → `chat.>` god-mode). For `kind:"bot"` and `kind:"admin"`, `auth-service` calls back into `botplatform-service /v1/auth/validate` before minting. See §5.2. **Only chat-frontend callers need this** — bot SDK pods (flow A) never request a JWT. | Single signing key, single minter (blast-radius isolation, §7 Option B rationale). The bot SDK is REST-only — JWT mint stays out of the login surface. Reuses the existing JWT machinery and grants infrastructure on `auth-service`; bot/admin kinds just add validator branches that delegate to `botplatform-service`. |
 | **Validation hot path** | Mongo durable + **read-through cache (in-pod LRU + Valkey)** | Every REST call validates a token; a Mongo read per call is the bottleneck (§9.3). |
 
 ---
@@ -472,14 +472,14 @@ Two formats coexist for the duration of the hybrid phase. Both are stateful opaq
 
 | Aspect | Legacy (`scheme:"legacy"`) | Native v1 (`scheme:"v1"`) |
 |---|---|---|
-| Wire format | Opaque random string (RC/Meteor shape) — no prefix | **`bp1_<43-char base64url of 32 random bytes>`** (256 bits of entropy) |
+| Wire format | Opaque random string (RC/Meteor shape) — no prefix | **`bp_<43-char base64url of 32 random bytes>`** (256 bits of entropy) |
 | Storage hash | `base64(sha256(rawToken))` — Meteor `Accounts._hashLoginToken`, byte-for-byte | **`base64(HMAC-SHA-256(server_secret, rawToken))`** |
 | Source | Imported from `users.services.resume.loginTokens[]` (§6.2) | Issued by `botplatform-service` on every fresh login (§5.1) |
 
-**Why the `bp1_` prefix on new tokens:**
-- **Validation fast-path.** Validator inspects the token: starts with `bp1_` → look up in the v1 namespace **only** (HMAC hash); else legacy → SHA-256 hash, our store first then legacy-store fallback. No double-lookup on native tokens.
-- **Forward versioning.** When (not if) the token shape rotates — new entropy length, embedded checksum, algorithm change — `bp1_` → `bp2_` lets both formats coexist with zero ambiguity at the validator.
-- **Leaked-secret detection.** GitHub secret scanning, gitleaks, trufflehog all key off prefixes. A `bp1_…` value in a public repo gets flagged automatically. A bare base64 string doesn't.
+**Why the `bp_` prefix on new tokens:**
+- **Validation fast-path.** Validator inspects the token: starts with `bp_` → look up in the v1 namespace **only** (HMAC hash); else legacy → SHA-256 hash, our store first then legacy-store fallback. No double-lookup on native tokens.
+- **Forward versioning.** When (not if) the token shape rotates — new entropy length, embedded checksum, algorithm change — `bp_` → `(future bp_v2 alt)` lets both formats coexist with zero ambiguity at the validator.
+- **Leaked-secret detection.** GitHub secret scanning, gitleaks, trufflehog all key off prefixes. A `bp_…` value in a public repo gets flagged automatically. A bare base64 string doesn't.
 - Cost: 4 bytes on the wire. Negligible.
 
 **Why HMAC-SHA-256 storage for v1 (not plain SHA-256):**
@@ -563,7 +563,7 @@ PR #295 introduces `subject.IsValidAccountToken` (rejects accounts containing `.
 1. Client `POST`s `{ user, password }` (plaintext **or** RC digest form) to **`POST /api/v1/login`** (the confirmed path, §12 Q1).
 2. Auth service loads the user by account from the `users` collection; reads `services.password.bcrypt`; derives `sha256_hex(pw)` (or uses the supplied digest); `bcrypt.CompareHashAndPassword` against the bcrypt hash. Constant-time; uniform error on unknown-account vs bad-password (dummy compare on miss).
 3. **Provisioning gate (when `REQUIRE_PROVISIONED=true`, default):** same `users` row, check `siteId == SITE_ID`. **Miss → `403 account_not_provisioned`.** Store error → **fail closed** (same `403`, loud server-side log). Disabling the gate logs a loud startup warning. Mirrors the auth-service gate from PR #295.
-4. On success: generate a raw v1 token (§4.6 — `bp1_<43-char base64url>`), compute `hashedToken = base64(HMAC-SHA-256(server_secret, raw))`.
+4. On success: generate a raw v1 token (§4.6 — `bp_<43-char base64url>`), compute `hashedToken = base64(HMAC-SHA-256(server_secret, raw))`.
 5. **INSERT the session row + enforce the cap (§5.6):**
    ```js
    db.sessions.insertOne({
@@ -604,7 +604,7 @@ POST /auth
 POST /auth
 {
   "kind":          "bot",                 // selects the botplatform /v1/auth/validate branch
-  "token":         "<bp1_… session>",     // the X-Auth-Token from the bot's prior /api/v1/login
+  "token":         "<bp_… session>",     // the X-Auth-Token from the bot's prior /api/v1/login
   "natsPublicKey": "<43-char nkey>"
 }
 
@@ -651,7 +651,7 @@ POST /auth
 Prefix-dispatch the hash function (§4.6) then look up the sessions row directly by `_id`:
 
 ```
-h := hashFor(xAuthToken)                                    // HMAC for "bp1_*", SHA-256 otherwise
+h := hashFor(xAuthToken)                                    // HMAC for "bp_*", SHA-256 otherwise
 cached := valkey.GETEX(h, EX=5min)                          // get + refresh in-memory TTL (Valkey op, no Mongo write)
 if cached != nil:
     if xUserId != "" && xUserId != cached.userId -> 401     // sanity check
@@ -665,7 +665,7 @@ if s != nil:
     return principal
 
 // Token hash not found in our store
-if !hasPrefix(xAuthToken, "bp1_"):
+if !hasPrefix(xAuthToken, "bp_"):
     s = legacyStore.Validate(xAuthToken, xUserId)            // legacy-fallback (Part III §4.3)
     if s != nil: return s
 return 401
@@ -758,9 +758,9 @@ The identity-sync that PR #295 wires up already carries `services.password.*` + 
 
 Live legacy sessions DO need to land in the new `sessions` collection so existing bot tokens validate immediately on nextgen with zero re-login. The migration job iterates legacy `users.services.resume.loginTokens[]` and inserts one `sessions` row per non-PAT entry, **keeping the legacy `hashedToken` verbatim as `_id`** (`base64(sha256(token))`). See the runbook for the import script, allow-list filter, idempotency, and reconciliation queries.
 
-Bot tokens in-flight at cutover continue to validate: the bot sends `X-Auth-Token` + `X-User-Id`; nextgen computes `h = base64(sha256(token))` (no `bp1_` prefix → legacy hash function), does `sessions.findOne({_id: h})`, returns the principal.
+Bot tokens in-flight at cutover continue to validate: the bot sends `X-Auth-Token` + `X-User-Id`; nextgen computes `h = base64(sha256(token))` (no `bp_` prefix → legacy hash function), does `sessions.findOne({_id: h})`, returns the principal.
 
-PATs (`type:"personalAccessToken"` entries) are **skipped** by the import job (and by the legacy-fallback validator) — humans only, out of scope. New `bp1_` logins under nextgen create fresh `sessions` rows (`scheme:"v1"`); as the per-account cap fills, FIFO eviction by `issuedAt` drops the oldest entries first (typically the legacy ones imported at cutover) — clean phase-out with no separate sunset step.
+PATs (`type:"personalAccessToken"` entries) are **skipped** by the import job (and by the legacy-fallback validator) — humans only, out of scope. New `bp_` logins under nextgen create fresh `sessions` rows (`scheme:"v1"`); as the per-account cap fills, FIFO eviction by `issuedAt` drops the oldest entries first (typically the legacy ones imported at cutover) — clean phase-out with no separate sunset step.
 
 ### 6.3 Cutover source-of-truth (Q3, revised)
 
@@ -1039,7 +1039,7 @@ Clean no-downtime for the **login/session slice**. If both stacks also serve liv
 ### Decided 2026-06-16 (recommendation accepted)
 - **Q1b — Resume RPC.** ✅ **Defer the public `session.refresh` verb to the native-SDK milestone**; the underlying session→JWT exchange (§5.2) lives on `auth-service` as a `kind:"bot"` extension and ships when chat-frontend-with-bot-account (flow B) lands — not on `botplatform-service`. Legacy REST bots (flow A) use header reuse (§5.7) and never call this path.
 - **Q3 — Cutover source-of-truth.** ✅ **Split answer** (§6.3, REVISED 2026-06-24): **password material** stays on the shared `users.services.password.bcrypt` path — no credential extraction, identity-sync already carries it end-to-end. **Sessions** are bulk-imported once at cutover from the legacy `users.services.resume.loginTokens[]` array into the new nextgen-owned `sessions` collection (§6.2); imported rows keep the legacy `hashedToken` verbatim as `_id` so existing bot tokens validate immediately on nextgen with zero re-login. One write-authority guard: nextgen-side password changes (`/changepwd`, rotation) are disabled until 100% cutover to avoid simultaneous writes to the same `users` doc.
-- **Q10 — Token format.** ✅ **Two formats coexist** (§4.6): legacy tokens accepted byte-for-byte during the hybrid phase (Meteor `base64(sha256(token))` storage on the `loginTokens[].hashedToken` field); native `v1` tokens are **`bp1_<43-char base64url of 32 random bytes>`** stored as **`base64(HMAC-SHA-256(server_secret, token))`** on the same field, distinguished by an added `scheme:"v1"` entry attribute. The `bp1_` prefix is **always-on for new tokens** — it gates the validator's hash-dispatch (§5.3), enables forward-versioning (`bp2_`…), and is detected by standard secret scanners. HMAC storage hardens against offline attack on a DB dump. Legacy entries stay on plain SHA-256 storage byte-for-byte to preserve zero-bot-change compatibility.
+- **Q10 — Token format.** ✅ **Two formats coexist** (§4.6): legacy tokens accepted byte-for-byte during the hybrid phase (Meteor `base64(sha256(token))` storage on the `loginTokens[].hashedToken` field); native `v1` tokens are **`bp_<43-char base64url of 32 random bytes>`** stored as **`base64(HMAC-SHA-256(server_secret, token))`** on the same field, distinguished by an added `scheme:"v1"` entry attribute. The `bp_` prefix is **always-on for new tokens** — it gates the validator's hash-dispatch (§5.3), enables forward-versioning (`(future bp_v2 alt)`…), and is detected by standard secret scanners. HMAC storage hardens against offline attack on a DB dump. Legacy entries stay on plain SHA-256 storage byte-for-byte to preserve zero-bot-change compatibility.
 - **Q12 — WebSocket validation.** ✅ WS server **calls `/v1/auth/validate`** (Part III §7). *Wired during implementation/migration — not a design blocker.*
 - **Q13 — REST→NATS bridge ownership.** ✅ Bridge lives in **`Server`/data-plane track**, never our auth service (Part III §4.1). *Wired during implementation/migration — not a design blocker.*
 
@@ -1150,7 +1150,7 @@ Gateway→handler principal injection rides as **NATS message headers** (not bod
 
 **Token issuance (v1):**
 ```go
-raw := "bp1_" + base64url.NoPadding(crypto/rand.Read(32 bytes))   // 4 + 43 = 47 chars
+raw := "bp_" + base64url.NoPadding(crypto/rand.Read(32 bytes))   // 4 + 43 = 47 chars
 h   := base64.StdEncoding(hmac_sha256(server_secret, raw))        // 44 chars, stored as sessions._id
 ```
 
@@ -1158,7 +1158,7 @@ h   := base64.StdEncoding(hmac_sha256(server_secret, raw))        // 44 chars, s
 - `legacy` rows: `tokenHash = base64.StdEncoding(sha256(rawToken))` — Meteor `Accounts._hashLoginToken`, byte-for-byte (golden fixture gates the implementation, §18).
 - `v1` rows: `tokenHash = base64.StdEncoding(hmac_sha256(server_secret, rawToken))`.
 
-The validator dispatches on the `bp1_` wire prefix to pick the hash function (§5.3); no hash is ever computed both ways for the same token.
+The validator dispatches on the `bp_` wire prefix to pick the hash function (§5.3); no hash is ever computed both ways for the same token.
 
 **Password verify:** ✅ confirmed flow.
 ```go
@@ -1169,7 +1169,7 @@ i.e. **SHA-256 the plaintext → hex string, then `bcrypt.CompareHashAndPassword
 
 **Session validation (gateway hot path):**
 ```go
-h := tokenHashFor(xAuthToken)            // §5.3: HMAC for "bp1_*", SHA-256 otherwise
+h := tokenHashFor(xAuthToken)            // §5.3: HMAC for "bp_*", SHA-256 otherwise
 hit := valkey.GETEX(h, EX=5m)            // hot path; GETEX refreshes the in-memory TTL (no Mongo write)
 if hit != nil:
     return principal(hit)
@@ -1179,7 +1179,7 @@ if s != nil:
     principal := buildPrincipal(s)        // {userId, account, roles, class, siteId}
     valkey.SETEX(h, principal, 5m)        // populate cache
     return principal
-if !hasPrefix(xAuthToken, "bp1_"):       // legacy: fall back to the legacy-store probe (Part III §4.3)
+if !hasPrefix(xAuthToken, "bp_"):       // legacy: fall back to the legacy-store probe (Part III §4.3)
     s := legacyStore.Validate(xAuthToken, xUserId)
     if s != nil: return principal(s)
 return 401 invalidCredentials
@@ -1237,8 +1237,8 @@ Sync vs async is **not** the differentiator here. Both HTTP and NATS request/rep
 - **Golden hash fixtures** — both schemes (§4.6) gated by golden tests, **first tests; gate all store code**:
   - `TestHashLegacyToken`: a known `(rawToken → base64(sha256))` pair proving parity with Meteor `Accounts._hashLoginToken`.
   - `TestHashV1Token`: a known `(server_secret, rawToken → base64(hmac_sha256))` pair locking the v1 storage hash.
-  - `TestTokenPrefixDispatch`: validator picks the correct hash function from the wire prefix (`bp1_` → HMAC; else SHA-256).
-  - `TestV1TokenShape`: issued v1 tokens start with `bp1_`, total length 47, base64url body has 256 bits of entropy (statistical check across N samples).
+  - `TestTokenPrefixDispatch`: validator picks the correct hash function from the wire prefix (`bp_` → HMAC; else SHA-256).
+  - `TestV1TokenShape`: issued v1 tokens start with `bp_`, total length 47, base64url body has 256 bits of entropy (statistical check across N samples).
 - **Password verify** — `TestVerifyPassword` (table): plaintext-correct, digest-correct, wrong password, unknown account (uniform timing/error), `requirePasswordChange` surfaced.
 - **Migration filter** — `TestImportLoginTokens_SkipsPAT`: a seed mixing `type:""` and `type:"personalAccessToken"` entries on legacy `users.services.resume.loginTokens[]`; the importer (§6.2) writes only the regular tokens as `sessions` rows; PATs are silently skipped.
 - **Rate limit** — `TestLoginRateLimit`: 5 failures → 6th is locked out (uniform error); successful login resets the counter; lockout expires after the window.
@@ -1445,7 +1445,7 @@ keep both working through the transition
 
 ## 6. Data-flow summary
 - **`/dev-login`** → our service: show HTML form, validate credentials, **provisioning gate** (`{userId, siteId}` ∈ this site's `users` collection; else `403 account_not_provisioned`), issue token + set cookie.
-- **`/api/v1/login` / `/v1/bot/login`** → our service: validate credentials, **same provisioning gate**, issue v1 `bp1_…` token (Part II §4.3, §5.1).
+- **`/api/v1/login` / `/v1/bot/login`** → our service: validate credentials, **same provisioning gate**, issue v1 `bp_…` token (Part II §4.3, §5.1).
 - **`/api/v2/*`** → **ApiGW**: call our `/v1/auth/validate` (Valkey/Mongo + legacy fallback) → route to `Server` with principal headers (`X-User-Id`, `X-Account`, `X-Principal-Class`) under Istio mTLS → room/message logic runs there. *(We're not in this path beyond the validate call.)*
 - **WebSocket** → websocket server :8899: sends auth → calls our `/v1/auth/validate` → accept/reject + cache principal (including `class`) for the connection lifetime; class tagged on every published message.
 
@@ -1462,9 +1462,9 @@ Unlike humans (PR #295, portal-service → auth-service → NATS), **bots skip t
 ### Q10 — Is the new token format the same as legacy, or different? ✅ DECIDED 2026-06-16
 **Two formats coexist (Part II §4.6):** legacy tokens accepted byte-for-byte for compatibility; native v1 tokens use a versioned wire format and a keyed storage hash.
 - Legacy: opaque random string, stored `base64(sha256(token))`. Unchanged.
-- v1: **`bp1_<43-char base64url of 32 random bytes>`**, stored `base64(HMAC-SHA-256(server_secret, token))`.
+- v1: **`bp_<43-char base64url of 32 random bytes>`**, stored `base64(HMAC-SHA-256(server_secret, token))`.
 
-Bots still treat the token as opaque (no client change) — the `bp1_` prefix doesn't affect SDK code. The validator dispatches on the prefix (Part II §5.3): `bp1_*` → HMAC store only (no legacy fallback); else → SHA-256 store, then legacy fallback. The earlier "optional fast-path" framing is superseded — the prefix is **always-on** for new tokens because it also gives forward-versioning and secret-scanner detection, not just the dual-lookup elimination.
+Bots still treat the token as opaque (no client change) — the `bp_` prefix doesn't affect SDK code. The validator dispatches on the prefix (Part II §5.3): `bp_*` → HMAC store only (no legacy fallback); else → SHA-256 store, then legacy fallback. The earlier "optional fast-path" framing is superseded — the prefix is **always-on** for new tokens because it also gives forward-versioning and secret-scanner detection, not just the dual-lookup elimination.
 
 ### Q11 — `/api/v1` support — login only, or other endpoints too? ✅ resolved
 **`/api/v1/login` only** (a backward-compat login shim), with `/v1/bot/login` as the new path; **all data calls go via `/api/v2/*` → `botplatform-server`**. The `/api/v2/*` endpoints are the **REST APIs exposed by the legacy v2 code** (the v2 Go repo); `botplatform-server` is itself a reverse proxy that forwards to **`/api/v2/`** (not `/api/v1`). So bots never hit `/api/v1/*` data routes and our service never proxies them. Whether the login path is `/v1/bot/login` vs reusing `/api/v1/login` can be handled at the **Istio `VirtualService`** layer (same backend, different route), so bots needn't change URLs.
