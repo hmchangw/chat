@@ -1,13 +1,15 @@
-# Phase 2 — thread_subscriptions
+# Phase 3 — thread_subscriptions
 # Source:  rocketchat.tsmc_thread_subscriptions
 # Target:  chat.thread_subscriptions
-# Depends: chat.users must exist (Phase 1)
-#          chat.thread_rooms should exist to resolve threadRoomId for legacy docs
-#          (run after 02-thread-rooms in run-migration.sh)
+# Depends: chat.thread_rooms must be complete (Phase 2 gate)
+#          chat.users must exist (Phase 1)
 #
-# If a source document has threadRoomId already set, it is copied directly.
+# For each source document: if threadRoomId is already set it is copied directly.
 # If it is empty (legacy docs), the job looks up chat.thread_rooms by parentMessageId
 # to derive the value. Threads outside the message window are skipped with a warning.
+#
+# Runs in parallel with the four Cassandra jobs — both groups depend only on
+# thread_rooms being complete, not on each other.
 apiVersion: batch/v1
 kind: Job
 metadata:

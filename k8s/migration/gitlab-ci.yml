@@ -32,12 +32,14 @@
 #       │
 #   phase-1       → users / rooms / subscriptions / avatars  (all parallel)
 #       │
-#   phase-2       → room-members / thread-rooms / thread-subscriptions  (all parallel)
-#       │             thread-rooms is the critical gate (slowest — scans 216M messages)
+#   phase-2       → room-members / thread-rooms  (parallel)
+#       │             thread-rooms is the critical gate (scans 216M messages)
+#       │             thread_subscriptions needs thread_rooms — it runs in Phase 3
 #   confirm-index → MANUAL GATE: operator creates the index, then approves to continue
 #       │
-#   phase-3       → messages-by-id / messages-by-room / pinned-messages / thread-messages
-#                   (all parallel, all write to Cassandra)
+#   phase-3       → thread-subscriptions / messages-by-id / messages-by-room /
+#                   pinned-messages / thread-messages  (all 5 parallel)
+#                   thread-subscriptions resolves threadRoomId from thread_rooms
 #
 # Each job deletes any stale K8s Job from a previous run, applies the new Job,
 # and blocks (kubectl wait) until the pod completes or the timeout is reached.
@@ -62,7 +64,7 @@ variables:
   # Per-phase kubectl wait timeouts. Adjust if your cluster is slower.
   PHASE1_TIMEOUT: "2h"
   PHASE2_TIMEOUT: "6h"    # thread-rooms scans 216M messages — allow plenty of time
-  PHASE3_TIMEOUT: "10h"   # Cassandra writes are the dominant cost
+  PHASE3_TIMEOUT: "10h"   # Cassandra writes are the dominant cost; thread-subscriptions finishes well within this
 
 # ── Shared kubectl setup ──────────────────────────────────────────────────────
 # KUBECONFIG is a GitLab "File" type variable — its value is written to a temp
@@ -180,9 +182,10 @@ phase-1:avatars:
     - *run-job
 
 # ── Stage: phase-2 ────────────────────────────────────────────────────────────
-# All three jobs run in parallel. Stage completes when ALL three are done.
-# thread-rooms is the critical gate — it is the slowest (scans 216M source messages).
-# Typical duration: 30–60 minutes.
+# Two jobs run in parallel. Stage completes when BOTH are done.
+# thread-rooms is the critical gate — slowest job, scans 216M source messages.
+# thread_subscriptions is NOT here: it needs thread_rooms complete → moved to phase-3.
+# Typical duration: 30–60 minutes (dominated by thread-rooms).
 
 phase-2:room-members:
   extends: .kubectl
@@ -198,14 +201,6 @@ phase-2:thread-rooms:
   timeout: 6h     # critical gate — scans all thread-root messages in the window
   script:
     - JOB_NAME=migrate-thread-rooms MANIFEST=$MIGRATION_DIR/jobs/02-thread-rooms.yaml WAIT_TIMEOUT=$PHASE2_TIMEOUT
-    - *run-job
-
-phase-2:thread-subscriptions:
-  extends: .kubectl
-  stage: phase-2
-  timeout: 2h
-  script:
-    - JOB_NAME=migrate-thread-subscriptions MANIFEST=$MIGRATION_DIR/jobs/02-thread-subscriptions.yaml WAIT_TIMEOUT=$PHASE2_TIMEOUT
     - *run-job
 
 # ── Stage: confirm-index ──────────────────────────────────────────────────────
@@ -242,9 +237,19 @@ confirm-index:ready:
       echo "======================================================"
 
 # ── Stage: phase-3 ────────────────────────────────────────────────────────────
-# All four Cassandra jobs run in parallel. Stage completes when ALL four are done.
+# Five jobs run in parallel. Stage completes when ALL five are done.
+# thread-subscriptions joins here because it needs thread_rooms (Phase 2 gate),
+# exactly the same dependency as the four Cassandra jobs.
 # messages-by-id and messages-by-room are the dominant cost (~80-100M rows each).
 # Typical duration: 1.5–2 hours (2-year window) or 45 min–1 hour (1-year window).
+
+phase-3:thread-subscriptions:
+  extends: .kubectl
+  stage: phase-3
+  timeout: 2h
+  script:
+    - JOB_NAME=migrate-thread-subscriptions MANIFEST=$MIGRATION_DIR/jobs/03-thread-subscriptions.yaml WAIT_TIMEOUT=$PHASE3_TIMEOUT
+    - *run-job
 
 phase-3:messages-by-id:
   extends: .kubectl

@@ -92,17 +92,17 @@ log "=== Phase 1 complete ==="
 #
 log "Phase 1 validation: PASSED (add real count checks above)"
 
-# ── Phase 2: Derived + dependent — all parallel, need target.users ────────────
-log "=== Phase 2: room_members / thread_rooms / thread_subscriptions ==="
+# ── Phase 2: Derived + dependent — parallel, need target.users ───────────────
+# thread_subscriptions is NOT here: it needs thread_rooms complete first.
+# It runs in Phase 3 alongside the Cassandra jobs.
+log "=== Phase 2: room_members / thread_rooms ==="
 apply_job "$JOBS_DIR/02-room-members.yaml"
 apply_job "$JOBS_DIR/02-thread-rooms.yaml"
-apply_job "$JOBS_DIR/02-thread-subscriptions.yaml"
 
 # thread_rooms is the critical gate — Phase 3 cannot start until it finishes.
-# room_members and thread_subscriptions run in parallel and usually finish faster.
-wait_for_job migrate-room-members        "$PHASE2_TIMEOUT"
-wait_for_job migrate-thread-subscriptions "$PHASE2_TIMEOUT"
-wait_for_job migrate-thread-rooms        "$PHASE2_TIMEOUT"   # wait last — it's the slowest
+# room_members runs in parallel and usually finishes faster.
+wait_for_job migrate-room-members "$PHASE2_TIMEOUT"
+wait_for_job migrate-thread-rooms "$PHASE2_TIMEOUT"   # wait last — it's the slowest
 
 log "=== Phase 2 complete ==="
 
@@ -120,17 +120,21 @@ log "=== Phase 2 complete ==="
 log "REMINDER: ensure thread_rooms.parentMessageId index exists before Phase 3"
 read -rp "Press Enter to confirm the index is ready and continue to Phase 3 ..."
 
-# ── Phase 3: Cassandra message tables — all parallel, need thread_rooms ────────
-log "=== Phase 3: messages_by_id / messages_by_room / pinned / thread_messages ==="
+# ── Phase 3: all parallel, all depend on thread_rooms (Phase 2 gate) ──────────
+# thread_subscriptions joins here because it resolves threadRoomId from thread_rooms,
+# the same dependency as the four Cassandra jobs. None depend on each other.
+log "=== Phase 3: thread_subscriptions / messages_by_id / messages_by_room / pinned / thread_messages ==="
+apply_job "$JOBS_DIR/03-thread-subscriptions.yaml"
 apply_job "$JOBS_DIR/03-messages-by-id.yaml"
 apply_job "$JOBS_DIR/03-messages-by-room.yaml"
 apply_job "$JOBS_DIR/03-pinned-messages.yaml"
 apply_job "$JOBS_DIR/03-thread-messages.yaml"
 
-wait_for_job migrate-messages-by-id   "$PHASE3_TIMEOUT"
-wait_for_job migrate-messages-by-room "$PHASE3_TIMEOUT"
-wait_for_job migrate-pinned-messages  "$PHASE3_TIMEOUT"
-wait_for_job migrate-thread-messages  "$PHASE3_TIMEOUT"
+wait_for_job migrate-thread-subscriptions "$PHASE3_TIMEOUT"
+wait_for_job migrate-messages-by-id       "$PHASE3_TIMEOUT"
+wait_for_job migrate-messages-by-room     "$PHASE3_TIMEOUT"
+wait_for_job migrate-pinned-messages      "$PHASE3_TIMEOUT"
+wait_for_job migrate-thread-messages      "$PHASE3_TIMEOUT"
 
 log "=== Phase 3 complete ==="
 

@@ -243,14 +243,15 @@ for job in p1_jobs:
           f"{n}: secret keys = {{SOURCE_MONGO_URI, TARGET_MONGO_URI}}")
 
 
-print("\n=== Phase 2 jobs (weight 20, 3 jobs) ===")
+print("\n=== Phase 2 jobs (weight 20, 2 jobs) ===")
 p2_docs = load_docs(TEMPLATES / "phase2-jobs.yaml")
 p2_jobs = get_jobs(p2_docs)
-check(len(p2_jobs) == 3, f"Phase 2: 3 Jobs (got {len(p2_jobs)})")
-expected_p2 = {f"{RELEASE_NAME}-p2-room-members", f"{RELEASE_NAME}-p2-thread-rooms",
-               f"{RELEASE_NAME}-p2-thread-subscriptions"}
+check(len(p2_jobs) == 2, f"Phase 2: 2 Jobs (got {len(p2_jobs)})")
+expected_p2 = {f"{RELEASE_NAME}-p2-room-members", f"{RELEASE_NAME}-p2-thread-rooms"}
 got_p2 = {j["metadata"]["name"] for j in p2_jobs}
 check(got_p2 == expected_p2, "Phase 2 job names correct")
+check(f"{RELEASE_NAME}-p2-thread-subscriptions" not in got_p2,
+      "Phase 2 does NOT contain thread-subscriptions (moved to Phase 3)")
 for job in p2_jobs:
     n = job["metadata"]["name"]
     check(hook_weight(job) == "20",           f"{n}: hook-weight=20")
@@ -263,16 +264,20 @@ for job in p2_jobs:
           f"{n}: secret keys = {{SOURCE_MONGO_URI, TARGET_MONGO_URI}}")
 
 
-print("\n=== Phase 3 jobs (weight 30, 4 jobs) ===")
+print("\n=== Phase 3 jobs (weight 30, 5 jobs) ===")
 p3_docs = load_docs(TEMPLATES / "phase3-jobs.yaml")
 p3_jobs = get_jobs(p3_docs)
-check(len(p3_jobs) == 4, f"Phase 3: 4 Jobs (got {len(p3_jobs)})")
-expected_p3 = {f"{RELEASE_NAME}-p3-messages-by-id", f"{RELEASE_NAME}-p3-messages-by-room",
-               f"{RELEASE_NAME}-p3-pinned-messages", f"{RELEASE_NAME}-p3-thread-messages"}
+check(len(p3_jobs) == 5, f"Phase 3: 5 Jobs (got {len(p3_jobs)})")
+CASSANDRA_JOB_NAMES = {f"{RELEASE_NAME}-p3-messages-by-id", f"{RELEASE_NAME}-p3-messages-by-room",
+                       f"{RELEASE_NAME}-p3-pinned-messages", f"{RELEASE_NAME}-p3-thread-messages"}
+expected_p3 = CASSANDRA_JOB_NAMES | {f"{RELEASE_NAME}-p3-thread-subscriptions"}
 got_p3 = {j["metadata"]["name"] for j in p3_jobs}
-check(got_p3 == expected_p3, "Phase 3 job names correct")
+check(got_p3 == expected_p3, "Phase 3 job names correct (4 Cassandra + thread-subscriptions)")
+
 CASSANDRA_KEYS = {"SOURCE_MONGO_URI", "TARGET_MONGO_URI",
                   "CASSANDRA_HOSTS", "CASSANDRA_USER", "CASSANDRA_PASSWORD"}
+MONGO_KEYS     = {"SOURCE_MONGO_URI", "TARGET_MONGO_URI"}
+
 for job in p3_jobs:
     n = job["metadata"]["name"]
     check(hook_weight(job) == "30",           f"{n}: hook-weight=30")
@@ -281,8 +286,12 @@ for job in p3_jobs:
     check(job["spec"]["backoffLimit"] == 2,   f"{n}: backoffLimit=2")
     check(has_configmap_envfrom(job),         f"{n}: envFrom ConfigMap")
     keys = secret_env_keys(job)
-    check(keys == CASSANDRA_KEYS,
-          f"{n}: secret keys include all 5 Cassandra vars")
+    if n == f"{RELEASE_NAME}-p3-thread-subscriptions":
+        check(keys == MONGO_KEYS,
+              f"{n}: secret keys = {{SOURCE_MONGO_URI, TARGET_MONGO_URI}} (MongoDB only)")
+    else:
+        check(keys == CASSANDRA_KEYS,
+              f"{n}: secret keys include all 5 Cassandra vars")
 
 
 print("\n=== Phase ordering invariant ===")

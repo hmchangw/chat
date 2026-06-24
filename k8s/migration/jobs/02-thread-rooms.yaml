@@ -8,9 +8,14 @@
 # window and derives one thread_rooms document per thread.
 # It also computes lastMsgAt / lastMsgId per thread inline during the scan.
 #
+# Phase 3 depends on this job for two reasons:
+#   1. All four Cassandra jobs resolve thread_room_id via thread_rooms.parentMessageId.
+#   2. thread_subscriptions (also Phase 3) derives threadRoomId for legacy docs
+#      by looking up chat.thread_rooms by parentMessageId.
+#
 # After this job completes, run-migration.sh creates an index before Phase 3:
 #   db.thread_rooms.createIndex({ parentMessageId: 1 })
-# This index is required by all four Phase 3 Cassandra jobs for fast lookups.
+# This index is required by all five Phase 3 jobs for fast lookups.
 apiVersion: batch/v1
 kind: Job
 metadata:

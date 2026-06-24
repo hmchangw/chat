@@ -1,8 +1,8 @@
 # ── Phase 2 — Derived + Dependent (hook-weight 20) ───────────────────────────
 # Helm only starts these after ALL weight-10 (Phase 1) hooks succeed.
-# thread-rooms is the CRITICAL gate — Phase 3 won't start until it completes
-# because all three Phase 2 jobs must finish before weight-30 begins.
-# Mirrors: 02-room-members, 02-thread-rooms, 02-thread-subscriptions
+# thread-rooms is the CRITICAL gate for Phase 3 (all 5 jobs need it).
+# thread-subscriptions is NOT here — it depends on thread_rooms → moved to weight-30.
+# Mirrors: 02-room-members, 02-thread-rooms
 ---
 apiVersion: batch/v1
 kind: Job
@@ -78,43 +78,6 @@ spec:
           echo "  TARGET_MONGO_URI set: $([ -n "$TARGET_MONGO_URI" ] && echo YES || echo NO)"
           sleep {{ .Values.phase2SleepSeconds }}
           echo "[migrate-thread-rooms] DONE — thread_rooms collection ready for Phase 3"
-        {{- include "migration.commonEnv" . | nindent 8 }}
-        resources:
-          requests: { cpu: "100m", memory: "64Mi" }
-          limits:   { cpu: "200m", memory: "128Mi" }
----
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: {{ .Release.Name }}-p2-thread-subscriptions
-  namespace: {{ .Values.namespace }}
-  labels:
-    {{- include "migration.labels" . | nindent 4 }}
-    migration/phase: "2"
-  annotations:
-    helm.sh/hook:               post-install
-    helm.sh/hook-weight:        "20"
-    helm.sh/hook-delete-policy: before-hook-creation
-spec:
-  backoffLimit: 2
-  template:
-    metadata:
-      labels:
-        migration/phase: "2"
-        migration/job: p2-thread-subscriptions
-    spec:
-      restartPolicy: OnFailure
-      containers:
-      - name: p2-thread-subscriptions
-        image: {{ .Values.image }}
-        command:
-        - /bin/sh
-        - -c
-        - |
-          echo "[migrate-thread-subscriptions] START — tsmc_thread_subscriptions → chat.thread_subscriptions"
-          echo "  SOURCE_MONGO_URI set: $([ -n "$SOURCE_MONGO_URI" ] && echo YES || echo NO)"
-          sleep {{ .Values.phase2SleepSeconds }}
-          echo "[migrate-thread-subscriptions] DONE"
         {{- include "migration.commonEnv" . | nindent 8 }}
         resources:
           requests: { cpu: "100m", memory: "64Mi" }

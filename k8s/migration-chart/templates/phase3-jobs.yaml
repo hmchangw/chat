@@ -1,7 +1,49 @@
-# ── Phase 3 — Cassandra writes (hook-weight 30) ───────────────────────────────
+# ── Phase 3 — thread_subscriptions + Cassandra writes (hook-weight 30) ────────
 # Helm only starts these after ALL weight-20 (Phase 2) hooks succeed.
-# All four Cassandra jobs run in parallel within this weight.
-# Mirrors: 03-messages-by-id, 03-messages-by-room, 03-pinned-messages, 03-thread-messages
+# All five jobs run in parallel — each depends only on thread_rooms (Phase 2 gate),
+# not on each other.
+# Mirrors: 03-thread-subscriptions, 03-messages-by-id, 03-messages-by-room,
+#          03-pinned-messages, 03-thread-messages
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-p3-thread-subscriptions
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "migration.labels" . | nindent 4 }}
+    migration/phase: "3"
+  annotations:
+    helm.sh/hook:               post-install
+    helm.sh/hook-weight:        "30"
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        migration/phase: "3"
+        migration/job: p3-thread-subscriptions
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: p3-thread-subscriptions
+        image: {{ .Values.image }}
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "[migrate-thread-subscriptions] START — tsmc_thread_subscriptions → chat.thread_subscriptions"
+          echo "  Depends on: chat.thread_rooms (Phase 2 gate passed)"
+          echo "  Resolves threadRoomId via thread_rooms.parentMessageId for legacy docs"
+          echo "  SOURCE_MONGO_URI set: $([ -n "$SOURCE_MONGO_URI" ] && echo YES || echo NO)"
+          echo "  TARGET_MONGO_URI set: $([ -n "$TARGET_MONGO_URI" ] && echo YES || echo NO)"
+          sleep {{ .Values.phase3SleepSeconds }}
+          echo "[migrate-thread-subscriptions] DONE"
+        {{- include "migration.commonEnv" . | nindent 8 }}
+        resources:
+          requests: { cpu: "100m", memory: "64Mi" }
+          limits:   { cpu: "200m", memory: "128Mi" }
 ---
 apiVersion: batch/v1
 kind: Job
