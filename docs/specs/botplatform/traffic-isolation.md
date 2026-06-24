@@ -502,9 +502,71 @@ The publisher namespace already being class-split (chat.user vs chat.bot) is wha
 
 ## 5. Per-service split plan
 
+### 5.0 Bot publish edge — core NATS R/R, no submit stream (DECIDED 2026-06-24)
+
+Bots use REST end-to-end from the bot SDK's POV (preserving legacy v2 REST semantics). The translation layer inside `bp-api` uses **core NATS request/reply** to talk to `message-gatekeeper` — **not** JetStream `js.Publish` — so bot publish errors return synchronously and fail-fast, matching legacy REST behavior bots already know.
+
+**Key consequence: there is NO `MESSAGES_BOT_{siteID}` JetStream submit stream.** The user-side `MESSAGES_{siteID}` stream (`pkg/stream/stream.go:15`) carries only `chat.user.*.room.*.{siteID}.msg.>` subjects — a parallel bot-side submit stream is not created, because bots never publish into JetStream at all.
+
+**Per-RPC transport for bot operations:**
+
+| Bot RPC category | Transport from bp-api | Examples |
+|---|---|---|
+| **Query / lookup** (read-only) | **Core NATS R/R** (already today's pattern in services) | `msg.history`, `msg.thread`, `msg.get`, `member.list`, `member.statuses`, `search.messages`, `search.rooms`, `user.profile.getByName`, `presence.query.batch`, `room.app.tabs` |
+| **Mutation with single sync response** (no fan-out) | **Core NATS R/R** | `member.add`, `member.remove`, `member.role-update`, `mute.toggle`, `favorite.toggle`, `room.rename`, `room.create`, `message.read`, `message.read-receipt` |
+| **Message publish** (fan-out required) | **Core NATS R/R to gatekeeper; gatekeeper synchronously publishes to JetStream `MESSAGES_CANONICAL_{siteID}` and waits for PubAck before replying to bot** | `msg.send`, `msg.edit`, `msg.delete`, `msg.react`, `msg.pin`, `msg.unpin` |
+
+**Flow for the message-publish case:**
+
+```text
+bot ──REST──▶ bp-api ──nc.Request("chat.bot.{account}.room.R.{siteID}.msg.send")──▶ message-gatekeeper
+                                                                                          │
+                                                                                          ▼
+                                                                              validate synchronously
+                                                                              (subject, IsValidBotAccount,
+                                                                               membership, payload schema)
+                                                                                          │
+                                                                ┌─────────────────────────┴─────────────────────────┐
+                                                              valid                                              invalid
+                                                                │                                                    │
+                                                                ▼                                                    ▼
+                                                  js.Publish("chat.msg.canonical.{siteID}.created", payload)   reply errcode (fail-fast)
+                                                                │                                                    │
+                                                                ▼                                                    └──▶ bp-api ──REST 4xx──▶ bot
+                                                  wait for PubAck (≤ ~5ms)
+                                                                │
+                                                                ▼
+                                                  reply { messageId, ok } via core NATS R/R
+                                                                │
+                                                                ▼
+                                                  bp-api ──REST 200──▶ bot
+```
+
+**Edge handling:**
+- **Gatekeeper unreachable** → `nc.Request` times out → bp-api returns `503` → bot's REST client retries.
+- **Validation rejection** → gatekeeper replies errcode on the R/R envelope → bp-api translates to REST `4xx` (`400 invalidPayload`, `403 notMember`, etc.) → bot fails fast, no retry.
+- **`js.Publish` to canonical fails** (JS leader election, disk full, etc.) → gatekeeper replies `503` on the R/R envelope → bp-api returns `503` → bot retries; idempotency on `messageId` prevents duplicate canonical writes on retry.
+
+**Why this shape vs the user-side JetStream submit path:**
+
+| Property | User publish (JetStream `MESSAGES_{siteID}` submit) | Bot publish (core NATS R/R) |
+|---|---|---|
+| **Failure mode** | Durable submit — message buffers in stream until gatekeeper consumes | Fail-fast — bp-api returns error immediately if gatekeeper unreachable |
+| **Optimistic UI support** | Browser shows "sending…", message persists across transient gatekeeper hiccups | N/A — bot has no UI, just needs sync yes/no |
+| **Backpressure** | Stream depth absorbs bursts; gatekeeper paces consumption | Gatekeeper rejects on overload → bot retries with backoff |
+| **Latency profile** | Submit-PubAck + async validate | One-shot validate + canonical-PubAck inline (~5–15ms typical) |
+| **Matches legacy contract** | N/A (no legacy for chat-frontend) | YES — bot SDK already expects sync REST success/failure |
+
+**The fan-out side is unchanged.** Once a message lands in `MESSAGES_CANONICAL_{siteID}` (regardless of whether the publisher was a user via the submit stream or a bot via core-NATS R/R), all downstream workers (`message-worker`, `broadcast-worker`, `notification-worker`, `search-sync-worker`, `outbox-worker`) consume durably with at-least-once + replay semantics. The shared canonical stream (Phase 1, §4.4a) carries both classes; consumers tag metrics by the `class` field on the canonical payload.
+
+**Implementation impact on `message-gatekeeper` (Phase 1):**
+- Existing JetStream pull-consumer on `MESSAGES_{siteID}` stream → **unchanged** (user submit path).
+- NEW core-NATS queue-subscribe on `chat.bot.*.room.*.{siteID}.msg.send` (and `.edit`/`.delete`/`.react`/`.pin`/`.unpin`) → **added** for bot R/R path; handler validates synchronously and publishes to `MESSAGES_CANONICAL_{siteID}` inline before replying.
+- Both paths produce the same canonical-stream event shape (with `class` set from sender lookup).
+
 ### 5.1 `message-gatekeeper` — STAYS SHARED through Phase 4, re-evaluated in Phase 5+
 
-`message-gatekeeper` consumes from the **upstream `MESSAGES_{siteID}` stream** with subjects `chat.user.*.room.*.{siteID}.msg.>` (`pkg/stream/stream.go:15`, `message-gatekeeper/main.go:138`). The `chat.user.…` segment here is the user-scoped RPC namespace — it's not (yet) a class token. Splitting message-gatekeeper at this layer requires either expanding the `pkg/subject` mirror to cover the `MsgSend`/`MsgSendWildcard` builders too, or rewriting publishers (the WS gateway) to route on class.
+`message-gatekeeper` consumes from the **upstream `MESSAGES_{siteID}` stream** with subjects `chat.user.*.room.*.{siteID}.msg.>` (`pkg/stream/stream.go:15`, `message-gatekeeper/main.go:138`) for **user** submissions, AND core-NATS queue-subscribes on `chat.bot.*.room.*.{siteID}.msg.>` for **bot** submissions (§5.0). The `chat.user.…` segment here is the user-scoped RPC namespace — it's not (yet) a class token. Splitting message-gatekeeper at this layer requires either expanding the `pkg/subject` mirror to cover the `MsgSend`/`MsgSendWildcard` builders too, or rewriting publishers (the WS gateway) to route on class.
 
 **Phase 1 decision:** message-gatekeeper **stays as a single Deployment** through Phase 4 of the rollout (Part I §9). It validates both human and bot messages, derives the sender's class from `model.IsBotAccount(account)` (`pkg/model/account.go:11`), and publishes to the **class-appropriate canonical stream** (§5.2 below). This is the cleanest seam:
 
@@ -521,56 +583,72 @@ if model.IsBotAccount(senderAccount) {
 canonicalSubj := subject.MsgCanonicalCreated(class, siteID)  // class-aware variant added in §4
 ```
 
+**Phase 1 update (DECIDED 2026-06-24, §4.4a):** the canonical stream is **shared** across classes in Phase 1, not split per class. Gatekeeper publishes to the single `MESSAGES_CANONICAL_{siteID}` stream with the existing `chat.msg.canonical.{siteID}.{event}` subject for BOTH user-originated and bot-originated messages; the `principal.class` field on the canonical payload preserves class information for downstream consumers' metric labels. The per-class subject variant (`chat.user.canonical.…` / `chat.bot.canonical.…`) is **deferred** until the §4.4a escape-hatch triggers a split.
+
 Phase 5+ (post-cutover) can re-evaluate: if shared message-gatekeeper saturation becomes a real production incident, then introduce a class-aware mirror in the `chat.user.*.room.…` namespace and split at that point. **Don't do it preemptively** — the per-class metrics dashboard (US6) tells you when it's needed.
 
 ### 5.2 `message-worker`
 
-| Aspect | -user Deployment | -bot Deployment |
-|---|---|---|
-| JetStream stream | `MESSAGES_CANONICAL_USER_{siteID}` | `MESSAGES_CANONICAL_BOT_{siteID}` |
-| JetStream consumer | durable `message-worker-user` on the USER stream | durable `message-worker-bot` on the BOT stream |
-| Concurrency | `MaxWorkers=50` (env, default per pool) | `MaxWorkers=200` |
-| Cassandra connection pool | cap 100 per pod | cap 200 per pod |
-| Env var | `WORKER_CLASS=user` | `WORKER_CLASS=bot` |
+**Phase 1 (DECIDED 2026-06-24, §4.4a): single shared Deployment.** `message-worker` runs as ONE Deployment consuming from the shared `MESSAGES_CANONICAL_{siteID}` stream — no `-user`/`-bot` split. Metrics tag class via the `principal.class` payload field. The per-class deployment table below is the **future design** that activates when the §4.4a escape hatch triggers a canonical-stream split.
 
-Streams are physically separate (§6) — neither stream can fill the other's storage budget, lag the other's consumers, or cross-class back-pressure publishes.
+| Aspect | Phase 1 (shared, current) | Phase N+ when split (per §4.4a escape hatch) — `-user` Deployment | Phase N+ when split — `-bot` Deployment |
+|---|---|---|---|
+| JetStream stream | `MESSAGES_CANONICAL_{siteID}` (shared) | `MESSAGES_CANONICAL_USER_{siteID}` | `MESSAGES_CANONICAL_BOT_{siteID}` |
+| JetStream consumer | durable `message-worker` on the shared stream | durable `message-worker-user` on the USER stream | durable `message-worker-bot` on the BOT stream |
+| Concurrency | `MaxWorkers=100` (combined load) | `MaxWorkers=50` per pool | `MaxWorkers=200` per pool |
+| Cassandra connection pool | cap 200 per pod | cap 100 per pod | cap 200 per pod |
+| Env var | `WORKER_CLASS` unset/`all` | `WORKER_CLASS=user` | `WORKER_CLASS=bot` |
+
+Phase 1 trade-off documented in §4.4a (no independent per-class scaling / failure domain — accepted for now). Per-class isolation activates only when measured noisy-neighbor pressure justifies the split.
 
 ### 5.3 `broadcast-worker`
 
-| Aspect | -user Deployment | -bot Deployment |
-|---|---|---|
-| JetStream stream | `MESSAGES_CANONICAL_USER_{siteID}` | `MESSAGES_CANONICAL_BOT_{siteID}` |
-| JetStream consumer | durable `broadcast-worker-user` on the USER stream | durable `broadcast-worker-bot` on the BOT stream |
-| Concurrency | `MaxWorkers=100` | `MaxWorkers=400` (fan-out is the dominant bot cost) |
-| Env var | `WORKER_CLASS=user` | `WORKER_CLASS=bot` |
+**Phase 1 (DECIDED 2026-06-24, §4.4a): single shared Deployment.** Same reasoning as §5.2 — `broadcast-worker` is ONE Deployment consuming from the shared `MESSAGES_CANONICAL_{siteID}` stream. Per-class split is the future-design column, deferred per the §4.4a escape hatch.
 
-Receivers (the WebSocket connections being broadcast TO) are shared — a human in a room hears both human and bot messages. The split is on the **producer** side of the fan-out, not the consumer side.
+| Aspect | Phase 1 (shared, current) | Phase N+ when split — `-user` Deployment | Phase N+ when split — `-bot` Deployment |
+|---|---|---|---|
+| JetStream stream | `MESSAGES_CANONICAL_{siteID}` (shared) | `MESSAGES_CANONICAL_USER_{siteID}` | `MESSAGES_CANONICAL_BOT_{siteID}` |
+| JetStream consumer | durable `broadcast-worker` on the shared stream | durable `broadcast-worker-user` on the USER stream | durable `broadcast-worker-bot` on the BOT stream |
+| Concurrency | `MaxWorkers=300` (combined fan-out load) | `MaxWorkers=100` | `MaxWorkers=400` (fan-out is the dominant bot cost) |
+| Env var | `WORKER_CLASS` unset/`all` | `WORKER_CLASS=user` | `WORKER_CLASS=bot` |
+
+Receivers (the WebSocket connections being broadcast TO) are shared regardless — a human in a room hears both human and bot messages. Even after the split, the split is on the **producer** side of the fan-out, not the consumer side.
 
 ### 5.4 What changes inside each binary
-**Nothing functional.** The same `handler.go` / `store.go` runs in both Deployments. The only diff:
+
+**Phase 1: nothing.** Each worker runs as a single Deployment with the existing handler; no class-aware code path required. Metrics get a `class` label sourced from the canonical payload's `principal.class` field.
+
+**Phase N+ (when split activates per §4.4a):** the same `handler.go` / `store.go` runs in both Deployments. The only diff:
 
 ```go
-// main.go (each split service)
+// main.go (each split service — Phase N+ only)
 class := subject.Class(os.Getenv("WORKER_CLASS")) // "user" | "bot"
 filter := subject.MessageCanonicalFilter(class, cfg.SiteID)
 queueGroup := fmt.Sprintf("%s.%s", serviceName, class)
 // ... pass into subscriber setup ...
 ```
 
-`WORKER_CLASS` is a required env on split services; missing or invalid value = startup error (fail fast per CLAUDE.md §3).
+When the split activates, `WORKER_CLASS` becomes a required env on split services; missing or invalid value = startup error (fail fast per CLAUDE.md §3). Until then the env var is optional and ignored.
 
 ---
 
-## 6. JetStream stream design — ✅ DECIDED 2026-06-16: separate streams per class
+## 6. JetStream stream design — Phase 1 SHARED (per §4.4a); per-class split deferred
 
-**Decision:** bot and human canonical messages live in **physically separate streams**, one per class per site:
+**Phase 1 decision (DECIDED 2026-06-24, supersedes the earlier "separate streams per class" recommendation):** the existing `MESSAGES_CANONICAL_{siteID}` stream (subjects `chat.msg.canonical.{siteID}.>`) is **kept as-is, shared across classes**. No `MESSAGES_CANONICAL_USER_{siteID}` / `MESSAGES_CANONICAL_BOT_{siteID}` split in Phase 1; no canonical-subject rename. Gatekeeper publishes both user- and bot-originated canonical events to the same stream; consumers tag metrics by the `principal.class` payload field.
 
-- `MESSAGES_CANONICAL_USER_{siteID}` — subjects `chat.user.canonical.{siteID}.>`
-- `MESSAGES_CANONICAL_BOT_{siteID}` — subjects `chat.bot.canonical.{siteID}.>`
+The per-class split below is preserved as the **escape-hatch design** — what to ship when the §4.4a triggers fire (measured noisy-neighbor incident, per-tenant SLO escalation, etc.).
 
-The existing `MESSAGES_CANONICAL_{siteID}` is **renamed** to `MESSAGES_CANONICAL_USER_{siteID}` in a one-PR migration; `MESSAGES_CANONICAL_BOT_{siteID}` is created fresh.
+### 6.1 Why Phase 1 = shared (and why the per-class split is the escape hatch, not the default)
 
-### 6.1 Why separate streams (reversing the spec-draft default)
+The full trade-off is in §4.4a (pros/cons of shared vs split + escape-hatch triggers + migration mechanic). Summary for cross-reference:
+
+- **Phase 1 picks shared** for operational simplicity (half the streams to provision/monitor/mirror/federate, single-Deployment workers, trivial mixed-room handling, no canonical-subject rename) and because the per-class scaling/isolation benefits are speculative until validated with production traffic.
+- **Split-later is non-breaking** (publisher namespace stays class-split throughout, JWT grants unchanged, client-side unchanged) — only internal canonical-stream wiring shifts when triggered.
+- **The earlier "shared stream + filter still couples on write path" argument** below (preserved as §6.1.1 future-design reference) remains correct as a description of split-time benefits — it's just that Phase 1 accepts those couplings as YAGNI trade-offs until a measured incident justifies paying the split cost.
+
+#### 6.1.1 Future-design reference: separate streams (escape-hatch target)
+
+When the §4.4a escape hatch triggers, the canonical streams split to `MESSAGES_CANONICAL_USER_{siteID}` / `MESSAGES_CANONICAL_BOT_{siteID}` with the per-class subject naming. The original split rationale (preserved here for the escape-hatch implementation):
 
 A shared stream with class-filtered consumers still couples the two classes on the **write path** and at the **stream level**, undoing the isolation thesis. Separate streams give:
 
@@ -582,9 +660,9 @@ A shared stream with class-filtered consumers still couples the two classes on t
 | **Consumer lag isolation** | Per-class durables on shared stream isolate consumer lag only — not write-path or storage concerns | Full isolation top to bottom |
 | **Ops surface** | One stream to monitor | Two streams — mechanical, scales linearly (this codebase already runs 5+ streams) |
 
-The "ops cost" of two streams was the only argument for the shared option; it's overstated — stream config is clone-paste YAML in `pkg/stream/stream.go`, alerting templates duplicate trivially. **Trade the small ops cost for clean isolation forever.**
+The "ops cost" of two streams was the only argument for the shared option; it's overstated — stream config is clone-paste YAML in `pkg/stream/stream.go`, alerting templates duplicate trivially. **Trade the small ops cost for clean isolation forever** *(applies at split-time, not Phase 1)*.
 
-Per-class **durables** (not just filters) remain mandatory — they isolate consumer lag *within* a stream.
+Per-class **durables** (not just filters) remain mandatory after split — they isolate consumer lag *within* a stream.
 
 ### 6.2 Stream / consumer config
 
