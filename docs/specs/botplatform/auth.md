@@ -55,7 +55,7 @@ Where do bot auth + the REST edge live? Two options were weighed (full breakdown
 
 **Why B, despite A being faster** (the scope crossed a threshold — it is now **more than a JSON API**):
 - **Blast radius / key safety:** `auth-service` holds the JWT signing key and does human SSO; a browser-facing web UI (HTML, cookies, CSRF) is a much larger attack surface that must not share a process with the signing key. Process isolation > file separation.
-- **Signing key stays put:** `bot-gateway` never holds the key — it calls `auth-service` to mint JWTs (and only for *native* bot logins; REST bots use the gateway's service-account connection, no per-bot JWT).
+- **Signing key stays put:** `botplatform-service` never holds the key and never mints JWTs. The chat-frontend-with-bot-account flow (§5.2) calls `auth-service POST /auth` with `kind:"bot"`; `auth-service` calls `botplatform-service /v1/auth/validate` to verify the session, then mints. REST bot SDKs (flow A) never need a JWT at all.
 - **Independent scaling & deploy:** bot load (10k logins/min, 1M validations/min) and the 1-week bot canary are decoupled from human SSO.
 - **Clean sunset:** legacy bot auth (Phase 5) is far easier to retire as a standalone service.
 
@@ -374,8 +374,24 @@ The legacy system is Rocket.Chat. Confirmed behavior the migration must honor:
 | **Sessions** | New `sessions` collection, **one doc per session** keyed by a per-row token hash. Dual-hash scheme (§4.6): legacy rows use `base64(sha256(token))`, native `v1` rows use `base64(HMAC-SHA-256(server_secret, token))`. **Configurable per-account cap with FIFO eviction by `issuedAt`** — default 100, env-tunable via `SESSIONS_MAX_PER_ACCOUNT` (§5.6). **Sessions are permanent** until cap-evicted or admin-revoked; no time-based expiry. **Validate is pure read** — Valkey hit (refreshing in-memory TTL via `GETEX`) or Mongo `findOne({_id: hash})` on miss; no Mongo writes on the hot path. | O(1) lookup independent of session count (validate reads sessions by `_id` regardless of cap); per-session + per-account revocation. Bounded users-doc size (sessions can't bloat the identity doc that every nextgen service caches). Cap bounds account-scope growth (essential since sessions are permanent); FIFO naturally targets old orphaned tokens from prior pod restarts. Bot SDKs that don't auto-relogin on 401 stay working forever as long as the session row exists. Dual hash preserves bit-for-bit legacy compatibility while raising the storage-leak bar for new tokens. Replaces the legacy hardcoded 50-cap stored as a `loginTokens[]` array on the user doc (O(n) scan per validate). |
 | **Token wire format** | Native `v1` tokens carry a `bp1_` namespace prefix (`bp1_<43-char base64url of 32 random bytes>`); legacy tokens unchanged (§4.6) | Prefix unlocks a single-store fast path for native tokens (no legacy fallback lookup), enables forward-versioning (`bp2_`…), and is detected by every standard secret-scanner. |
 | **Scope** | Both surfaces (password on `users`, sessions collection) are **account-agnostic** (admins *and* bots) | The legacy login authenticates admins too — shared password-login infrastructure, not bot-only. |
-| **NATS JWT** | Short-lived, **minted from a valid session**, refreshed without re-entering the password | Reuses existing JWT machinery; session = durable login, JWT = ephemeral capability. |
+| **NATS JWT** | **Minted by `auth-service` only** — never by `botplatform-service`, never returned from `/api/v1/login` or `/dev-login`. `auth-service POST /auth` is extended with a `kind` discriminator: `kind:"sso"` mints from an OIDC bearer (existing humans), `kind:"bot"` mints from a bp1_ session token (after `auth-service` calls `botplatform-service /v1/auth/validate`). See §5.2. **Only flow B (bot account used inside the chat frontend) needs this** — flow A pure-REST bot SDK pods never request a JWT. | Single signing key, single minter (blast-radius isolation, §7 Option B rationale). The bot SDK is REST-only — JWT mint stays out of the login surface. Reuses the existing JWT machinery and grants infrastructure on `auth-service`; bot-kind just adds one validator branch that delegates to `botplatform-service`. |
 | **Validation hot path** | Mongo durable + **read-through cache (in-pod LRU + Valkey)** | Every REST call validates a token; a Mongo read per call is the bottleneck (§9.3). |
+
+---
+
+## 3a. Two consumer flows for a bot account (orientation)
+
+A single bot account can be consumed in **two distinct ways**. The rest of this spec assumes the reader has internalized which flow each section serves:
+
+| Flow | Consumer | Login path | Credential carried on each request | NATS JWT? | Backend reach |
+|---|---|---|---|---|---|
+| **A. Pure bot service** *(the main case — 99% of bots today)* | Bot pod / SDK running independently | `POST /api/v1/login` (or `/v1/bot/login`) → `{authToken, userId, me}` | `X-User-Id` + `X-Auth-Token` (REST headers) | **No** | REST → `bp-api/api/v2/*`; bp-api bridges REST→NATS-RPC internally. The bot never speaks NATS. |
+| **B. Bot account in the chat frontend** *(future / niche — e.g. a human operator using a bot's identity in the web UI)* | Chat frontend (NATS-native browser app) | Same login first → then `auth-service POST /auth` with `kind:"bot"` to exchange the session token for a NATS JWT (§5.2) | NATS JWT (short-lived; refreshed from the still-valid session) | **Yes** — minted by `auth-service`, never by botplatform-service or by login | NATS directly, same grants infrastructure as a human SSO user (just a bot-scoped subject grant) |
+
+**Implications baked into the spec:**
+- **`/api/v1/login` and `/dev-login` return only `{authToken, userId, me}`** — no JWT, no `natsPublicKey` field on the request. Flow A bots need nothing more; flow B users hop to `auth-service` separately.
+- **`botplatform-service` never mints NATS JWTs and never holds the signing key.** It only verifies session tokens via `/v1/auth/validate` (§9.8). The single minter is `auth-service`, for both human SSO and bot-kind (§5.2).
+- **Native bot SDKs that speak NATS directly are not in scope.** A future native-bot SDK milestone would route through the flow-B path (extend the existing `auth-service` extension); no new mint surface on `botplatform-service`.
 
 ---
 
@@ -562,12 +578,73 @@ PR #295 introduces `subject.IsValidAccountToken` (rejects accounts containing `.
      for v in victims: valkey.del(v._id)   // explicit cache invalidation
    ```
    IXSCAN on the `{userId, issuedAt}` compound index (§4.3); `over` is typically 0 or 1. Tolerates a brief concurrent-login overshoot (cap+1 or cap+2 for a few ms — Mongo doesn't serialize across docs, but two parallel `insertOne`s + count-then-delete are safe enough); next login heals to cap.
-6. Return the **RC-compatible envelope** (`{ status:"success", data:{ authToken, userId, me } }`) + `X-Auth-Token`/`X-User-Id`.
-7. If the request carries a `natsPublicKey` (native client, e.g. operator UI), the JWT mint is **delegated to `auth-service`** (botplatform-service never holds the signing key — see §7 Option B / DEDICATED-SERVICE rationale). This delegation is **deferred from the July scope** — for the initial release, native-bot JWT minting is not exposed; REST bots omit this field and get the `X-Auth-Token` headers only. When wired later: botplatform-service calls `auth-service` over the service-to-service control plane (`AUTH_SERVICE_URL`, §16) and returns the minted JWT in the same response envelope.
-8. If `RequirePasswordChange`, signal it (§5.4).
+6. Return the **RC-compatible envelope** (`{ status:"success", data:{ authToken, userId, me } }`) + `X-Auth-Token`/`X-User-Id`. **Login never returns a NATS JWT** — the bot SDK is REST-only and has no use for one (§5.2 covers the chat-frontend-with-bot-account flow, which mints the JWT via `auth-service` from the session token *after* login completes).
+7. If `RequirePasswordChange`, signal it (§5.4).
 
-### 5.2 NATS JWT minting from a session
-Present a valid session token → validate (§5.3) → mint a short-lived NATS user JWT scoped to `chat.user.{account}.>` (reusing `auth-service` grants). JWT expiry ≪ session expiry; refresh from the still-valid session without the password.
+### 5.2 NATS JWT minting from a session — `auth-service` extension (flow B only)
+
+**Where it lives.** `botplatform-service` does **not** mint NATS JWTs and does **not** hold the JWT signing key. The single NATS-JWT minter for the whole system is `auth-service` (existing today for SSO humans). This subsection specifies a small extension to `auth-service` so the **same minter** also serves bot accounts that need a JWT.
+
+**When it's used.** Only **flow B** — a bot account being used inside the chat frontend (which is NATS-native and needs a JWT to talk to NATS). **Flow A — pure bot-service pods using the REST SDK — never invoke this path; they have no use for a NATS JWT** (the REST→NATS bridge inside `bp-api` keeps NATS server-side).
+
+**Extension shape — unified 3-field body with a `kind` discriminator.** Today `auth-service POST /auth` takes `{ssoToken, natsPublicKey}`. The extension generalizes the credential field to `token` and adds `kind` so one endpoint mints JWTs for both human and bot principals; the server picks the validator branch from `kind`. **The caller always knows which `kind` to send** because the caller knows which login it just performed — frontend that completed SSO sends `kind:"sso"`; frontend that ran a bot login on behalf of a bot account (flow B) sends `kind:"bot"`. No server-side guessing.
+
+**Only two kinds: `sso` and `bot`.** Admin is **not** a separate kind — admin = human SSO with `roles ∋ admin`, gets the same `chat.user.{account}.>` JWT scope and enforces admin-ness server-side per action. Admins working in admin-portal don't need a NATS JWT at all (admin-portal is HTML/REST to admin-service — no NATS).
+
+```jsonc
+// SSO (human) — new shape
+POST /auth
+{
+  "kind":          "sso",                 // selects the OIDC validator branch
+  "token":         "<OIDC bearer>",
+  "natsPublicKey": "<43-char nkey>"
+}
+
+// Bot (flow B — chat-frontend with bot account)
+POST /auth
+{
+  "kind":          "bot",                 // selects the botplatform /v1/auth/validate branch
+  "token":         "<bp1_… session>",     // the X-Auth-Token from the bot's prior /api/v1/login
+  "natsPublicKey": "<43-char nkey>"
+}
+
+// Response — IDENTICAL envelope across all kinds (everything is a "user" to the system).
+// Populated fields differ by kind: human SSO carries the full HR profile (email,
+// employeeId, engName, chineseName, deptName, deptId); bot carries account only
+// (other fields empty/omitted). Frontend reads `user.account` universally and
+// treats the human-specific fields as best-effort.
+{
+  "natsJwt": "<signed NATS user JWT, scoped pub/sub grants>",
+  "user": {
+    "account":     "alice"  | "xxx.bot",   // ALWAYS present
+    "email":       "...",                   // SSO only
+    "employeeId":  "...",                   // SSO only
+    "engName":     "...",                   // SSO only (bot may reuse account)
+    "chineseName": "...",                   // SSO only
+    "deptName":    "...",                   // SSO only
+    "deptId":      "..."                    // SSO only
+  }
+}
+```
+
+**No separate `userId` field for bot.** The session token IS the credential; `botplatform-service /v1/auth/validate` looks up the row and returns the full principal (`userId`, `account`, `class`, `siteId`). Adding a `userId` request field would only re-introduce a sanity-check that the validate endpoint already treats as optional (skipped when absent).
+
+**Just update the existing `/auth` endpoint in place.** No new route, no migration window, no compat shape — the endpoint is still under active development. Rename `ssoToken` → `token`, add the required `kind` field, add the `kind:"bot"` branch. `kind` is required on every request (missing → `400 invalid_request`).
+
+**Bot-kind flow inside `auth-service`:**
+1. Receive `{kind:"bot", token, natsPublicKey}`.
+2. Call `POST botplatform-service/v1/auth/validate` with `{authToken: token}` — same dual-token authority (§9.8) used by ApiGW/WS/EventConsumer (no `userId` field — the token self-identifies).
+3. On `valid:true`, take the returned `principal` (incl. `class:"bot"`, `account`, `siteId`).
+4. Mint a NATS user JWT scoped to `chat.bot.{botToken}.>` (the bot subject namespace from §4.6 / traffic-isolation spec — NOT `chat.user.{account}.>`). Same signing key, same JWT shape, just a different grant scope.
+5. Return `{natsJwt, user}` — same response envelope as the SSO path.
+
+**Why this shape:**
+- **Single signing key, single minter.** `botplatform-service` never holds the key, never mints. Blast-radius isolation (the §3 Key Decisions / Option B rationale) is preserved.
+- **`auth-service` already does this for humans.** Bot kind adds one branch: where SSO calls the OIDC validator, bot calls `botplatform-service /v1/auth/validate`. Everything downstream (JWT mint, response shape) is the existing code path.
+- **REST bots are untouched.** Flow A bots never call `auth-service`; their `X-Auth-Token` works against `bp-api` directly. The frontend-bot flow B is a separate use case with a separate (existing) entry point.
+- **No password re-entry.** The bot's existing session token is the credential; the JWT is a short-lived derivation of it. JWT expiry ≪ session expiry; the frontend refreshes the JWT from the still-valid session.
+
+**Scope note.** This extension is **out of the July scope** (no chat-frontend caller yet). Documented here so the auth-service team knows what shape to target when flow B lands.
 
 ### 5.3 Session validation (every request)
 
@@ -661,9 +738,9 @@ db.sessions.deleteMany({userId})                  // IXSCAN on {userId, issuedAt
 ### 5.7 "Resume" / session reuse
 **Legacy REST bots:** no resume verb — a bot logs in once (username + password) and reuses its `X-Auth-Token` header on every call; the header *is* session reuse.
 
-**Internal primitive:** §5.2 — a native client or the REST edge exchanges a still-valid session token for a fresh short-lived NATS JWT, without re-entering the password. Session token = durable resume credential; JWT = ephemeral capability.
+**Flow B primitive (`auth-service` extension, §5.2):** a chat-frontend caller exchanges a still-valid bot session token for a fresh short-lived NATS JWT by calling `auth-service POST /auth` with `kind:"bot"`. Session token = durable resume credential; JWT = ephemeral capability. This primitive lives on `auth-service`, not `botplatform-service` — botplatform only verifies the session via `/v1/auth/validate`.
 
-**New native bot SDK (re-architecture) — decided (Q1b):** the internal session→JWT exchange ships anyway; the **public `session.refresh` resume RPC is deferred to the native-SDK milestone** (no caller until that SDK exists). Legacy REST bots are untouched (header reuse).
+**Future native bot SDK milestone (Q1b):** if/when a native NATS-speaking bot SDK is built, it routes through the same flow-B `auth-service` extension — no new mint surface on `botplatform-service`. A public `session.refresh` resume RPC is **deferred to that milestone** (no caller until the SDK exists). Legacy REST bots (flow A) are untouched — they never call the JWT-mint path.
 
 ---
 
@@ -698,7 +775,7 @@ PATs (`type:"personalAccessToken"` entries) are **skipped** by the import job (a
 
 > **Naming note.** Option A/B in this section refer **only** to this spec's auth-service-placement decision. The companion **bot-traffic isolation spec** uses Option A/B/C for a different (routing) decision and **decides Option A** (SUBJECT-SPLIT) — unrelated to this spec's letters. Both specs now pair the letter with a descriptive suffix (e.g. `Option B / DEDICATED-SERVICE` here; `Option A / SUBJECT-SPLIT` there) so cross-doc references are unambiguous. When citing across specs, always use the suffix.
 
-Two viable placements. Both implement the *same* responsibilities (§9); they differ only in **which service hosts them**. **DECIDED: Option B** (design-review decision, 2026-06-15) — the bot edge grew into a browser-facing web app (§9.6: HTML forms, CSRF, cookies) plus dual-token validation; isolating that from the JWT-signing, human-SSO `auth-service` wins on **blast-radius/key safety** first and **independent scaling/lifecycle** second. The signing key stays in `auth-service`; `bot-gateway` calls it to mint JWTs (native-bot logins only — not the hot path). Option A (faster, but mixes a web security model into human auth) remains documented below as the considered alternative; it was the right call for the *original* narrow scope.
+Two viable placements. Both implement the *same* responsibilities (§9); they differ only in **which service hosts them**. **DECIDED: Option B** (design-review decision, 2026-06-15) — the bot edge grew into a browser-facing web app (§9.6: HTML forms, CSRF, cookies) plus dual-token validation; isolating that from the JWT-signing, human-SSO `auth-service` wins on **blast-radius/key safety** first and **independent scaling/lifecycle** second. **The signing key stays in `auth-service`; `botplatform-service` never mints JWTs.** Flow B (chat-frontend with bot account, §5.2) is an extension to `auth-service`'s existing `POST /auth` (new `kind:"bot"` branch that calls `botplatform-service /v1/auth/validate` before minting). Option A (faster, but mixes a web security model into human auth) remains documented below as the considered alternative; it was the right call for the *original* narrow scope.
 
 ### Option A (EXTEND-AUTH) — REJECTED 2026-06-15
 > **Naming note.** Earlier drafts of this section tagged Option A as "(recommended)" because the original scope was a narrow JSON API and extending `auth-service` was the simpler path. The 2026-06-15 design review selected Option B once the scope grew to include a browser-facing web UI (HTML/CSRF/cookies) + dual-token validation; the "(recommended)" label was carried forward by accident and contradicted the decision below. Renamed here to make the section's role (rejected alternative documented for posterity) unambiguous on a skim. The subtitle `EXTEND-AUTH` is the durable identifier — the letter "A" is just a positional label.
@@ -730,7 +807,7 @@ Istio ingress
                                             admin operations     (NATS RPC)
       bot-gateway reads users.services.password.* (shared users coll) and
         owns the new sessions coll + Valkey;
-      calls auth-service to mint NATS JWTs.
+      auth-service calls back IN to /v1/auth/validate for kind:"bot" JWT mints.
 ```
 
 **Pros:** clean separation of concerns; `auth-service` stays pure-SSO; independent scaling (bots vs humans); easier to sunset legacy bot auth later; blast-radius isolation.
@@ -747,7 +824,7 @@ Istio ingress
 | Long-term maintainability | moderate | **better** |
 | Team ownership | single owner | split ownership |
 
-**Decision: Option B / DEDICATED-SERVICE.** A dedicated `botplatform-service` was chosen because the service is **more than a JSON bridge** — it serves a web UI (§9.6) with CSRF + session cookies and must validate legacy + new tokens, concerns best kept out of the pure-SSO `auth-service`. The new service is the sole writer of `users.services.password.*` (§4.1) on the shared `users` collection AND the sole owner of the new `sessions` collection (§4.2) + Valkey validation cache, and calls `auth-service` to mint NATS JWTs. (Option A / EXTEND-AUTH would have been faster but mixes those web/auth concerns into human auth.)
+**Decision: Option B / DEDICATED-SERVICE.** A dedicated `botplatform-service` was chosen because the service is **more than a JSON bridge** — it serves a web UI (§9.6) with CSRF + session cookies and must validate legacy + new tokens, concerns best kept out of the pure-SSO `auth-service`. The new service is the sole writer of `users.services.password.*` (§4.1) on the shared `users` collection AND the sole owner of the new `sessions` collection (§4.2) + Valkey validation cache. **It never mints NATS JWTs** — the chat-frontend-with-bot-account flow (§5.2) calls `auth-service POST /auth` with `kind:"bot"`, and `auth-service` calls back into `/v1/auth/validate` to verify before minting. (Option A / EXTEND-AUTH would have been faster but mixes those web/auth concerns into human auth.)
 
 > The rest of this spec (stores, flows, §9 responsibilities) is **placement-agnostic** — it holds under either option. Under the chosen Option B / DEDICATED-SERVICE they live in `botplatform-service`; the JWT-mint is a service-to-service call to `auth-service`.
 
@@ -960,7 +1037,7 @@ Clean no-downtime for the **login/session slice**. If both stacks also serve liv
 > "Confirmed" entries were verified against the internal codebase or decided in design review. As of 2026-06-16 **all open questions are decided** — the recommendation was accepted for each; Q12/Q13 remain subject to external-team wiring confirmation but the design assumes the recommended answer.
 
 ### Decided 2026-06-16 (recommendation accepted)
-- **Q1b — Resume RPC.** ✅ **Defer the public `session.refresh` verb to the native-SDK milestone**; the underlying session→JWT exchange (§5.2) ships anyway. Legacy REST bots use header reuse (§5.7).
+- **Q1b — Resume RPC.** ✅ **Defer the public `session.refresh` verb to the native-SDK milestone**; the underlying session→JWT exchange (§5.2) lives on `auth-service` as a `kind:"bot"` extension and ships when chat-frontend-with-bot-account (flow B) lands — not on `botplatform-service`. Legacy REST bots (flow A) use header reuse (§5.7) and never call this path.
 - **Q3 — Cutover source-of-truth.** ✅ **Split answer** (§6.3, REVISED 2026-06-24): **password material** stays on the shared `users.services.password.bcrypt` path — no credential extraction, identity-sync already carries it end-to-end. **Sessions** are bulk-imported once at cutover from the legacy `users.services.resume.loginTokens[]` array into the new nextgen-owned `sessions` collection (§6.2); imported rows keep the legacy `hashedToken` verbatim as `_id` so existing bot tokens validate immediately on nextgen with zero re-login. One write-authority guard: nextgen-side password changes (`/changepwd`, rotation) are disabled until 100% cutover to avoid simultaneous writes to the same `users` doc.
 - **Q10 — Token format.** ✅ **Two formats coexist** (§4.6): legacy tokens accepted byte-for-byte during the hybrid phase (Meteor `base64(sha256(token))` storage on the `loginTokens[].hashedToken` field); native `v1` tokens are **`bp1_<43-char base64url of 32 random bytes>`** stored as **`base64(HMAC-SHA-256(server_secret, token))`** on the same field, distinguished by an added `scheme:"v1"` entry attribute. The `bp1_` prefix is **always-on for new tokens** — it gates the validator's hash-dispatch (§5.3), enables forward-versioning (`bp2_`…), and is detected by standard secret scanners. HMAC storage hardens against offline attack on a DB dump. Legacy entries stay on plain SHA-256 storage byte-for-byte to preserve zero-bot-change compatibility.
 - **Q12 — WebSocket validation.** ✅ WS server **calls `/v1/auth/validate`** (Part III §7). *Wired during implementation/migration — not a design blocker.*
@@ -973,7 +1050,7 @@ Clean no-downtime for the **login/session slice**. If both stacks also serve liv
 - **Q15 — Admin/auth surface protocol.** ✅ **REST, not NATS** (§8, §15). Every caller (bots, browsers, ApiGW, WS, admin-portal) speaks HTTP; NATS is reserved for the nextgen backend's own comms. Admin ops are REST endpoints on `admin-service` (post Q18 revision); auth ops (login + validate) are REST on `botplatform-service`.
 - **Q14 — Downstream validation.** ✅ `/v1/auth/validate` is the single dual-token authority (§9.8); ApiGW/WS/EventConsumer call it; `Server` trusts ApiGW's mTLS-injected principal (no double-validate).
 - **Q11 — `/api/v1` scope.** ✅ **`/api/v1/login` only** + `/v1/bot/login`; data is `/api/v2/*` on `Server` (legacy v2 REST), never proxied by us. *(confirmed 2026-06-16.)*
-- **Q5 — Architecture.** ✅ **Option B / DEDICATED-SERVICE** — dedicated `botplatform-service` (design review 2026-06-15). Driven by the web-UI scope (HTML/CSRF/cookies, §9.6) + dual-token validation; blast-radius/key-safety and independent scaling settle it. The new service is sole writer of `users.services.password.*` AND sole owner of the new `sessions` collection + Valkey cache; `auth-service` keeps the signing key and mints JWTs on request (§7). (Cross-spec note: the bot-traffic isolation spec independently DECIDES its own "Option A / SUBJECT-SPLIT" — different decision, different namespace.)
+- **Q5 — Architecture.** ✅ **Option B / DEDICATED-SERVICE** — dedicated `botplatform-service` (design review 2026-06-15). Driven by the web-UI scope (HTML/CSRF/cookies, §9.6) + dual-token validation; blast-radius/key-safety and independent scaling settle it. The new service is sole writer of `users.services.password.*` AND sole owner of the new `sessions` collection + Valkey cache; **never mints JWTs**. `auth-service` keeps the signing key and is the only minter — bot-kind JWTs (flow B) call back into `botplatform-service /v1/auth/validate` first (§5.2). (Cross-spec note: the bot-traffic isolation spec independently DECIDES its own "Option A / SUBJECT-SPLIT" — different decision, different namespace.)
 - **Q6 — Cache layer.** ✅ In-pod LRU + **Valkey from day one** for the validation hot path (§9.3); **Valkey cluster confirmed available in prod**.
 - **Q1 — Login contract.** ✅ `POST /api/v1/login`; body `{ user, password }` plaintext **or** `{ user, password:{ digest, algorithm:"sha-256" } }` (digest optional, for compatibility); response `{ status:"success", data:{ authToken, userId:<17-char>, me:{ _id, username, name, active, roles:["bot"] } } }`; subsequent headers `X-User-Id` + `X-Auth-Token`. Legacy bots use header reuse, not a resume verb (new-SDK resume = Q1b). *(Q1a folded in: path is `/api/v1/login`.)*
 - **Q2 — Session lifetime.** ✅ **REVISED 2026-06-24: permanent sessions** (no time-based expiry). Sessions are removed only by cap eviction (§5.6 FIFO by `issuedAt`) or admin revoke (§5.5). Earlier "sliding 180-day idle" stance was dropped because the bot SDK does not auto-relogin on `401 sessionExpired` — a hard time-based expiry would silently break long-running bots.
@@ -1041,11 +1118,11 @@ type legacyLoginToken struct {
 Wire envelopes (login is HTTP; field names mirror RC — confirm Q1):
 
 ```go
-// login request (plaintext OR digest form)
+// login request (plaintext OR digest form). No natsPublicKey field — login is
+// REST-only; NATS JWT minting (flow B only) goes through auth-service after login (§5.2).
 type loginRequest struct {
     User     string          `json:"user"`
     Password json.RawMessage `json:"password"`      // "secret"  OR  {"digest","algorithm"}
-    NATSKey  string          `json:"natsPublicKey,omitempty"` // native clients only (§5.1.4)
 }
 type loginResponse struct {
     Status string `json:"status"`                   // "success"
@@ -1053,7 +1130,6 @@ type loginResponse struct {
         AuthToken string  `json:"authToken"`         // raw token
         UserID    string  `json:"userId"`            // 17-char Meteor ID
         Me        meBlock `json:"me"`                // identity summary (RC parity)
-        JWT       string  `json:"jwt,omitempty"`     // native clients only
     } `json:"data"`
 }
 type meBlock struct {
@@ -1117,7 +1193,7 @@ return 401 invalidCredentials
 
 `botplatform-service` is a **REST/HTTP service** (Gin). Its full route surface is the §9.6 inventory: web (`/dev-login`, `/changepwd`), login (`/api/v1/login`, `/v1/bot/login`), validation (`/v1/auth/validate`). Admin (`/v1/admin/*`) lives on **`admin-service`** (§8), not here. **No NATS subjects** are exposed by either service.
 
-> **NATS is out of this service's surface.** It's reserved for the nextgen chat backend's internal service-to-service comms and native-client access. The *only* possible NATS use is a future control-plane call to `auth-service` to mint a NATS JWT for *native* bots — not part of the July scope.
+> **NATS is out of this service's surface.** It's reserved for the nextgen chat backend's internal service-to-service comms and native-client access. `botplatform-service` itself never speaks NATS and never mints NATS JWTs — the chat-frontend-with-bot-account flow (§5.2) goes through `auth-service POST /auth` with `kind:"bot"`, and `auth-service` calls back into `botplatform-service /v1/auth/validate` over HTTP to verify the session before minting.
 
 ### 15.1 Transport choice — why HTTP, not NATS RPC
 
@@ -1142,7 +1218,7 @@ Sync vs async is **not** the differentiator here. Both HTTP and NATS request/rep
 
 ## 16. Configuration (env, `caarlos0/env`)
 
-**`botplatform-service`** (the §7 Option-B auth provider): Mongo URI/DB (required — reads `users.services.password.*` and owns the `sessions` collection), `SITE_ID` (required when `REQUIRE_PROVISIONED=true` — the membership-row site key), `VALKEY_ADDRS` (required), `SESSION_CACHE_TTL` (`"5m"` — Valkey in-memory TTL refreshed via `GETEX` on each validate hit; cache miss falls back to `sessions.findOne({_id: hash})`), `BCRYPT_COST` (`"10"` — match legacy), `LOGIN_MAX_ATTEMPTS` (`"5"`), `LOGIN_LOCKOUT` (`"15m"`), `SESSIONS_MAX_PER_ACCOUNT` (`"100"` — per-account cap, FIFO eviction by `issuedAt` via count + delete-oldest at login, §5.6), `TOKEN_HMAC_KEY` (**required secret**, 32 bytes — keys the v1 token storage hash §4.6), `TOKEN_HMAC_KEY_PREVIOUS` (optional, 32 bytes — graceful key rollover; admin-driven password reset across affected accounts revokes their sessions to force re-login under the new key), `REQUIRE_PROVISIONED` (`"true"` — provisioning gate §5.1 step 3; mirrors auth-service from PR #295; fail-closed on store errors; disabling logs a loud startup warning), web-surface vars `COOKIE_DOMAIN`, `COOKIE_SECURE` (`"true"`), `CSRF_KEY` (required secret), and `HTTP_MAX_CONCURRENCY` (`"500"`), `PORT` (`"8080"`). No NATS/proxy vars (not a data-path proxy). *Future native-bot JWT mint would add `AUTH_SERVICE_URL`.* Secrets never defaulted (house rule). HTTP middleware (request-ID, access-log, CORS) sourced from `pkg/ginutil` (introduced by PR #295) — no per-service reimplementation. Outbound HTTP via `pkg/restyutil`.
+**`botplatform-service`** (the §7 Option-B auth provider): Mongo URI/DB (required — reads `users.services.password.*` and owns the `sessions` collection), `SITE_ID` (required when `REQUIRE_PROVISIONED=true` — the membership-row site key), `VALKEY_ADDRS` (required), `SESSION_CACHE_TTL` (`"5m"` — Valkey in-memory TTL refreshed via `GETEX` on each validate hit; cache miss falls back to `sessions.findOne({_id: hash})`), `BCRYPT_COST` (`"10"` — match legacy), `LOGIN_MAX_ATTEMPTS` (`"5"`), `LOGIN_LOCKOUT` (`"15m"`), `SESSIONS_MAX_PER_ACCOUNT` (`"100"` — per-account cap, FIFO eviction by `issuedAt` via count + delete-oldest at login, §5.6), `TOKEN_HMAC_KEY` (**required secret**, 32 bytes — keys the v1 token storage hash §4.6), `TOKEN_HMAC_KEY_PREVIOUS` (optional, 32 bytes — graceful key rollover; admin-driven password reset across affected accounts revokes their sessions to force re-login under the new key), `REQUIRE_PROVISIONED` (`"true"` — provisioning gate §5.1 step 3; mirrors auth-service from PR #295; fail-closed on store errors; disabling logs a loud startup warning), web-surface vars `COOKIE_DOMAIN`, `COOKIE_SECURE` (`"true"`), `CSRF_KEY` (required secret), and `HTTP_MAX_CONCURRENCY` (`"500"`), `PORT` (`"8080"`). No NATS/proxy vars (not a data-path proxy). **No `AUTH_SERVICE_URL`** — botplatform-service never calls auth-service to mint JWTs (the JWT mint is the *other* direction: auth-service calls botplatform-service's `/v1/auth/validate` for `kind:"bot"` requests, §5.2). Secrets never defaulted (house rule). HTTP middleware (request-ID, access-log, CORS) sourced from `pkg/ginutil` (introduced by PR #295) — no per-service reimplementation. Outbound HTTP via `pkg/restyutil`.
 
 > **Removed env vars (pivot 2026-06-24):** `SESSION_IDLE_WINDOW` and `SESSION_LASTUSED_THROTTLE` — sessions are permanent (§5.5) and validate is pure-read (§5.3); neither setting has anything to anchor on anymore.
 
@@ -1200,7 +1276,7 @@ Sync vs async is **not** the differentiator here. Both HTTP and NATS request/rep
 ---
 
 ## 20. `docs/client-api.md` delta
-- **§2.2** — add the password-login HTTP endpoint (request: `user`+`password` plaintext/digest, optional `natsPublicKey`; response envelope; error cases incl. `requirePasswordChange`).
+- **§2.2** — add the password-login HTTP endpoint (request: `user`+`password` plaintext/digest; response envelope `{authToken, userId, me}`; **no `natsPublicKey` field — login never returns a NATS JWT, the chat-frontend-with-bot-account flow mints one via `auth-service` after login, §5.2**; error cases incl. `requirePasswordChange`).
 - **New admin section** — the five provisioning RPCs (§15) with request/response field tables + JSON examples + error reasons.
 - Updated in the **same PR** as the handlers (house rule).
 
