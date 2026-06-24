@@ -292,13 +292,14 @@ func buildLocalRoom(sub *model.Subscription) *model.SubscriptionRoom {
 		return nil
 	}
 	room := &model.SubscriptionRoom{
-		SiteID:           sub.SiteID,
-		Name:             sub.RoomName,
-		UserCount:        sub.UserCount,
-		AppCount:         sub.AppCount,
-		LastMsgAt:        sub.LastMsgAt,
-		LastMsgID:        sub.LastMsgID,
-		LastMentionAllAt: sub.LastMentionAllAt,
+		SiteID:            sub.SiteID,
+		Name:              sub.RoomName,
+		UserCount:         sub.UserCount,
+		AppCount:          sub.AppCount,
+		LastMsgAt:         sub.LastMsgAt,
+		LastMsgID:         sub.LastMsgID,
+		LastMentionAllAt:  sub.LastMentionAllAt,
+		MinUserLastSeenAt: sub.MinUserLastSeenAt,
 	}
 	if len(sub.RoomKeyPriv) == roomKeySecretLen {
 		enc := base64.StdEncoding.EncodeToString(sub.RoomKeyPriv)
@@ -324,15 +325,16 @@ func applyRoomInfo(sub *model.Subscription, info *model.RoomInfo) {
 	// info.LastMsgAt/LastMentionAllAt arrive from the RPC as epoch millis (*int64);
 	// the wire room object returns RFC3339 timestamps, so convert them here.
 	room := &model.SubscriptionRoom{
-		SiteID:           info.SiteID,
-		Name:             info.Name,
-		UserCount:        info.UserCount,
-		AppCount:         info.AppCount,
-		LastMsgAt:        timeutil.MillisToTime(info.LastMsgAt),
-		LastMsgID:        info.LastMsgID,
-		LastMentionAllAt: timeutil.MillisToTime(info.LastMentionAllAt),
-		PrivateKey:       info.PrivateKey,
-		KeyVersion:       info.KeyVersion,
+		SiteID:            info.SiteID,
+		Name:              info.Name,
+		UserCount:         info.UserCount,
+		AppCount:          info.AppCount,
+		LastMsgAt:         timeutil.MillisToTime(info.LastMsgAt),
+		LastMsgID:         info.LastMsgID,
+		LastMentionAllAt:  timeutil.MillisToTime(info.LastMentionAllAt),
+		MinUserLastSeenAt: timeutil.MillisToTime(info.MinUserLastSeenAt),
+		PrivateKey:        info.PrivateKey,
+		KeyVersion:        info.KeyVersion,
 	}
 	sub.Room = room
 	// hasUnread / hasGroupMention are computed at read time from the room's

@@ -1714,16 +1714,18 @@ func TestSubscriptionRoomJSON(t *testing.T) {
 		kv := 7
 		lastMsg := time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)
 		lastMention := time.Date(2025, 1, 3, 0, 0, 0, 0, time.UTC)
+		minSeen := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 		r := model.SubscriptionRoom{
-			SiteID:           "site-a",
-			Name:             "general",
-			UserCount:        42,
-			AppCount:         3,
-			LastMsgAt:        &lastMsg,
-			LastMsgID:        "m-100",
-			LastMentionAllAt: &lastMention,
-			PrivateKey:       &pk,
-			KeyVersion:       &kv,
+			SiteID:            "site-a",
+			Name:              "general",
+			UserCount:         42,
+			AppCount:          3,
+			LastMsgAt:         &lastMsg,
+			LastMsgID:         "m-100",
+			LastMentionAllAt:  &lastMention,
+			MinUserLastSeenAt: &minSeen,
+			PrivateKey:        &pk,
+			KeyVersion:        &kv,
 		}
 		roundTrip(t, &r, &model.SubscriptionRoom{})
 	})
@@ -1731,7 +1733,8 @@ func TestSubscriptionRoomJSON(t *testing.T) {
 	t.Run("timestamps serialize as RFC3339 strings", func(t *testing.T) {
 		lastMsg := time.Date(2025, 1, 2, 3, 4, 5, 0, time.UTC)
 		lastMention := time.Date(2025, 1, 3, 6, 7, 8, 0, time.UTC)
-		r := model.SubscriptionRoom{LastMsgAt: &lastMsg, LastMentionAllAt: &lastMention}
+		minSeen := time.Date(2025, 1, 4, 9, 10, 11, 0, time.UTC)
+		r := model.SubscriptionRoom{LastMsgAt: &lastMsg, LastMentionAllAt: &lastMention, MinUserLastSeenAt: &minSeen}
 		// #nosec G117 -- test roundtrip on a model whose PrivateKey field is part of the wire schema
 		data, err := json.Marshal(&r)
 		require.NoError(t, err)
@@ -1739,6 +1742,7 @@ func TestSubscriptionRoomJSON(t *testing.T) {
 		require.NoError(t, json.Unmarshal(data, &raw))
 		assert.Equal(t, "2025-01-02T03:04:05Z", raw["lastMsgAt"], "lastMsgAt must be RFC3339, not epoch millis")
 		assert.Equal(t, "2025-01-03T06:07:08Z", raw["lastMentionAllAt"], "lastMentionAllAt must be RFC3339, not epoch millis")
+		assert.Equal(t, "2025-01-04T09:10:11Z", raw["minUserLastSeenAt"], "minUserLastSeenAt must be RFC3339, not epoch millis")
 	})
 
 	t.Run("zero value omits all fields", func(t *testing.T) {
@@ -1746,6 +1750,36 @@ func TestSubscriptionRoomJSON(t *testing.T) {
 		data, err := json.Marshal(&model.SubscriptionRoom{})
 		require.NoError(t, err)
 		assert.JSONEq(t, `{}`, string(data))
+	})
+}
+
+func TestRoomInfo_MinUserLastSeenAt(t *testing.T) {
+	t.Run("set serializes as epoch millis and round-trips", func(t *testing.T) {
+		floor := int64(1735693200000)
+		src := model.RoomInfo{RoomID: "r1", Found: true, MinUserLastSeenAt: &floor}
+		// #nosec G117 -- test roundtrip on a model whose PrivateKey field is part of the wire schema
+		data, err := json.Marshal(&src)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		got, present := raw["minUserLastSeenAt"]
+		require.True(t, present, "non-nil MinUserLastSeenAt must be present")
+		assert.Equal(t, float64(1735693200000), got, "MinUserLastSeenAt must serialize as epoch millis, not RFC3339")
+
+		var dst model.RoomInfo
+		require.NoError(t, json.Unmarshal(data, &dst))
+		require.NotNil(t, dst.MinUserLastSeenAt)
+		assert.Equal(t, floor, *dst.MinUserLastSeenAt)
+	})
+
+	t.Run("nil is omitted", func(t *testing.T) {
+		// #nosec G117 -- test roundtrip on a model whose PrivateKey field is part of the wire schema
+		data, err := json.Marshal(&model.RoomInfo{RoomID: "r1", Found: true})
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, present := raw["minUserLastSeenAt"]
+		assert.False(t, present, "nil MinUserLastSeenAt must be omitted from JSON")
 	})
 }
 

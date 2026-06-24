@@ -54,12 +54,13 @@ type Subscription struct {
 	// Read-time baseline from the rooms $lookup/$addFields — internal only (json:"-"), used to build
 	// sub.Room for LOCAL subs (cross-site subs carry zero values). Writers persisting a full Subscription
 	// doc MUST strip these fields.
-	UserCount        int        `json:"-" bson:"userCount,omitempty"`
-	LastMsgAt        *time.Time `json:"-" bson:"lastMsgAt,omitempty"`
-	LastMsgID        string     `json:"-" bson:"lastMsgId,omitempty"`
-	LastMentionAllAt *time.Time `json:"-" bson:"lastMentionAllAt,omitempty"`
-	AppCount         int        `json:"-" bson:"appCount,omitempty"`
-	RoomName         string     `json:"-" bson:"roomName,omitempty"` // room canonical name (distinct from the sub's display Name)
+	UserCount         int        `json:"-" bson:"userCount,omitempty"`
+	LastMsgAt         *time.Time `json:"-" bson:"lastMsgAt,omitempty"`
+	LastMsgID         string     `json:"-" bson:"lastMsgId,omitempty"`
+	LastMentionAllAt  *time.Time `json:"-" bson:"lastMentionAllAt,omitempty"`
+	MinUserLastSeenAt *time.Time `json:"-" bson:"minUserLastSeenAt,omitempty"`
+	AppCount          int        `json:"-" bson:"appCount,omitempty"`
+	RoomName          string     `json:"-" bson:"roomName,omitempty"` // room canonical name (distinct from the sub's display Name)
 	// Read-time room E2E key baseline projected from the room's encKey sub-document
 	// by the rooms $lookup (current-slot priv/ver only). Internal (json:"-"); used to
 	// build sub.Room.PrivateKey/KeyVersion for LOCAL subs without a second key read.
@@ -91,13 +92,16 @@ type SubscriptionRoom struct {
 	// UserCount/AppCount/LastMsgID mirror the room-service room document (model.Room).
 	UserCount int `json:"userCount,omitempty" bson:"-"`
 	AppCount  int `json:"appCount,omitempty" bson:"-"`
-	// LastMsgAt/LastMentionAllAt are returned to the client as
+	// LastMsgAt/LastMentionAllAt/MinUserLastSeenAt are returned to the client as
 	// RFC3339 timestamps (*time.Time). The room-service RPC delivers them as epoch
 	// millis; enrichment converts at the seam (the local $lookup baseline already
 	// carries *time.Time).
 	LastMsgAt        *time.Time `json:"lastMsgAt,omitempty" bson:"-"`
 	LastMsgID        string     `json:"lastMsgId,omitempty" bson:"-"`
 	LastMentionAllAt *time.Time `json:"lastMentionAllAt,omitempty" bson:"-"`
+	// MinUserLastSeenAt is the oldest read position across the room's members (the
+	// room-wide "everyone has read up to here" floor), mirrored from the room doc.
+	MinUserLastSeenAt *time.Time `json:"minUserLastSeenAt,omitempty" bson:"-"`
 	// Room E2E key delivered to authorized members for initial key bootstrap
 	// on subscription.list (same payload as the room.key.get RPC).
 	PrivateKey *string `json:"privateKey,omitempty" bson:"-"`

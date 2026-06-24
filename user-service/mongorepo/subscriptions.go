@@ -89,12 +89,13 @@ func roomsEnrichStages(dropDeleted bool) bson.A {
 	}
 	return append(stages,
 		bson.M{"$addFields": bson.M{
-			"userCount":        "$room.userCount",
-			"lastMsgAt":        "$room.lastMsgAt",
-			"lastMsgId":        "$room.lastMsgId",
-			"lastMentionAllAt": "$room.lastMentionAllAt",
-			"appCount":         "$room.appCount",
-			"roomName":         "$room.name",
+			"userCount":         "$room.userCount",
+			"lastMsgAt":         "$room.lastMsgAt",
+			"lastMsgId":         "$room.lastMsgId",
+			"lastMentionAllAt":  "$room.lastMentionAllAt",
+			"minUserLastSeenAt": "$room.minUserLastSeenAt",
+			"appCount":          "$room.appCount",
+			"roomName":          "$room.name",
 			// Sort key: room activity (lastMsgAt), falling back to room.createdAt for
 			// rooms with no messages. Null for cross-site/missing rooms (they sort last).
 			"__sortKey": bson.M{"$ifNull": bson.A{"$room.lastMsgAt", "$room.createdAt"}},
@@ -164,14 +165,15 @@ func subscriptionProjection(extra bson.M) bson.M {
 		"favoritedAt":    1,
 		"_updatedAt":     1, // subscription's Mongo field (wire: updatedAt)
 		// room baseline copied to the top level (consumed by local enrichment)
-		"userCount":        1,
-		"lastMsgAt":        1,
-		"lastMsgId":        1,
-		"lastMentionAllAt": 1,
-		"appCount":         1,
-		"roomName":         1,
-		"encKeyPriv":       1,
-		"encKeyVer":        1,
+		"userCount":         1,
+		"lastMsgAt":         1,
+		"lastMsgId":         1,
+		"lastMentionAllAt":  1,
+		"minUserLastSeenAt": 1,
+		"appCount":          1,
+		"roomName":          1,
+		"encKeyPriv":        1,
+		"encKeyVer":         1,
 	}
 	for k, v := range extra {
 		proj[k] = v
@@ -291,12 +293,13 @@ func (r *SubscriptionRepo) FindChannelsByMembers(ctx context.Context, account st
 		bson.M{"$match": bson.M{"__memberAccounts": bson.M{"$all": allAccounts, "$size": len(allAccounts)}}},
 		// Copy the matched room's baseline to the top level (consumed by local enrichment).
 		bson.M{"$addFields": bson.M{
-			"userCount":        bson.M{"$first": "$" + matchedRoomField + ".userCount"},
-			"lastMsgAt":        bson.M{"$first": "$" + matchedRoomField + ".lastMsgAt"},
-			"lastMsgId":        bson.M{"$first": "$" + matchedRoomField + ".lastMsgId"},
-			"lastMentionAllAt": bson.M{"$first": "$" + matchedRoomField + ".lastMentionAllAt"},
-			"appCount":         bson.M{"$first": "$" + matchedRoomField + ".appCount"},
-			"roomName":         bson.M{"$first": "$" + matchedRoomField + ".name"},
+			"userCount":         bson.M{"$first": "$" + matchedRoomField + ".userCount"},
+			"lastMsgAt":         bson.M{"$first": "$" + matchedRoomField + ".lastMsgAt"},
+			"lastMsgId":         bson.M{"$first": "$" + matchedRoomField + ".lastMsgId"},
+			"lastMentionAllAt":  bson.M{"$first": "$" + matchedRoomField + ".lastMentionAllAt"},
+			"minUserLastSeenAt": bson.M{"$first": "$" + matchedRoomField + ".minUserLastSeenAt"},
+			"appCount":          bson.M{"$first": "$" + matchedRoomField + ".appCount"},
+			"roomName":          bson.M{"$first": "$" + matchedRoomField + ".name"},
 			// Room E2E key baseline (current slot) — folds the key read into this join.
 			"encKeyPriv": bson.M{"$first": "$" + matchedRoomField + ".encKey.priv"},
 			"encKeyVer":  bson.M{"$first": "$" + matchedRoomField + ".encKey.ver"},

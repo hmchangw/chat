@@ -52,6 +52,7 @@ func TestApplyRoomInfo_NestedRoom(t *testing.T) {
 	seen := time.UnixMilli(100).UTC()
 	lastMsg := int64(200)
 	lastMention := int64(50)
+	minSeen := int64(150)
 	pk := "a2V5LWJhc2U2NA=="
 	kv := 3
 	// Stored alert/hasMention are the opposite of what a room-timestamp compare
@@ -60,7 +61,7 @@ func TestApplyRoomInfo_NestedRoom(t *testing.T) {
 	info := model.RoomInfo{
 		RoomID: "r1", Found: true, SiteID: "site-a", Name: "Canonical",
 		UserCount: 7, AppCount: 2, LastMsgAt: &lastMsg, LastMsgID: "m9",
-		LastMentionAllAt: &lastMention, PrivateKey: &pk, KeyVersion: &kv,
+		LastMentionAllAt: &lastMention, MinUserLastSeenAt: &minSeen, PrivateKey: &pk, KeyVersion: &kv,
 	}
 	applyRoomInfo(&sub, &info)
 	assert.Equal(t, "helper.bot", sub.Name, "room canonical name must not overwrite the subscription name")
@@ -74,6 +75,8 @@ func TestApplyRoomInfo_NestedRoom(t *testing.T) {
 	assert.Equal(t, time.UnixMilli(lastMsg).UTC(), *sub.Room.LastMsgAt)
 	require.NotNil(t, sub.Room.LastMentionAllAt)
 	assert.Equal(t, time.UnixMilli(lastMention).UTC(), *sub.Room.LastMentionAllAt)
+	require.NotNil(t, sub.Room.MinUserLastSeenAt)
+	assert.Equal(t, time.UnixMilli(minSeen).UTC(), *sub.Room.MinUserLastSeenAt, "cross-site min-seen converts epoch millis → RFC3339 time")
 	require.NotNil(t, sub.Room.PrivateKey, "private key must be forwarded, not dropped")
 	assert.Equal(t, pk, *sub.Room.PrivateKey)
 	require.NotNil(t, sub.Room.KeyVersion)
@@ -87,6 +90,17 @@ func TestApplyRoomInfo_NotFound_NoRoom(t *testing.T) {
 	applyRoomInfo(&sub, &model.RoomInfo{RoomID: "r1", Found: false})
 	assert.Nil(t, sub.Room)
 	assert.Equal(t, "general", sub.Name)
+}
+
+// A LOCAL sub's minUserLastSeenAt comes from the flat $lookup baseline (already
+// *time.Time), so buildLocalRoom passes it through unconverted onto sub.Room.
+func TestBuildLocalRoom_MinUserLastSeenAt(t *testing.T) {
+	floor := time.UnixMilli(300).UTC()
+	sub := model.Subscription{SiteID: "site-a", RoomName: "Eng", MinUserLastSeenAt: &floor}
+	room := buildLocalRoom(&sub)
+	require.NotNil(t, room)
+	require.NotNil(t, room.MinUserLastSeenAt, "local baseline minUserLastSeenAt must reach the room object")
+	assert.Equal(t, floor, *room.MinUserLastSeenAt)
 }
 
 // A LOCAL sub is enriched entirely from the single $lookup baseline (room

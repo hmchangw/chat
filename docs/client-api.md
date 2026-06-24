@@ -631,6 +631,7 @@ top-level `siteId`. All fields are optional (omitted when zero/unset).
 | `lastMsgAt` | RFC3339 timestamp | The room's last-message time. |
 | `lastMsgId` | string | Last message ID. |
 | `lastMentionAllAt` | RFC3339 timestamp | The last room-wide mention time. |
+| `minUserLastSeenAt` | RFC3339 timestamp | The room-wide read floor — the oldest `lastSeenAt` across the room's members ("everyone has read up to here"). Omitted when the floor is unset (a member is still fully unread). |
 | `privateKey` | string | Base64-encoded room E2E private key — initial key bootstrap for room members (see [§5](#5-room-encryption)). Present only for encrypted (channel) rooms whose key the caller's site holds; omitted otherwise. |
 | `keyVersion` | number | Version of `privateKey`. |
 
@@ -3882,6 +3883,7 @@ The example below shows one record of each type in order (`channel`, `dm`, `botD
         "lastMsgAt": "2026-06-01T10:00:00Z",
         "lastMsgId": "01970a4f8c2d7c9aBB",
         "lastMentionAllAt": "2026-05-30T08:00:00Z",
+        "minUserLastSeenAt": "2026-05-30T07:55:00Z",
         "privateKey": "bDM4dGZ5...base64...JjT0g9PQ==",
         "keyVersion": 3
       }

@@ -22,12 +22,13 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 
 	now := time.Now().UTC()
 	old := now.AddDate(0, 0, -100)
+	minSeen := now.AddDate(0, 0, -7)         // distinct from lastMsgAt(now) to prove the baseline reads the right field
 	engKey := bytes.Repeat([]byte{0xAB}, 32) // current-slot room secret for r-eng
 
 	// Seed rooms for every local sub that must survive.
 	seed(t, db, "rooms",
 		bson.M{"_id": "r-eng", "name": "Eng", "siteId": "site-a", "userCount": 5, "appCount": 2,
-			"lastMsgId": "m-eng", "lastMsgAt": now, "lastMentionAllAt": now,
+			"lastMsgId": "m-eng", "lastMsgAt": now, "lastMentionAllAt": now, "minUserLastSeenAt": minSeen,
 			"encKey": bson.M{"priv": engKey, "ver": 3}},
 		// stale room for the sub-old window row: its lastMsgAt is 100d old.
 		bson.M{"_id": "r-eng-old", "name": "EngOld", "siteId": "site-a", "userCount": 1, "lastMsgAt": old},
@@ -103,6 +104,8 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 		assert.Equal(t, "m-eng", eng.LastMsgID)
 		require.NotNil(t, eng.LastMsgAt)
 		require.NotNil(t, eng.LastMentionAllAt, "$lookup baseline must carry lastMentionAllAt for degraded-path hasMention")
+		require.NotNil(t, eng.MinUserLastSeenAt, "$lookup baseline must carry minUserLastSeenAt")
+		assert.WithinDuration(t, minSeen, *eng.MinUserLastSeenAt, time.Second, "baseline minUserLastSeenAt must be the seeded room floor, not lastMsgAt")
 		assert.Equal(t, 2, eng.AppCount, "$lookup baseline must carry appCount")
 		assert.Equal(t, "Eng", eng.RoomName, "$lookup baseline must carry room canonical name")
 		assert.True(t, bytes.Equal(engKey, eng.RoomKeyPriv), "$lookup baseline must carry the room key (encKey.priv)")
