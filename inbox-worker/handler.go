@@ -30,6 +30,9 @@ type InboxStore interface {
 	// redelivered until member_added lands (federation race).
 	UpdateSubscriptionRoles(ctx context.Context, account, roomID string, roles []model.Role, rolesUpdatedAt time.Time) error
 	DeleteSubscriptionsByAccounts(ctx context.Context, roomID string, accounts []string) error
+	// DeleteSubscriptionByID removes the subscription keyed by its _id (the source _id adopted at
+	// member_added time), used by the migration's subscription_deleted. Missing row = silent no-op.
+	DeleteSubscriptionByID(ctx context.Context, id string) error
 	FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error)
 	// UpdateSubscriptionRead sets lastSeenAt and alert on the subscription
 	// keyed by (roomID, account). Idempotent and order-safe: the write
@@ -59,11 +62,11 @@ type InboxStore interface {
 	// ownerAccount is non-empty, a $cond pipeline demotes all accounts except
 	// ownerAccount to RoleMember.
 	ApplySubscriptionVisibility(ctx context.Context, roomID string, restricted, externalAccess bool, ownerAccount string, visibilityUpdatedAt time.Time) error
-	// UpdateUserStatus replicates a cross-site status change onto the local
-	// users doc keyed by account. statusIsShow is written only when non-nil so a
-	// text-only update cannot clobber the stored flag. A missing user (no doc on
-	// this site) is a silent no-op.
-	UpdateUserStatus(ctx context.Context, account, statusText string, statusIsShow *bool) error
+	// UpdateUserStatus replicates a cross-site status change onto the local users doc keyed by
+	// account, guarded by statusUpdatedAt (the event publish time): an older/equal high-water
+	// mark is a no-op so out-of-order multi-site delivery can't regress the status. statusIsShow
+	// is written only when non-nil. A missing user (no doc on this site) is a logged no-op.
+	UpdateUserStatus(ctx context.Context, account, statusText string, statusIsShow *bool, statusUpdatedAt time.Time) error
 }
 
 // Handler processes cross-site InboxEvent messages; replicates only subscription/room metadata, never room keys.
@@ -88,6 +91,8 @@ func (h *Handler) HandleEvent(ctx context.Context, data []byte) error {
 		return h.handleMemberAdded(ctx, &evt)
 	case "member_removed":
 		return h.handleMemberRemoved(ctx, &evt)
+	case model.InboxSubscriptionDeleted:
+		return h.handleSubscriptionDeleted(ctx, &evt)
 	case "room_sync":
 		return h.handleRoomSync(ctx, &evt)
 	case "role_updated":
@@ -141,15 +146,24 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.InboxEvent) 
 		historySharedSince = &t
 	}
 
+	// A single-account migration member_added carries the source _id; the destination adopts it so a
+	// later hard-delete maps back. Multi-account (live federation) can't map one SubID, so it keeps UUIDv7.
+	adoptSourceID := event.SubID != "" && len(event.Accounts) == 1
+
 	subs := make([]*model.Subscription, 0, len(event.Accounts))
+	var missing []string
 	for _, account := range event.Accounts {
 		user, ok := userMap[account]
 		if !ok {
-			slog.Warn("user not found for account", "account", account)
+			missing = append(missing, account)
 			continue
 		}
+		subID := idgen.GenerateUUIDv7()
+		if adoptSourceID {
+			subID = event.SubID
+		}
 		sub := &model.Subscription{
-			ID:                 idgen.GenerateUUIDv7(),
+			ID:                 subID,
 			User:               model.SubscriptionUser{ID: user.ID, Account: user.Account},
 			RoomID:             event.RoomID,
 			RoomType:           roomType,
@@ -163,13 +177,20 @@ func (h *Handler) handleMemberAdded(ctx context.Context, evt *model.InboxEvent) 
 		subs = append(subs, sub)
 	}
 
-	if len(subs) == 0 {
-		return nil
-	}
-	if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
-		if !mongo.IsDuplicateKeyError(err) {
-			return fmt.Errorf("bulk create subscriptions: %w", err)
+	if len(subs) > 0 {
+		if err := h.store.BulkCreateSubscriptions(ctx, subs); err != nil {
+			if !mongo.IsDuplicateKeyError(err) {
+				return fmt.Errorf("bulk create subscriptions: %w", err)
+			}
 		}
+	}
+
+	// A referenced user that isn't present yet is a federation/migration race, not a
+	// permanent failure: return a (transient) error so JetStream redelivers the event
+	// until the user lands. The resolvable subscriptions above are created first to make
+	// progress; redelivery re-upserts them idempotently (guarded by the unique index).
+	if len(missing) > 0 {
+		return fmt.Errorf("member_added references unknown users %v in room %s", missing, event.RoomID)
 	}
 
 	// No SubscriptionUpdateEvent is published here — room-worker already publishes
@@ -194,6 +215,22 @@ func (h *Handler) handleMemberRemoved(ctx context.Context, evt *model.InboxEvent
 	}
 	if err := h.store.DeleteSubscriptionsByAccounts(ctx, memberEvt.RoomID, memberEvt.Accounts); err != nil {
 		return fmt.Errorf("delete subscriptions for room %s: %w", memberEvt.RoomID, err)
+	}
+	return nil
+}
+
+// handleSubscriptionDeleted deletes the subscription whose _id matches the event's SubID (the
+// source _id adopted at member_added time), for the migration's hard-delete. Empty SubID is a no-op.
+func (h *Handler) handleSubscriptionDeleted(ctx context.Context, evt *model.InboxEvent) error {
+	var delEvt model.SubscriptionDeletedEvent
+	if err := json.Unmarshal(evt.Payload, &delEvt); err != nil {
+		return fmt.Errorf("unmarshal subscription_deleted payload: %w", err)
+	}
+	if delEvt.SubID == "" {
+		return nil
+	}
+	if err := h.store.DeleteSubscriptionByID(ctx, delEvt.SubID); err != nil {
+		return fmt.Errorf("delete subscription %s: %w", delEvt.SubID, err)
 	}
 	return nil
 }
@@ -332,7 +369,7 @@ func (h *Handler) handleUserStatusUpdated(ctx context.Context, evt *model.InboxE
 	if err := json.Unmarshal(evt.Payload, &e); err != nil {
 		return fmt.Errorf("unmarshal user_status_updated payload: %w", err)
 	}
-	if err := h.store.UpdateUserStatus(ctx, e.Account, e.StatusText, e.StatusIsShow); err != nil {
+	if err := h.store.UpdateUserStatus(ctx, e.Account, e.StatusText, e.StatusIsShow, time.UnixMilli(e.Timestamp).UTC()); err != nil {
 		return fmt.Errorf("update user status for %q: %w", e.Account, err)
 	}
 	return nil

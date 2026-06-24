@@ -1244,6 +1244,53 @@ func TestMemberRemoveEventJSON(t *testing.T) {
 	})
 }
 
+func TestSubscriptionDeletedEventJSON(t *testing.T) {
+	e := model.SubscriptionDeletedEvent{
+		SubID:     "src-sub-id-1",
+		SiteID:    "site-a",
+		Timestamp: 1735689600000,
+	}
+	roundTrip(t, &e, &model.SubscriptionDeletedEvent{})
+}
+
+func TestMemberAddEventSubID(t *testing.T) {
+	t.Run("carries source subscription id when set", func(t *testing.T) {
+		src := model.MemberAddEvent{
+			Type:     "member_added",
+			RoomID:   "r1",
+			Accounts: []string{"alice"},
+			SiteID:   "site-a",
+			SubID:    "src-sub-id-1",
+		}
+		data, err := json.Marshal(src)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		assert.Equal(t, "src-sub-id-1", raw["subId"])
+
+		var dst model.MemberAddEvent
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.Equal(t, "src-sub-id-1", dst.SubID)
+	})
+
+	t.Run("omitted on the wire when empty", func(t *testing.T) {
+		src := model.MemberAddEvent{
+			Type:     "member_added",
+			RoomID:   "r1",
+			Accounts: []string{"alice"},
+			SiteID:   "site-a",
+		}
+		data, err := json.Marshal(src)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, has := raw["subId"]
+		assert.False(t, has, "subId must be omitted when empty")
+	})
+}
+
 func TestRoomTypeChannel(t *testing.T) {
 	assert.Equal(t, model.RoomType("channel"), model.RoomTypeChannel)
 }

@@ -142,6 +142,15 @@ func (s *mongoInboxStore) DeleteSubscriptionsByAccounts(ctx context.Context, roo
 	return nil
 }
 
+// DeleteSubscriptionByID removes the subscription keyed by its _id (the source _id adopted at
+// member_added time). A missing row deletes nothing and is not an error (idempotent redelivery).
+func (s *mongoInboxStore) DeleteSubscriptionByID(ctx context.Context, id string) error {
+	if _, err := s.subCol.DeleteOne(ctx, bson.M{"_id": id}); err != nil {
+		return fmt.Errorf("delete subscription %q: %w", id, err)
+	}
+	return nil
+}
+
 func (s *mongoInboxStore) FindUsersByAccounts(ctx context.Context, accounts []string) ([]model.User, error) {
 	if len(accounts) == 0 {
 		return nil, nil
@@ -161,17 +170,32 @@ func (s *mongoInboxStore) FindUsersByAccounts(ctx context.Context, accounts []st
 // keyed by account. statusIsShow is written only when non-nil so a text-only
 // update cannot clobber the stored flag. A missing user (no doc on this site)
 // is a silent no-op — the event is for an account that doesn't live here.
-func (s *mongoInboxStore) UpdateUserStatus(ctx context.Context, account, statusText string, statusIsShow *bool) error {
-	set := bson.M{"statusText": statusText}
+func (s *mongoInboxStore) UpdateUserStatus(ctx context.Context, account, statusText string, statusIsShow *bool, statusUpdatedAt time.Time) error {
+	set := bson.M{"statusText": statusText, "statusUpdatedAt": statusUpdatedAt}
 	if statusIsShow != nil {
 		set["statusIsShow"] = *statusIsShow
 	}
-	res, err := s.userCol.UpdateOne(ctx, bson.M{"account": account}, bson.M{"$set": set})
+	// Guard on the statusUpdatedAt high-water mark so an out-of-order or duplicate event
+	// (the status fans to all sites) can't regress to an older status.
+	filter := bson.M{"account": account, "$or": bson.A{
+		bson.M{"statusUpdatedAt": bson.M{"$exists": false}},
+		bson.M{"statusUpdatedAt": bson.M{"$lt": statusUpdatedAt}},
+	}}
+	res, err := s.userCol.UpdateOne(ctx, filter, bson.M{"$set": set})
 	if err != nil {
 		return fmt.Errorf("update user status for %q: %w", account, err)
 	}
 	if res.MatchedCount == 0 {
-		slog.WarnContext(ctx, "user_status_updated for unknown account, skipping", "account", account)
+		// No match means either the account isn't on this site (expected no-op for the
+		// all-sites fan) or a stale/duplicate event lost the guard. Distinguish so a
+		// genuinely-missing account stays visible instead of being silently swallowed.
+		count, cerr := s.userCol.CountDocuments(ctx, bson.M{"account": account})
+		if cerr != nil {
+			return fmt.Errorf("check user existence for %q: %w", account, cerr)
+		}
+		if count == 0 {
+			slog.WarnContext(ctx, "user_status_updated for unknown account, skipping", "account", account)
+		}
 	}
 	return nil
 }
@@ -254,24 +278,31 @@ func (s *mongoInboxStore) UpdateSubscriptionRead(ctx context.Context, roomID, ac
 	return nil
 }
 
-// ensureIndexes creates the unique index on (threadRoomId, userId) used by
-// UpsertThreadSubscription. The index name and shape match what message-worker
-// creates in its own threadStoreMongo so both services agree on the natural
-// key for thread subscriptions.
+// ensureIndexes creates the unique index on (threadRoomId, userAccount) used by
+// UpsertThreadSubscription. This MUST match message-worker's threadStoreMongo, which keys thread
+// subscriptions by (threadRoomId, userAccount): both services write the same shared
+// thread_subscriptions collection, so a key disagreement creates conflicting unique indexes and a
+// username rename trips a duplicate-key error (or a duplicate row). See piece-by-piece analysis.
 func (s *mongoInboxStore) ensureIndexes(ctx context.Context) error {
+	// Best-effort: drop the legacy (threadRoomId, userId) unique index so the (threadRoomId,
+	// userAccount) index can be created without a key conflict. It may not exist (fresh deploy /
+	// test container) — ignore all errors.
+	_ = s.threadSubCol.Indexes().DropOne(ctx, "threadRoomId_1_userId_1") //nolint:errcheck
+
 	if _, err := s.threadSubCol.Indexes().CreateOne(ctx, mongo.IndexModel{
-		Keys:    bson.D{{Key: "threadRoomId", Value: 1}, {Key: "userId", Value: 1}},
+		Keys:    bson.D{{Key: "threadRoomId", Value: 1}, {Key: "userAccount", Value: 1}},
 		Options: options.Index().SetUnique(true),
 	}); err != nil {
-		return fmt.Errorf("ensure thread_subscriptions (threadRoomId,userId) index: %w", err)
+		return fmt.Errorf("ensure thread_subscriptions (threadRoomId,userAccount) index: %w", err)
 	}
 	return nil
 }
 
 // UpsertThreadSubscription inserts the subscription on first event for a
-// (threadRoomId, userId) pair, and on subsequent events updates only
-// updatedAt and (monotonically) hasMention. $setOnInsert pins the immutable
-// fields on insert; $set always refreshes updatedAt; $max on hasMention
+// (threadRoomId, userAccount) pair, and on subsequent events updates only
+// updatedAt and (monotonically) hasMention. The natural key is userAccount — matching
+// message-worker's threadStoreMongo so both writers converge on the same row. $setOnInsert pins the
+// immutable fields on insert; $set always refreshes updatedAt; $max on hasMention
 // guarantees a non-mention event never clears a prior mention=true.
 //
 // $max on a bool works because BSON encodes false (0x00) < true (0x01), so
@@ -281,7 +312,7 @@ func (s *mongoInboxStore) ensureIndexes(ctx context.Context) error {
 // only — never by $setOnInsert) so MongoDB doesn't reject the update with a
 // "conflicting update operators" error.
 func (s *mongoInboxStore) UpsertThreadSubscription(ctx context.Context, sub *model.ThreadSubscription) error {
-	filter := bson.M{"threadRoomId": sub.ThreadRoomID, "userId": sub.UserID}
+	filter := bson.M{"threadRoomId": sub.ThreadRoomID, "userAccount": sub.UserAccount}
 	update := bson.M{
 		"$setOnInsert": bson.M{
 			"_id":             sub.ID,
@@ -298,8 +329,8 @@ func (s *mongoInboxStore) UpsertThreadSubscription(ctx context.Context, sub *mod
 		"$max": bson.M{"hasMention": sub.HasMention},
 	}
 	if _, err := s.threadSubCol.UpdateOne(ctx, filter, update, options.UpdateOne().SetUpsert(true)); err != nil {
-		return fmt.Errorf("upsert thread subscription (threadRoomID %q, userID %q): %w",
-			sub.ThreadRoomID, sub.UserID, err)
+		return fmt.Errorf("upsert thread subscription (threadRoomID %q, userAccount %q): %w",
+			sub.ThreadRoomID, sub.UserAccount, err)
 	}
 	return nil
 }

@@ -394,6 +394,48 @@ func TestInboxWorker_ThreadSubscriptionUpserted_Insert_Integration(t *testing.T)
 	assert.True(t, got.UpdatedAt.Equal(now))
 }
 
+// TestInboxWorker_ThreadSubscription_DedupByUserAccount_Integration pins the natural key to
+// (threadRoomId, userAccount) — matching message-worker's threadStoreMongo. Two upserts for the same
+// (threadRoomId, userAccount) must converge on ONE row even if userId differs, so inbox-worker and
+// message-worker never disagree about which row is "the" subscription. (Keyed by userId, the old
+// code left two rows here.)
+func TestInboxWorker_ThreadSubscription_DedupByUserAccount_Integration(t *testing.T) {
+	db := setupMongo(t)
+	ctx := context.Background()
+
+	store := &mongoInboxStore{
+		subCol:       db.Collection("subscriptions"),
+		roomCol:      db.Collection("rooms"),
+		userCol:      db.Collection("users"),
+		threadSubCol: db.Collection("thread_subscriptions"),
+	}
+	require.NoError(t, store.ensureIndexes(ctx))
+
+	now := time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC)
+	first := model.ThreadSubscription{
+		ID: "ts-first", ParentMessageID: "pm-1", RoomID: "r1", ThreadRoomID: "tr-1",
+		UserID: "u-bob", UserAccount: "bob", SiteID: "site-a", CreatedAt: now, UpdatedAt: now,
+	}
+	// Same (threadRoomId, userAccount) but a different userId — keyed by userAccount this is the
+	// same subscription, so it must NOT create a second row.
+	second := model.ThreadSubscription{
+		ID: "ts-second", ParentMessageID: "pm-1", RoomID: "r1", ThreadRoomID: "tr-1",
+		UserID: "u-bob-other", UserAccount: "bob", SiteID: "site-a", CreatedAt: now, UpdatedAt: now.Add(time.Minute),
+	}
+	require.NoError(t, store.UpsertThreadSubscription(ctx, &first))
+	require.NoError(t, store.UpsertThreadSubscription(ctx, &second))
+
+	count, err := db.Collection("thread_subscriptions").
+		CountDocuments(ctx, bson.M{"threadRoomId": "tr-1", "userAccount": "bob"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), count, "thread-sub dedups by (threadRoomId, userAccount), matching message-worker")
+
+	var got model.ThreadSubscription
+	require.NoError(t, db.Collection("thread_subscriptions").
+		FindOne(ctx, bson.M{"threadRoomId": "tr-1", "userAccount": "bob"}).Decode(&got))
+	assert.Equal(t, "ts-first", got.ID, "$setOnInsert keeps the first row; the second upsert is a no-op insert")
+}
+
 func TestInboxWorker_ThreadSubscriptionUpserted_MonotonicMention_Integration(t *testing.T) {
 	db := setupMongo(t)
 	ctx := context.Background()
@@ -1289,9 +1331,12 @@ func TestInboxWorker_UpdateUserStatus_Integration(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	t1 := time.UnixMilli(1000).UTC()
+	t2 := time.UnixMilli(2000).UTC()
+
 	t.Run("updates text and isShow when both supplied", func(t *testing.T) {
 		hide := false
-		require.NoError(t, store.UpdateUserStatus(ctx, "alice", "out to lunch", &hide))
+		require.NoError(t, store.UpdateUserStatus(ctx, "alice", "out to lunch", &hide, t1))
 
 		var got model.User
 		require.NoError(t, store.userCol.FindOne(ctx, bson.M{"account": "alice"}).Decode(&got))
@@ -1302,7 +1347,7 @@ func TestInboxWorker_UpdateUserStatus_Integration(t *testing.T) {
 	t.Run("text-only update leaves stored isShow untouched", func(t *testing.T) {
 		// Stored isShow is currently false from the previous subtest; a nil
 		// isShow must not clobber it.
-		require.NoError(t, store.UpdateUserStatus(ctx, "alice", "heads down", nil))
+		require.NoError(t, store.UpdateUserStatus(ctx, "alice", "heads down", nil, t2))
 
 		var got model.User
 		require.NoError(t, store.userCol.FindOne(ctx, bson.M{"account": "alice"}).Decode(&got))
@@ -1310,8 +1355,17 @@ func TestInboxWorker_UpdateUserStatus_Integration(t *testing.T) {
 		assert.False(t, got.StatusIsShow)
 	})
 
-	t.Run("unknown account is a silent no-op", func(t *testing.T) {
-		require.NoError(t, store.UpdateUserStatus(ctx, "ghost", "nope", nil))
+	t.Run("stale event is rejected by the statusUpdatedAt high-water guard", func(t *testing.T) {
+		// statusUpdatedAt is t2; a t1 (older) event must be a no-op, not regress the text.
+		require.NoError(t, store.UpdateUserStatus(ctx, "alice", "STALE", nil, t1))
+
+		var got model.User
+		require.NoError(t, store.userCol.FindOne(ctx, bson.M{"account": "alice"}).Decode(&got))
+		assert.Equal(t, "heads down", got.StatusText, "stale status must not overwrite a newer one")
+	})
+
+	t.Run("unknown account is a no-op", func(t *testing.T) {
+		require.NoError(t, store.UpdateUserStatus(ctx, "ghost", "nope", nil, t2))
 
 		count, err := store.userCol.CountDocuments(ctx, bson.M{"account": "ghost"})
 		require.NoError(t, err)
