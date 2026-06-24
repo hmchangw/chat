@@ -184,3 +184,56 @@ func TestNew_TLSInsecureSkipVerify(t *testing.T) {
 	require.NotNil(t, tr.TLSClientConfig)
 	assert.True(t, tr.TLSClientConfig.InsecureSkipVerify)
 }
+
+func TestListUsers_PagesAndReturnsAll(t *testing.T) {
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "tok", ExpiresIn: 3600}) // #nosec G117 -- test mock OAuth token
+	}))
+	defer tokenSrv.Close()
+
+	var graphURL string
+	graphSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer tok", r.Header.Get("Authorization"))
+		if r.URL.Query().Get("$skiptoken") == "" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"value":           []GraphUser{{ID: "id1", Mail: "alice@corp.com", UserPrincipalName: "alice@corp.com"}},
+				"@odata.nextLink": graphURL + "/users?$skiptoken=p2",
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"value": []GraphUser{{ID: "id2", Mail: "", UserPrincipalName: "bob@corp.com"}},
+		})
+	}))
+	defer graphSrv.Close()
+	graphURL = graphSrv.URL
+
+	c := newTestClient(tokenSrv.URL, graphSrv.URL)
+	users, err := c.ListUsers(context.Background())
+	require.NoError(t, err)
+	require.Len(t, users, 2)
+	assert.Equal(t, "id1", users[0].ID)
+	assert.Equal(t, "bob@corp.com", users[1].UserPrincipalName)
+}
+
+func TestListUsers_RejectsForeignNextLink(t *testing.T) {
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(tokenResponse{AccessToken: "tok", ExpiresIn: 3600}) // #nosec G117 -- test mock OAuth token
+	}))
+	defer tokenSrv.Close()
+
+	graphSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// nextLink points at a different (attacker-controlled) host — the client
+		// must refuse to follow it rather than re-send the bearer token off-origin.
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"value":           []GraphUser{{ID: "id1", Mail: "alice@corp.com"}},
+			"@odata.nextLink": "https://evil.example.com/users?$skiptoken=p2",
+		})
+	}))
+	defer graphSrv.Close()
+
+	c := newTestClient(tokenSrv.URL, graphSrv.URL)
+	_, err := c.ListUsers(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected nextLink host")
+}
