@@ -171,7 +171,7 @@ Three services own the surface (**REVISED 2026-06-24** — Q18 reversed, admin s
 - **IDs must be preserved from legacy** — no remapping layer (the v2 Go repo already preserves the 17-char `_id`).
 - **Provisioning-gated login.** After credential verification, the account's `{userId, siteId}` must exist in this site's `users` collection; otherwise `403 account_not_provisioned`. Mirrors the auth-service gate introduced in PR #295. Controlled by `REQUIRE_PROVISIONED=true` (default); fail-closed on store errors.
 - **Single home site per bot.** A bot is provisioned at exactly one site (its home site), identified by `siteId` on its user record. Login is accepted only at that site's `botplatform-service`. Cross-site interaction happens via NATS supercluster federation, never via cross-site login.
-- **Bot account → subject-token normalization.** Bot accounts use the legacy `*.bot` suffix (`xxx.bot`, `yyy.bot`), which contains a `.` and would multi-tokenize unsafely if used raw in a NATS subject. The subject-side token is the **dot-normalized form** (`xxx.bot` → `xxx_bot`) produced by `subject.BotAccountToken`. Bot NATS subjects scope to **`chat.bot.{botToken}.>`** — never the `chat.user.>` namespace, eliminating ACL overlap between human `xxx` and bot `xxx.bot` (Part II §4.4). Validation: `subject.IsValidBotAccount` accepts the legacy `^[A-Za-z0-9_-]+\.bot$` shape; the strict `subject.IsValidAccountToken` from PR #295 continues to apply to human accounts on `chat.user.>`.
+- **Bot account → subject-name strip.** Bot accounts use the legacy `*.bot` suffix (`xxx.bot`, `yyy.bot`), which contains a `.` and would multi-tokenize unsafely if used raw in a NATS subject. The subject-side identifier is the **`.bot`-stripped form** (`xxx.bot` → `xxx`) produced by `subject.BotSubjectName` — the `chat.bot.>` namespace already encodes the class so the suffix is redundant. Bot NATS subjects scope to **`chat.bot.{account}.>`** (where `{account}` is the stripped name) — never the `chat.user.>` namespace, eliminating ACL overlap between human `xxx` and bot `xxx.bot` (Part II §4.7). Validation: `subject.IsValidBotAccount` accepts the legacy `^[A-Za-z0-9_-]+\.bot$` shape; the strict `subject.IsValidAccountToken` from PR #295 continues to apply to human accounts on `chat.user.>`.
 
 ---
 
@@ -374,7 +374,7 @@ The legacy system is Rocket.Chat. Confirmed behavior the migration must honor:
 | **Sessions** | New `sessions` collection, **one doc per session** keyed by a per-row token hash. Dual-hash scheme (§4.6): legacy rows use `base64(sha256(token))`, native `v1` rows use `base64(HMAC-SHA-256(server_secret, token))`. **Configurable per-account cap with FIFO eviction by `issuedAt`** — default 100, env-tunable via `SESSIONS_MAX_PER_ACCOUNT` (§5.6). **Sessions are permanent** until cap-evicted or admin-revoked; no time-based expiry. **Validate is pure read** — Valkey hit (refreshing in-memory TTL via `GETEX`) or Mongo `findOne({_id: hash})` on miss; no Mongo writes on the hot path. | O(1) lookup independent of session count (validate reads sessions by `_id` regardless of cap); per-session + per-account revocation. Bounded users-doc size (sessions can't bloat the identity doc that every nextgen service caches). Cap bounds account-scope growth (essential since sessions are permanent); FIFO naturally targets old orphaned tokens from prior pod restarts. Bot SDKs that don't auto-relogin on 401 stay working forever as long as the session row exists. Dual hash preserves bit-for-bit legacy compatibility while raising the storage-leak bar for new tokens. Replaces the legacy hardcoded 50-cap stored as a `loginTokens[]` array on the user doc (O(n) scan per validate). |
 | **Token wire format** | Per-class unversioned prefixes: **`bp_<43-char base64url>`** for bot session tokens, **`ad_<43-char base64url>`** for admin session tokens; legacy tokens unchanged (§4.6) | Class is self-evident from the `X-Auth-Token` prefix — no DB lookup needed to know whether the bearer is bot or admin. Unlocks a single-store fast path (no legacy fallback lookup), and the prefix is detected by every standard secret-scanner. **No version digit** (`bp_`, not `bp1_`) — the login mechanism isn't planned to rotate; YAGNI. |
 | **Scope** | Both surfaces (password on `users`, sessions collection) are **account-agnostic** (admins *and* bots) | The legacy login authenticates admins too — shared password-login infrastructure, not bot-only. |
-| **NATS JWT** | **Minted by `auth-service` only** — never by `botplatform-service`, never returned from `/api/v1/login` or `/dev-login`. `auth-service POST /auth` takes a `kind` discriminator with **three values**: `sso` (OIDC bearer → `chat.user.{account}.>`), `bot` (`bp_…` session token → `chat.bot.{token}.>`), `admin` (`ad_…` session token → `chat.>` god-mode). For `kind:"bot"` and `kind:"admin"`, `auth-service` calls back into `botplatform-service /v1/auth/validate` before minting. See §5.2. **Only chat-frontend callers need this** — bot SDK pods (flow A) never request a JWT. | Single signing key, single minter (blast-radius isolation, §7 Option B rationale). The bot SDK is REST-only — JWT mint stays out of the login surface. Reuses the existing JWT machinery and grants infrastructure on `auth-service`; bot/admin kinds just add validator branches that delegate to `botplatform-service`. |
+| **NATS JWT** | **Minted by `auth-service` only** — never by `botplatform-service`, never returned from `/api/v1/login` or `/dev-login`. `auth-service POST /auth` takes a `kind` discriminator with **three values**: `sso` (OIDC bearer → `chat.user.{account}.>`), `bot` (`bp_…` session token → `chat.bot.{strippedAccount}.>` where `xxx.bot → xxx`), `admin` (`ad_…` session token → `chat.>` god-mode). For `kind:"bot"` and `kind:"admin"`, `auth-service` calls back into `botplatform-service /v1/auth/validate` before minting. See §5.2. **Only chat-frontend callers need this** — bot SDK pods (flow A) never request a JWT. | Single signing key, single minter (blast-radius isolation, §7 Option B rationale). The bot SDK is REST-only — JWT mint stays out of the login surface. Reuses the existing JWT machinery and grants infrastructure on `auth-service`; bot/admin kinds just add validator branches that delegate to `botplatform-service`. |
 | **Validation hot path** | Mongo durable + **read-through cache (in-pod LRU + Valkey)** | Every REST call validates a token; a Mongo read per call is the bottleneck (§9.3). |
 
 ---
@@ -507,22 +507,31 @@ Bot accounts in production carry the legacy `*.bot` suffix (`xxx.bot`, `yyy.bot`
 **Two-layer fix.** The Mongo identity is unchanged; the change is at the NATS subject layer.
 
 #### Layer 1 — separate top-level namespace
-Bot subjects live on **`chat.bot.>`**, never under `chat.user.>`. Top-level token disambiguates classes — a human grant `chat.user.xxx.>` and a bot grant `chat.bot.xxx_bot.>` cannot overlap regardless of how the account tokens are derived. This is also the same namespace the bot-traffic isolation spec uses for class routing, so the two specs converge on a single ontology.
+Bot subjects live on **`chat.bot.>`**, never under `chat.user.>`. Top-level token disambiguates classes — a human grant `chat.user.alice.>` and a bot grant `chat.bot.alice.>` cannot overlap regardless of the bot account's underlying name. This is also the same namespace the bot-traffic isolation spec uses for class routing, so the two specs converge on a single ontology.
 
-#### Layer 2 — normalize the account into a subject-safe token
+#### Layer 2 — strip the `.bot` suffix to derive the subject-side name
+The subject already encodes the class (`chat.bot.>`), so the `.bot` suffix on the account is redundant inside that namespace. Strip it. The subject parameter is named **`{account}`** (not `{botToken}` — `token` would conflate with the auth credential).
+
 ```go
 // pkg/subject/account.go (new — added in this spec's PR)
 
-// BotAccountToken converts a bot account ("xxx.bot") into the NATS-safe subject
-// token ("xxx_bot"). Preserves the .bot information so the token remains round-
-// trippable back to the account identity (replace _bot$ with .bot).
-func BotAccountToken(account string) string {
-    return strings.ReplaceAll(account, ".", "_")
+// BotSubjectName extracts the subject-side bot identifier from a bot account.
+// "alice.bot" → "alice"; "weatherbot.bot" → "weatherbot".
+// Caller is expected to have validated the account via IsValidBotAccount first.
+func BotSubjectName(botAccount string) string {
+    return strings.TrimSuffix(botAccount, ".bot")
+}
+
+// BotAccountFromSubjectName is the inverse — reconstructs the account.
+// "alice" → "alice.bot". Used when a service receives a subject and needs the
+// canonical Mongo account back.
+func BotAccountFromSubjectName(subjectName string) string {
+    return subjectName + ".bot"
 }
 
 // IsValidBotAccount accepts exactly the legacy bot shape: <token>.bot where
 // <token> matches the strict IsValidAccountToken rule. Used at the login path
-// to refuse anything that wouldn't normalize cleanly.
+// to refuse anything that wouldn't strip cleanly to a subject-safe name.
 var botAccountRE = regexp.MustCompile(`^[A-Za-z0-9_-]+\.bot$`)
 
 func IsValidBotAccount(account string) bool {
@@ -530,30 +539,49 @@ func IsValidBotAccount(account string) bool {
 }
 ```
 
+#### Admin account namespace (DECIDED 2026-06-24)
+
+Admins are not real human SSO users — they're privileged superuser accounts that auth like bots (username + password → session token), distinguished by a `p_` prefix on the account and the `admin` role on `users.roles`. Their NATS JWT grant scope is **`chat.>` god-mode** (decided 2026-06-24, §3 Key Decisions / §5.2 `kind:"admin"`). No per-admin subject namespace token is needed because the grant is unconditioned on identity.
+
+```go
+// pkg/model/account.go (extension)
+
+// IsAdminAccount classifies an account as an admin by the legacy `p_` prefix
+// convention (e.g. "p_jeff", "p_alice"). Used by /v1/auth/validate to set
+// principal.class = "admin" when the row's roles also contain "admin".
+func IsAdminAccount(account string) bool {
+    return strings.HasPrefix(account, "p_")
+}
+```
+
+The `principal.class` returned by `/v1/auth/validate` is derived from the row's `roles` (authoritative), not from the account-name pattern alone — `IsAdminAccount` is a sanity gate on the LOGIN path (reject malformed admin usernames), not a class-source on the VALIDATE path.
+
 Concrete result:
 
-| Account in Mongo | Subject namespace | Subject token | JWT scope |
-|---|---|---|---|
-| `alice` (human) | `chat.user.>` | `alice` | `chat.user.alice.>` |
-| `xxx.bot` (bot) | `chat.bot.>` | `xxx_bot` | `chat.bot.xxx_bot.>` |
-| `yyy.bot` (bot) | `chat.bot.>` | `yyy_bot` | `chat.bot.yyy_bot.>` |
-| `xxx` (human) vs `xxx.bot` (bot) | disjoint top-level tokens | — | **no overlap** ✅ |
+| Account in Mongo | Class | Subject namespace | Subject parameter | JWT scope |
+|---|---|---|---|---|
+| `alice` (human SSO) | `user` | `chat.user.>` | `alice` | `chat.user.alice.>` |
+| `alice.bot` (bot) | `bot` | `chat.bot.>` | `alice` (stripped) | `chat.bot.alice.>` |
+| `weatherbot.bot` (bot) | `bot` | `chat.bot.>` | `weatherbot` (stripped) | `chat.bot.weatherbot.>` |
+| `p_jeff` (admin) | `admin` | n/a (god) | n/a | `chat.>` |
+| `alice` (human) vs `alice.bot` (bot) | — | disjoint top-level tokens | — | **no overlap** ✅ |
 
 #### Validation dispatch by class
-Both validators are always present:
+Three validators side-by-side; callers pick by login path:
 
-- **Human login (auth-service OIDC):** validates `claims.preferred_username` with `subject.IsValidAccountToken` (the strict PR #295 form — no dots).
+- **Human SSO (auth-service OIDC):** validates `claims.preferred_username` with `subject.IsValidAccountToken` (strict PR #295 form — no dots).
 - **Bot login (botplatform-service `/api/v1/login`, `/v1/bot/login`):** validates `user` field with `subject.IsValidBotAccount` (allows the `*.bot` shape only).
-- The subject derived for either is always strict-safe after normalization — no path produces a subject token containing `.`, `*`, `>`, whitespace, or control characters.
+- **Admin login (botplatform-service `/api/v1/login`, `/dev-login`):** validates `user` field with `model.IsAdminAccount` (allows the `p_*` shape only).
+- The subject derived for human or bot is always strict-safe after normalization — no path produces a subject token containing `.`, `*`, `>`, whitespace, or control characters. Admin doesn't need subject-safety because admins don't live in a per-identity subject namespace.
 
 #### Why this resolves the PR #295 conflict
 PR #295 introduces `subject.IsValidAccountToken` (rejects accounts containing `.`) as a routing-layer invariant before any account reaches `chat.user.{account}.>`. As-shipped it would reject every production bot. With this fix:
 
-- Bots never reach `chat.user.{account}.>` — they're on `chat.bot.{botToken}.>` instead, so the human-side validator never sees them.
-- The bot side has its own validator (`IsValidBotAccount`) tuned to the bot shape.
-- The subject token (`xxx_bot`) is itself dot-free, so any downstream `IsValidAccountToken` check on the token (not the raw account) passes.
+- Bots never reach `chat.user.{account}.>` — they're on `chat.bot.{account}.>` (with `.bot` stripped) instead, so the human-side validator never sees them.
+- The bot side has its own validator (`IsValidBotAccount`) tuned to the bot shape; the stripped subject name (`alice` from `alice.bot`) is itself dot-free so any downstream `IsValidAccountToken` check on the token (not the raw account) passes.
+- Admins never reach the subject-token validators at all — their grant is `chat.>` (unscoped).
 
-`pkg/subject` will have **both** validators side-by-side; callers pick the right one for their class. JWT grants are minted from the appropriate scope based on the principal's class (auth-service mints `chat.user.{account}.>` for SSO humans; botplatform-service requests JWT minting at `chat.bot.{botToken}.>` for bots).
+`pkg/subject` will have **all three** validators side-by-side; callers pick the right one for their class. JWT grants are minted from the appropriate scope based on the principal's class — auth-service mints `chat.user.{account}.>` for SSO humans, `chat.bot.{stripped}.>` for bots, `chat.>` for admins (§5.2 `kind` discriminator dispatches; mint scope is selected from `principal.class` returned by `/v1/auth/validate`).
 
 ---
 
@@ -635,7 +663,7 @@ POST /auth
 1. Receive `{kind:"bot", token, natsPublicKey}`.
 2. Call `POST botplatform-service/v1/auth/validate` with `{authToken: token}` — same dual-token authority (§9.8) used by ApiGW/WS/EventConsumer (no `userId` field — the token self-identifies).
 3. On `valid:true`, take the returned `principal` (incl. `class:"bot"`, `account`, `siteId`).
-4. Mint a NATS user JWT scoped to `chat.bot.{botToken}.>` (the bot subject namespace from §4.6 / traffic-isolation spec — NOT `chat.user.{account}.>`). Same signing key, same JWT shape, just a different grant scope.
+4. Mint a NATS user JWT scoped to `chat.bot.{strippedAccount}.>` for `kind:"bot"` (where `strippedAccount = subject.BotSubjectName(principal.account)`, e.g. `xxx.bot → xxx`) or `chat.>` for `kind:"admin"` (god-mode, decided 2026-06-24). Never `chat.user.{account}.>` for these kinds. Same signing key, same JWT shape, different grant scope per class.
 5. Return `{natsJwt, user}` — same response envelope as the SSO path.
 
 **Why this shape:**

@@ -373,12 +373,13 @@ func FromUser(u model.User) Class {
     return ClassUser
 }
 
-// AccountToken returns the subject-safe account token for the given class.
-// Humans: identity (validated strict, no dots). Bots: dot-normalized
-// (xxx.bot -> xxx_bot, see auth.md Part II §4.4 BotAccountToken).
+// AccountToken returns the subject-safe account identifier for the given class.
+// Humans: identity verbatim (validated strict, no dots).
+// Bots: .bot-suffix stripped — chat.bot.> namespace already encodes the class,
+// so "xxx.bot" → "xxx" (see auth.md Part II §4.7 BotSubjectName).
 func AccountToken(class Class, account string) string {
     if class == ClassBot {
-        return BotAccountToken(account)  // strings.ReplaceAll(account, ".", "_")
+        return BotSubjectName(account)  // strings.TrimSuffix(account, ".bot")
     }
     return account
 }
@@ -400,23 +401,24 @@ func UserScoped(class Class, account string) string {
 ```
 
 **Cross-spec invariants:**
-- `BotAccountToken` and `IsValidBotAccount` are defined in auth.md Part II §4.4. This spec consumes them; the auth-spec PR adds them.
+- `BotSubjectName` and `IsValidBotAccount` are defined in auth.md Part II §4.7. This spec consumes them; the auth-spec PR adds them.
 - Every existing call site that builds a subject from an `account` and currently assumes the account is human-shaped (no dots) gets a class-aware wrapper. Audit pass: grep `pkg/subject` callers in `message-gatekeeper`, `message-worker`, `broadcast-worker`, `room-service`, `auth-service` — switch each to the class-aware variant where the principal class is known.
 
 ### 4.3 The mirror table
 
-Account-token notation: `{account}` = strict-validated human account (e.g. `alice`); `{botToken}` = `BotAccountToken(account)` — the dot-normalized bot subject token (e.g. `xxx_bot` for account `xxx.bot`, auth.md Part II §4.4).
+Account-name notation: for human accounts `{account}` is the strict-validated identifier verbatim (e.g. `alice`); for bot accounts `{account}` is the **`.bot`-stripped form** produced by `BotSubjectName` (e.g. `xxx` for account `xxx.bot`, auth.md Part II §4.7). The `chat.bot.>` namespace already encodes the class so the suffix is redundant inside it.
 
 | Old (today) | New — user lane | New — bot lane |
 |---|---|---|
-| `chat.user.{account}.request.…` | `chat.user.{account}.request.…` *(unchanged)* | `chat.bot.{botToken}.request.…` |
-| `chat.user.{account}.room.{roomID}.{siteID}.msg.send` | `chat.user.{account}.room.{roomID}.{siteID}.msg.send` *(unchanged in Phase 1 — gatekeeper shared per §5.1)* | `chat.bot.{botToken}.room.{roomID}.{siteID}.msg.send` *(Phase 5+ only; Phase 1 bots still publish on the human-side subject and gatekeeper classifies)* |
-| `chat.msg.canonical.{siteID}.{event}` | `chat.user.canonical.{siteID}.{event}` *(renamed — §2.3)* | `chat.bot.canonical.{siteID}.{event}` *(new)* |
+| `chat.user.{account}.request.…` | `chat.user.{account}.request.…` *(unchanged)* | `chat.bot.{account}.request.…` |
+| `chat.user.{account}.room.{roomID}.{siteID}.msg.send` | `chat.user.{account}.room.{roomID}.{siteID}.msg.send` *(unchanged in Phase 1 — gatekeeper shared per §5.1)* | `chat.bot.{account}.room.{roomID}.{siteID}.msg.send` *(Phase 5+ only; Phase 1 bots still publish on the human-side subject and gatekeeper classifies)* |
+| `chat.msg.canonical.{siteID}.{event}` | `chat.msg.canonical.{siteID}.{event}` *(Phase 1: shared — see §4.4a)* | *(Phase 1: shared with users on `chat.msg.canonical.…`; class lives in the event payload)* |
 | `chat.room.{roomID}.…` | `chat.room.{roomID}.…` *(unchanged — Q3 decided NO room-class, §11)* | (no bot variant; rooms are class-agnostic) |
 
 JWT grants:
 - Humans: `chat.user.{account}.>` (unchanged).
-- Bots: **`chat.bot.{botToken}.>`** (replaces what would have been `chat.user.{account}.>` for bot accounts — eliminates the ACL escape where human `xxx` would match bot `xxx.bot`'s subject space).
+- Bots: **`chat.bot.{account}.>`** where `{account}` = `BotSubjectName(rawAccount)` — eliminates the ACL escape where human `xxx` would match bot `xxx.bot`'s subject space.
+- Admins: **`chat.>`** (god-mode, decided 2026-06-24, see auth.md Part II §3 Key Decisions / §5.2 `kind:"admin"`).
 
 The canonical-stream rename (row 3) is the load-bearing change in this table; rows 1–2 only matter at Phase 5+ when (and if) the user-scoped RPC subjects also get classed. Phase 1 ships rows 3–4 only.
 
