@@ -42,7 +42,7 @@
           <mxGeometry x="1350" y="60" width="220" height="120" as="geometry" />
         </mxCell>
 
-        <mxCell id="g_persist" value="INSERT sessions&#xa;{ _id: hash, scheme:&#x27;v1&#x27;,&#xa;  userId, account, siteId,&#xa;  issuedAt, lastUsedAt,&#xa;  expiresAt: now+180d }&#xa;+ SETEX valkey hash → principal" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4D6;strokeColor=#B8860B;fontSize=10;align=center;" vertex="1" parent="gen_band">
+        <mxCell id="g_persist" value="db.sessions.insertOne({&#xa;  _id: hash, userId, account,&#xa;  siteId, scheme:&#x27;v1&#x27;,&#xa;  issuedAt: now&#xa;})&#xa;+ cap check (count + delete&#xa;  oldest by issuedAt)&#xa;+ SETEX valkey hash → principal&#xa;(no expiresAt, no lastUsedAt)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4D6;strokeColor=#B8860B;fontSize=10;align=center;" vertex="1" parent="gen_band">
           <mxGeometry x="1620" y="50" width="220" height="140" as="geometry" />
         </mxCell>
 
@@ -91,7 +91,7 @@
         </mxCell>
 
         <!-- merge -->
-        <mxCell id="v_cache" value="GET valkey   hash&#xa;hot path  &lt;5ms cached  &gt;95% hit" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4D6;strokeColor=#B8860B;fontSize=11;fontStyle=1;align=center;" vertex="1" parent="val_band">
+        <mxCell id="v_cache" value="GETEX valkey hash (EX=5m)&#xa;hot path &lt;5ms cached &gt;95% hit&#xa;GETEX refreshes in-memory TTL (no Mongo write)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4D6;strokeColor=#B8860B;fontSize=10;fontStyle=1;align=center;" vertex="1" parent="val_band">
           <mxGeometry x="900" y="140" width="280" height="80" as="geometry" />
         </mxCell>
 
@@ -99,11 +99,11 @@
           <mxGeometry x="1240" y="140" width="160" height="80" as="geometry" />
         </mxCell>
 
-        <mxCell id="v_mongo" value="db.sessions.findOne({ _id: hash })&#xa;cold path  &lt;50ms uncached" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4D6;strokeColor=#B8860B;fontSize=11;align=center;" vertex="1" parent="val_band">
+        <mxCell id="v_mongo" value="db.sessions.findOne({_id: hash})&#xa;cold path &lt;50ms; single IXSCAN on _id&#xa;(no array scan; O(1) regardless of cap)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF4D6;strokeColor=#B8860B;fontSize=10;align=center;" vertex="1" parent="val_band">
           <mxGeometry x="1240" y="260" width="280" height="80" as="geometry" />
         </mxCell>
 
-        <mxCell id="v_session_check" value="session found&#xa;and not expired?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontSize=11;fontStyle=1;align=center;" vertex="1" parent="val_band">
+        <mxCell id="v_session_check" value="session row&#xa;found?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontSize=11;fontStyle=1;align=center;" vertex="1" parent="val_band">
           <mxGeometry x="1580" y="140" width="180" height="100" as="geometry" />
         </mxCell>
 
@@ -116,11 +116,11 @@
           <mxGeometry x="900" y="460" width="320" height="120" as="geometry" />
         </mxCell>
 
-        <mxCell id="v_throttle" value="async: if (now - lastUsedAt) &gt; 5min&#xa;bump lastUsedAt + expiresAt = now+180d&#xa;(sliding-infinite session lifetime)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=11;align=center;" vertex="1" parent="val_band">
+        <mxCell id="v_throttle" value="VALIDATE IS PURE-READ&#xa;Activity tracked only via Valkey GETEX TTL refresh (step v_cache).&#xa;NO Mongo writes on this path — no lastUsedAt, no expiresAt bump.&#xa;Sessions are PERMANENT (auth Part II §5.5); cap-eviction + admin revoke are the only removal paths." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=10;fontStyle=1;align=center;" vertex="1" parent="val_band">
           <mxGeometry x="1260" y="460" width="320" height="80" as="geometry" />
         </mxCell>
 
-        <mxCell id="v_fail" value="✗ 401 invalid_credentials&#xa;(or sessionExpired)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#C62828;fontSize=11;fontStyle=1;align=center;" vertex="1" parent="val_band">
+        <mxCell id="v_fail" value="✗ 401 invalidCredentials&#xa;(no sessionExpired —&#xa;sessions are permanent)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#C62828;fontSize=11;fontStyle=1;align=center;" vertex="1" parent="val_band">
           <mxGeometry x="1580" y="460" width="200" height="80" as="geometry" />
         </mxCell>
 

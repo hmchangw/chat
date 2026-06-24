@@ -6,29 +6,28 @@
 >
 > **Audience:** SRE/ops running the migration; engineers writing the migration jobs. Designed in AS-IS vs TO-BE format so the delta and the mechanic are explicit at every step.
 >
-> **Status:** DRAFT — pending verification against the legacy v2 Mongo dump and the current nextgen `chat` DB.
+> **Status:** DRAFT — pending verification against the legacy v2 Mongo dump and the current nextgen `chat` DB. **Revised 2026-06-24** for the mixed-storage design (auth.md Part II §4): passwords stay on `users` in-place; sessions live in a new dedicated `sessions` collection seeded once at cutover from legacy `users.services.resume.loginTokens[]`.
 
 ---
 
 ## 1. Scope
 
-Three Mongo collections are touched by this migration:
+Two Mongo collections are touched by this migration:
 
 | Collection | AS-IS location | TO-BE location | Status |
 |---|---|---|---|
-| **`users`** | Legacy RC DB (Meteor) + nextgen `chat` DB | Nextgen `chat` DB (siteA, siteB, …) | **Modified** — provisioning fields confirmed/added |
-| **`credentials`** | (none — embedded inside legacy `users`) | Nextgen `chat` DB, owned by `botplatform-service` | **NEW** |
-| **`sessions`** | (none — embedded as `loginTokens[]` array inside legacy `users`) | Nextgen `chat` DB, owned by `botplatform-service` | **NEW** |
+| **`users`** | Legacy RC DB (Meteor) + nextgen `chat` DB | Nextgen `chat` DB (siteA, siteB, …) — same shape, password material in-place at `services.password.bcrypt` | **Modified** — provisioning index added if PR #295 didn't already; auth read-paths reused **in place** |
+| **`sessions`** | (none — embedded as `loginTokens[]` array inside legacy `users`) | Nextgen `chat` DB, owned by `botplatform-service` | **NEW** — bulk-imported once at cutover from `users.services.resume.loginTokens[]` |
 
-No other collections are added or changed by this design.
+No other collections are added or changed by this design. There is **no** separate `credentials` collection (the 2026-06-24 pivot dropped it — passwords live on `users` in-place; see auth.md Part II §4.1).
 
 ---
 
 ## 2. Collection: `users` (modified, shared)
 
-### AS-IS — legacy RC Mongo (source of migration)
+### AS-IS — legacy RC Mongo (source of truth for legacy traffic)
 
-Meteor/RC schema, single-site, monolithic. Auth and identity entangled in one doc.
+Meteor/RC schema, single-site, monolithic. Auth and identity live in one doc.
 
 ```js
 // Database: meteor (legacy RC)
@@ -41,15 +40,14 @@ Meteor/RC schema, single-site, monolithic. Auth and identity entangled in one do
   active:     true,
   roles:      ["bot"] | ["admin"] | ["user"],
   createdAt:  ISODate(...),
-  // --- the parts we will extract ---
   services: {
     password: {
-      bcrypt: "$2b$10$..."                         // → migrates to credentials.passwordHash
+      bcrypt: "$2b$10$..."                         // read directly by nextgen (SAME path; no extraction)
     },
     resume: {
       loginTokens: [
         { when: ISODate(...),
-          hashedToken: "b64sha256...",             // → migrates to sessions._id
+          hashedToken: "b64sha256...",             // → bulk-imported to sessions._id at cutover (§3.4)
           type: undefined                          // regular login token → import
         },
         { ..., type: "personalAccessToken"         // PAT → SKIP (humans only)
@@ -58,7 +56,7 @@ Meteor/RC schema, single-site, monolithic. Auth and identity entangled in one do
       ]
     }
   },
-  requirePasswordChange: true | false              // → migrates to credentials.RequirePasswordChange
+  requirePasswordChange: true | false              // read directly by nextgen (SAME path)
 }
 ```
 
@@ -68,7 +66,7 @@ Meteor/RC schema, single-site, monolithic. Auth and identity entangled in one do
 
 ### AS-IS — nextgen `chat` DB (current state pre-bot-platform)
 
-After PR #295 (portal-service + provisioning gate), nextgen `users` has the provisioning-related fields. Per-site DB (one `chat` DB per site).
+After PR #295 (portal-service + provisioning gate), nextgen `users` has the provisioning-related fields. Per-site DB (one `chat` DB per site). The identity-sync that PR #295 wires up already preserves the legacy `_id` verbatim AND carries the `services.password.*` + `requirePasswordChange` paths end-to-end (open verification item §6).
 
 ```js
 // Database: chat (nextgen, per site)
@@ -80,8 +78,16 @@ After PR #295 (portal-service + provisioning gate), nextgen `users` has the prov
   roles:     ["bot"] | ["admin"] | ["user"],
   name:      "Alice Smith",
   active:    true,
-  createdAt: 1718500000000                         // ms since epoch
-  // NO password fields, NO loginTokens — those move to credentials + sessions
+  createdAt: 1718500000000,                        // ms since epoch
+
+  // Auth paths (legacy schema, in-place — auth.md Part II §4.1):
+  services: {
+    password: { bcrypt: "$2b$10$..." }             // synced from legacy
+  },
+  requirePasswordChange: true | false              // synced from legacy
+  // NB: services.resume.loginTokens[] is NOT read at runtime by nextgen — only
+  // by the one-shot session-import job at cutover (§3.4). After that, sessions
+  // live in the dedicated `sessions` collection.
 }
 ```
 
@@ -91,197 +97,87 @@ After PR #295 (portal-service + provisioning gate), nextgen `users` has the prov
 
 ### TO-BE — nextgen `chat` DB (post-rollout)
 
-```js
-{
-  _id:           "<17-char Meteor base62>",
-  account:       "alice" | "xxx.bot",
-  siteId:        "siteA",
-  roles:         ["bot"],
-  name:          "Alice Smith",
-  active:        true,
-  createdAt:     1718500000000,
-  schemaVersion: "v1"                              // NEW — forward-compat hook
-}
-```
+Same shape as AS-IS. Auth read-paths unchanged: nextgen reads `services.password.bcrypt` and `requirePasswordChange` from the same paths the legacy app already populates.
 
 **Indexes (TO-BE):**
 - `_id` (primary, unchanged)
 - `account` (unique, unchanged)
 - **`{ account: 1, siteId: 1 }`** (NEW unique compound, gate the provisioning lookup) — confirm vs PR #295
 
-**Owner:** shared. Read by botplatform-service (provisioning gate), auth-service (provisioning gate), portal-service (lookup). Written by the legacy → nextgen users-sync only.
+**Owner:** shared. Read by botplatform-service (login verify + provisioning gate), auth-service (provisioning gate), portal-service (lookup). Written by:
+- botplatform-service on `/changepwd` (password rotation by the user — see auth.md §6.3 write-authority guard during the canary window)
+- admin-service on `POST /v1/admin/bots/{id}/password` (admin rotation) and `POST /v1/admin/bots/{id}/suspend` (`active: false`)
+- the legacy → nextgen users-sync (identity + auth fields, until 100% cutover)
 
-### Delta
+### Delta vs AS-IS (post-cutover)
 
 | Change | Direction | Notes |
 |---|---|---|
-| `services.password.*` | **Removed** | Extracted to `credentials` collection |
-| `services.resume.loginTokens[]` | **Removed** | Extracted to `sessions` collection |
-| `requirePasswordChange` | **Removed** | Extracted to `credentials` collection |
-| `schemaVersion: "v1"` | **Added** | Forward-compat |
+| `services.password.*` | **Unchanged shape** | Same path the legacy stack uses; nextgen reads/writes in place |
+| `services.resume.loginTokens[]` | **Read once at cutover, then ignored by nextgen runtime** | One-shot bulk import into the new `sessions` collection (§3.4). After cutover, legacy continues to write here; nextgen never re-reads it (the canary monotonically shifts traffic to nextgen-issued tokens). |
+| `requirePasswordChange` | **Unchanged** | Same path |
 | `{account, siteId}` index | **Added** (if not already by PR #295) | Provisioning-gate performance |
 
 ### Migration mechanic
 
-`users` itself is **not** migrated in this rollout — PR #295 + the live users-sync own that. Our work just **reads** from the existing nextgen `users` collection for the provisioning gate. The only thing this design adds to `users` is the `{account, siteId}` index (confirm + add if missing).
+`users` itself is **not** migrated as a one-shot job — PR #295 + the live users-sync own that, and they preserve the auth read-paths verbatim. The only ops actions this design requires on `users` are:
 
-```js
-// Index creation (idempotent — safe to run on every deploy)
-db.users.createIndex(
-  { account: 1, siteId: 1 },
-  { unique: true, name: "account_site_unique" }
-)
-```
+1. Create the provisioning-gate compound index (idempotent — safe to run on every deploy):
+   ```js
+   db.users.createIndex(
+     { account: 1, siteId: 1 },
+     { unique: true, name: "account_site_unique" }
+   )
+   ```
+2. Confirm identity-sync carries `services.password.bcrypt` + `requirePasswordChange` (verification item §6).
 
 ### Verification
 
 ```js
-// Provisioning-gate lookup uses the new index
+// 1. Provisioning-gate lookup uses the new index
 db.users.find({ account: "xxx.bot", siteId: "siteA" }).explain("queryPlanner")
 // Expect: IXSCAN on account_site_unique, not COLLSCAN
+
+// 2. Auth read-paths are populated for migrated bots (sample)
+u = db.users.findOne({ account: "xxx.bot" })
+assert(u.services.password.bcrypt.startsWith("$2b$10$"), "bcrypt present")
 ```
 
 ---
 
-## 3. Collection: `credentials` (NEW)
+## 3. Collection: `sessions` (NEW)
 
 ### AS-IS
 
-Does not exist. Equivalent data lives in `legacy_users.services.password` (legacy RC).
-
-### TO-BE — nextgen `chat` DB
-
-```js
-// Database: chat (per site)
-// Collection: credentials
-// Owner: botplatform-service
-{
-  _id:                   "<17-char Meteor base62>",     // = users._id, preserved
-  account:               "xxx.bot",                      // login username
-  passwordHash:          "$2b$10$...",                   // bcrypt(sha256_hex(plaintext))
-                                                          // imported verbatim from legacy
-  passwordScheme:        "rc-sha256-bcrypt",             // marks the verify-path family
-  requirePasswordChange: false,
-  schemaVersion:         "v1",
-  createdAt:             1718500000000,                  // ms since epoch
-  updatedAt:             1718500000000                   // bumped on password change
-}
-```
-
-**Indexes:**
-- `_id` (primary, auto)
-- `account` (unique, name: `account_unique`) — login lookup
-- *(Optional, future)* JSON Schema validator: `bsonType: "object"`, required fields, type checks. Recommend yes; mechanical.
-
-**Field tags & access rules** — see auth.md Part II §4.1; the canonical Go struct is `credentials.Credentials` (one source of truth). `passwordHash` is `json:"-"`, never serialized, never logged.
-
-### Delta vs AS-IS
-
-Everything is new. The legacy field-by-field origin:
-
-| TO-BE field | AS-IS source (legacy RC) | Transformation |
-|---|---|---|
-| `_id` | `users._id` | Verbatim copy — 17-char Meteor ID, preserved |
-| `account` | `users.username` | Verbatim copy |
-| `passwordHash` | `users.services.password.bcrypt` | **Verbatim copy — never rehash** (we don't have the plaintext) |
-| `passwordScheme` | n/a | Constant `"rc-sha256-bcrypt"` for imported rows |
-| `requirePasswordChange` | `users.requirePasswordChange` (or absent → false) | Boolean copy |
-| `createdAt` | `users.createdAt` → ms epoch | Type conversion (ISODate → int64) |
-| `updatedAt` | `users.createdAt` (initial) | Same as createdAt on import |
-| `schemaVersion` | n/a | Constant `"v1"` |
-
-### Migration mechanic
-
-```python
-# Pseudocode — idempotent, resumable, runs once per site
-for user in legacy_users.find(
-    { "services.password.bcrypt": { "$exists": True } },
-    sort=[("_id", 1)],               # stable order for resume
-    cursor_batch_size=500
-):
-    nextgen_chat.credentials.update_one(
-        { "_id": user["_id"] },
-        { "$setOnInsert": {           # idempotent: only writes on first insert
-            "_id":                   user["_id"],
-            "account":               user["username"],
-            "passwordHash":          user["services"]["password"]["bcrypt"],
-            "passwordScheme":        "rc-sha256-bcrypt",
-            "requirePasswordChange": user.get("requirePasswordChange", False),
-            "createdAt":             to_epoch_ms(user["createdAt"]),
-            "updatedAt":             to_epoch_ms(user["createdAt"]),
-            "schemaVersion":         "v1",
-          }
-        },
-        upsert=True
-    )
-    checkpoint(user["_id"])           # persist cursor for resume
-```
-
-**Properties:**
-- **Idempotent:** `$setOnInsert` + upsert — re-running the job is safe.
-- **Resumable:** cursor checkpoints to `migration_state` collection; restart picks up after last `_id` processed.
-- **Bounded memory:** batched cursor, no full collection in memory.
-- **Conflict policy:** live users-sync **must stay disabled until the bulk import finishes** (enforced by the §5 ordering — sync activates at step 4, after credentials+sessions import in steps 2+3). If concurrent operation is ever required, the sync path **must upsert** missing rows; a plain `$set` on an absent document is silently dropped (no-op), so the sync would lose writes for any account the bulk import hasn't reached yet.
-
-### Verification
-
-```js
-// 1. Counts match (allowing for users without passwords — humans without bcrypt)
-nextgenCount = db.credentials.countDocuments({})
-legacyCount  = legacy.users.countDocuments({ "services.password.bcrypt": { "$exists": true } })
-assert(nextgenCount === legacyCount, "credential count mismatch")
-
-// 2. Spot-check a known bot
-bot = db.credentials.findOne({ account: "xxx.bot" })
-assert(bot.passwordHash.startsWith("$2b$10$"), "bcrypt format")
-assert(bot.passwordScheme === "rc-sha256-bcrypt", "scheme")
-
-// 3. No plaintext anywhere (sanity)
-assert(db.credentials.findOne({ password: { $exists: true } }) === null, "no plaintext field")
-```
-
-### Rollback
-
-Drop the collection. Legacy `users.services.password.bcrypt` is still intact; restart import after fixing.
-
-```js
-db.credentials.drop()
-```
-
----
-
-## 4. Collection: `sessions` (NEW)
-
-### AS-IS
-
-Does not exist as a collection. Equivalent data lives as `legacy_users.services.resume.loginTokens[]` — a capped array (50 entries) embedded on each user doc.
+Does not exist as a collection. Equivalent data lives as `legacy_users.services.resume.loginTokens[]` — a capped array (50 entries) embedded on each user doc. **Nextgen replaces this with one-doc-per-session under a configurable per-account cap (`SESSIONS_MAX_PER_ACCOUNT`, default 100), FIFO eviction by `issuedAt`** — see auth.md Part II §5.6. The legacy 50-token max fits comfortably under the default nextgen cap of 100, so the import is lossless; if `SESSIONS_MAX_PER_ACCOUNT` is ever set below 50, the import would truncate.
 
 ### TO-BE — nextgen `chat` DB
 
 ```js
 // Database: chat (per site)
 // Collection: sessions
-// Owner: botplatform-service
+// Owner: botplatform-service (writes on login + cap-eviction);
+//        admin-service (writes on admin revoke / suspend / rotate-password)
 {
-  _id:           "b64hash...",        // token hash, function depends on scheme (§4.3 auth Part II)
-                                       //   "legacy":  base64(sha256(rawToken))
-                                       //   "v1":      base64(HMAC-SHA-256(server_secret, rawToken))
-  userId:        "<17-char Meteor ID>",
-  account:       "xxx.bot",           // denormalized — validate returns it directly
-  siteId:        "siteA",             // home site — set at issue, never changes
-  scheme:        "legacy" | "v1",
-  issuedAt:      1718500000000,
-  lastUsedAt:    1718500000000,       // throttled write (5-min window)
-  expiresAt:     ISODate(...),        // sliding idle expiry; null = never expires
-  schemaVersion: "v1"
+  _id:        "b64hash...",         // token hash, function depends on scheme (auth.md Part II §4.6)
+                                     //   "legacy":  base64(sha256(rawToken))
+                                     //   "v1":      base64(HMAC-SHA-256(server_secret, rawToken))
+  userId:     "<17-char Meteor ID>",
+  account:    "xxx.bot",            // denormalized — validate returns it directly
+  siteId:     "siteA",              // home site — set at issue, never changes
+  scheme:     "legacy" | "v1",
+  issuedAt:   1718500000000          // ms since epoch; FIFO ordering key for cap eviction (§5.6)
+  // NB: NO lastUsedAt — validate is pure-read (auth.md §5.3, REVISED 2026-06-24)
+  // NB: NO expiresAt — sessions are permanent until cap-evicted or admin-revoked (auth.md §5.5)
+  // NB: NO schemaVersion — design decision: skip until we actually need it
 }
 ```
 
 **Indexes:**
 - `_id` (primary, auto) — token hash lookup, the hot path
-- `userId` (name: `userId_lookup`) — revoke-all / list-sessions for a bot
-- **Partial TTL** on `expiresAt`: `expireAfterSeconds: 0`, `partialFilterExpression: { expiresAt: { $exists: true } }` — only non-null `expiresAt` rows are reaped; pure-infinite sessions (null `expiresAt`) survive forever
-- *(Optional, future)* JSON Schema validator
+- `{ userId: 1, issuedAt: 1 }` compound (name: `userId_issuedAt`) — IXSCAN serves BOTH the cap-eviction victim lookup at login (`find({userId}).sort({issuedAt:1}).limit(over)`) AND admin's list-sessions-by-user query
+
+No TTL index — sessions don't time-expire (auth.md Part II §5.5).
 
 ### Delta vs AS-IS
 
@@ -289,24 +185,20 @@ Everything is new. Per-source mapping:
 
 | TO-BE field | AS-IS source | Transformation |
 |---|---|---|
-| `_id` | `users.services.resume.loginTokens[].hashedToken` | **Verbatim copy** (already `base64(sha256(...))`) |
+| `_id` | `users.services.resume.loginTokens[].hashedToken` | **Verbatim copy** (already `base64(sha256(...))`) — preserves zero-bot-change compatibility |
 | `userId` | `users._id` (the containing user) | Copy |
 | `account` | `users.username` | Copy (denormalized for fast validate response) |
 | `siteId` | n/a in legacy; from migration job config | Constant = the nextgen site this import lands at |
 | `scheme` | n/a | Constant `"legacy"` for imported rows |
 | `issuedAt` | `users.services.resume.loginTokens[].when` → ms epoch | Type conversion |
-| `lastUsedAt` | n/a (legacy didn't track) | Set to import time |
-| `expiresAt` | n/a | Set to `import_time + 180d` (sliding window starts now) |
-| `schemaVersion` | n/a | Constant `"v1"` |
 
-**Skipped entries (allow-list):** any `loginTokens[]` entry where `type` is set to anything — regular login tokens have `type` absent/empty. PATs (`type:"personalAccessToken"`) are a human-user feature; any future non-empty `type` (e.g. impersonation) is also skipped until explicitly added to the allow-list. auth.md Part II §6.2 import filter.
+**Skipped entries (allow-list):** any `loginTokens[]` entry where `type` is set to a non-empty value — regular login tokens have `type` absent/empty. PATs (`type:"personalAccessToken"`) are a human-user feature; any future non-empty `type` (e.g. impersonation) is also skipped until explicitly added to the allow-list. See auth.md Part II §6.2 import filter.
 
 ### Migration mechanic
 
 ```python
 # Pseudocode — idempotent, resumable
 import_time = now_ms()
-idle_window = 180 * 24 * 3600 * 1000      # 180d in ms
 
 for user in legacy_users.find(
     { "services.resume.loginTokens.0": { "$exists": True } },
@@ -325,15 +217,12 @@ for user in legacy_users.find(
         nextgen_chat.sessions.update_one(
             { "_id": token["hashedToken"] },
             { "$setOnInsert": {
-                "_id":           token["hashedToken"],
-                "userId":        user["_id"],
-                "account":       user["username"],
-                "siteId":        CONFIG.siteId,           # this site's ID
-                "scheme":        "legacy",
-                "issuedAt":      to_epoch_ms(token["when"]),
-                "lastUsedAt":    import_time,
-                "expiresAt":     iso_date(import_time + idle_window),
-                "schemaVersion": "v1",
+                "_id":      token["hashedToken"],
+                "userId":   user["_id"],
+                "account":  user["username"],
+                "siteId":   CONFIG.siteId,           # this site's ID
+                "scheme":   "legacy",
+                "issuedAt": to_epoch_ms(token["when"]),
               }
             },
             upsert=True
@@ -344,7 +233,7 @@ for user in legacy_users.find(
 **Properties:**
 - **Idempotent:** keyed on `_id` (token hash) — re-running the job won't dupe.
 - **Resumable:** outer cursor on `users._id`; intra-user loop is bounded by the legacy 50-cap.
-- **PAT skip:** explicit and tested; goldenfixture validates the skip predicate.
+- **PAT skip:** explicit and tested; golden fixture validates the skip predicate.
 
 ### Verification
 
@@ -361,74 +250,53 @@ assert(nextgenCount === legacyCount, "session count mismatch")
 // 2. All imported rows have valid siteId
 assert(db.sessions.countDocuments({ scheme: "legacy", siteId: { $ne: CONFIG.siteId }}) === 0)
 
-// 3. (PAT exclusion is enforced source-side by the import job — check #1 above already
-//     subtracts PATs from the expected count, so no separate sessions-side assertion is
-//     needed. The schema has no schemeOriginal field; importing a PAT would be invisible
-//     in sessions if it ever leaked through.)
+// 3. Validate-path performance — random spot check
+db.sessions.find({ _id: "<sample hash>" }).explain("executionStats")
+// Expect: nReturned: 1, totalDocsExamined: 1, IXSCAN on _id, executionTimeMillis: <5
 
-// 4. TTL index reaping confirmed
-db.sessions.getIndexes().find(i => i.name.includes("expiresAt"))
-// Expect: expireAfterSeconds: 0, partialFilterExpression: { expiresAt: { $exists: true } }
+// 4. Cap-eviction victim lookup uses the compound index
+db.sessions.find({ userId: "<sample uid>" }).sort({ issuedAt: 1 }).limit(1).explain("queryPlanner")
+// Expect: IXSCAN on userId_issuedAt, not COLLSCAN+SORT
 ```
 
 ### Rollback
 
 ```js
-db.sessions.drop()  // safe — token hashes are reproducible from legacy
+db.sessions.drop()  // safe — token hashes are reproducible from legacy loginTokens[]
 ```
 
 ---
 
-## 5. Migration job — end-to-end ordering
+## 4. Migration job — end-to-end ordering
 
 Per site, in this order. Each step is reversible.
 
 | Step | Action | Pre-check | Post-check | Rollback |
 |---|---|---|---|---|
 | **0** | Deploy `botplatform-service` (dark, no traffic) | nextgen `chat` DB reachable | `/healthz` returns 200 | Scale to 0 |
-| **1** | Create `credentials` + `sessions` collections + indexes | `users` index `{account, siteId}` exists | `db.credentials.getIndexes()` shows `account_unique`; `db.sessions.getIndexes()` shows `userId_lookup` + partial TTL | Drop collections |
-| **2** | Run **credentials bulk import** (§3) | Step 1 complete; pick approach below for write-side handling during steps 2–3 | `db.credentials.count()` matches reconciliation query | Drop `credentials`; rerun |
-| **3** | Run **sessions bulk import** (§4) | Step 2 complete | `db.sessions.count({scheme:"legacy"})` matches reconciliation | Drop `sessions`; rerun |
-| **3.5** | **Delta catch-up** — apply any legacy `users` writes that happened during steps 2+3 (see "Lossless cutover" below) | Steps 2+3 complete | Diff query returns 0 outstanding writes since each user's import timestamp | Re-run steps 2 → 3 → 3.5 (the bulk import is idempotent) |
-| **4** | **Activate live users-sync** (legacy `users` → nextgen `credentials`) | Step 3.5 complete (no in-flight drift) | Pick a known bot; rotate password in legacy; observe `db.credentials.findOne({account:...}).updatedAt` bumps within sync interval | Disable the sync; ops bears the data-drift risk |
-| **5** | Start **chat-GW canary** (1% → 10% → 50% → 100%) | Step 4 has soaked ≥ 24 h | Per-canary-step SLOs hold (auth.md Part II §10.2) | Re-weight VirtualService back to legacy |
-| **6** | **Sunset legacy** — disable legacy-fallback path in `/v1/auth/validate`; remove fz2/chat backend | 100% traffic on nextgen for ≥ 1 week with zero legacy-fallback validations observed in metrics | No 401s spike post-flip | Re-enable legacy fallback; restore fz2 backend |
+| **1** | Create `users` compound index `{account, siteId}` (if PR #295 didn't) + create `sessions` collection + its indexes | shell access to nextgen `chat` DB | `db.users.getIndexes()` shows `account_site_unique`; `db.sessions.getIndexes()` shows `userId_issuedAt` | drop indexes / collection |
+| **2** | Run **sessions bulk import** (§3.4) — copies non-PAT entries from legacy `users.services.resume.loginTokens[]` into `sessions` | step 1 complete; identity-sync confirmed live for `services.password.*` | `db.sessions.countDocuments({scheme:"legacy"})` matches reconciliation query (§5) | `db.sessions.drop()`; rerun |
+| **3** | Smoke-test login + validate against a known bot on nextgen (out-of-band, no traffic shift) | step 2 complete | `POST /api/v1/login` returns success; nextgen-issued `bp1_…` token validates; the bot's prior legacy token also validates against the imported session row | n/a (no destructive change) |
+| **4** | Deploy `admin-service` + `admin-portal` (dark, ops-only access) | steps 0–3 complete | admin can log in via admin-portal and list/suspend a test bot end-to-end | scale to 0 |
+| **5** | Start **chat-GW canary** (1% → 10% → 50% → 100%) | step 3 green; identity-sync confirmed live | per-canary-step SLOs hold (auth.md Part II §10.2) | re-weight VirtualService back to legacy |
+| **6** | **Sunset legacy** — disable legacy-fallback path in `/v1/auth/validate`; remove fz2/chat backend | 100% traffic on nextgen for ≥ 1 week with zero legacy-fallback validations observed in metrics | no 401s spike post-flip | re-enable legacy fallback; restore fz2 backend |
 
 **Critical: steps are PER SITE.** A multi-site rollout repeats steps 0–6 per site, with the chat-GW canary (step 5) coordinated across sites via separate VirtualServices.
 
-### Lossless cutover — handling writes during steps 2+3
+### Source-of-truth during the canary
 
-Legacy `users` is still writable during the credentials + sessions bulk import. Password changes, fresh logins, and new tokens in that window would be missed by the bulk import (the cursor only sees data committed before its start) AND missed by the live users-sync (not activated until step 4). Pick one of these strategies — both are documented; ops chooses per cutover plan:
-
-**Strategy A — Source freeze (simplest, requires downtime tolerance):**
-- Before step 2: freeze legacy writes to `users.services.password.*` and `users.services.resume.loginTokens[]` (toggle the legacy app into a read-only mode for the password/session paths only; user-facing reads continue).
-- During steps 2 + 3: bulk import sees a consistent snapshot.
-- Step 3.5 is a no-op (nothing to catch up).
-- Step 4 activates live sync, then legacy is un-frozen.
-- **Cost:** brief window where users can't change passwords or get new sessions — typically minutes.
-- **Use when:** ops can schedule the cutover during low-activity hours.
-
-**Strategy B — Concurrent sync + delta reconciliation (no downtime, more complex):**
-- Activate users-sync BEFORE step 2 (write to `credentials` upserts; importantly, the sync path uses `$setOnInsert` for missing rows so it cannot drop a write that arrives before bulk import — Strategy B requires this upsert mode to be live, not the plain `$set` in §3's conflict policy).
-- Run bulk import (steps 2+3) concurrently — `$setOnInsert` semantics make both safe: import writes only on missing rows; sync updates by-account regardless.
-- Step 3.5 verifies via a diff query: for each user whose legacy `updatedAt > import_start_time`, confirm `nextgen.credentials.updatedAt >= legacy.updatedAt`. If any user lags, run a final per-user sync pass before step 4.
-- **Cost:** sync path must be upsert-capable from the start; more state to track during cutover.
-- **Use when:** zero-downtime is required.
-
-**Per-site:** pick one strategy per site; can vary across sites in a multi-site rollout if convenient.
+- **Password material** lives on the same `users` doc both stacks read; identity-sync keeps it current. **One write-authority guard:** during the canary window, keep nextgen-side password changes (`/changepwd`, admin rotate-password on `admin-service`) **disabled** until 100% cutover. Otherwise simultaneous legacy + nextgen writes to the same doc could lose updates. After 100% cutover, nextgen owns all writes to the password paths.
+- **Sessions** live in the new `sessions` collection nextgen owns end-to-end after the bulk import (step 2). Legacy continues to write `users.services.resume.loginTokens[]` during the canary; we **do not** sync those new legacy writes back into nextgen's `sessions` collection mid-canary. A bot that re-logs in via legacy gets a legacy-shaped token; if traffic then shifts to nextgen, that bot misses-fast on the unknown token and re-logs via nextgen — acceptable because the canary monotonically shifts traffic forward and re-login is cheap (one round-trip).
+- **Tokens (downstream re-validation).** Nextgen-issued `v1` tokens don't exist on the legacy side, so any downstream that re-validates a bearer token must use our dual-token validator — see **auth.md Q14 / §9.8**.
 
 ---
 
-## 6. Reconciliation queries (cheat sheet)
+## 5. Reconciliation queries (cheat sheet)
 
 Bookmark these for the canary-phase health-checks.
 
 ```js
-// Are all migratable legacy users represented in credentials?
-nextgenChat.credentials.countDocuments({}) ===
-  legacy.users.countDocuments({ "services.password.bcrypt": { "$exists": true } })
-
-// Are all non-PAT legacy tokens in sessions?
+// 1. All non-PAT legacy tokens landed in sessions
 nextgenChat.sessions.countDocuments({ scheme: "legacy" }) ===
   legacy.users.aggregate([
     { $unwind: "$services.resume.loginTokens" },
@@ -436,36 +304,44 @@ nextgenChat.sessions.countDocuments({ scheme: "legacy" }) ===
     { $count:  "total" }
   ]).next().total
 
-// Are all credentials in this DB pinned to the expected site?
-assert(
-  nextgenChat.credentials.countDocuments({ siteId: { $ne: CONFIG.siteId } }) === 0,
-  "credential site mismatch — some rows landed in the wrong site's DB"
-)
-assert(
-  nextgenChat.sessions.countDocuments({ siteId: { $ne: CONFIG.siteId } }) === 0,
-  "session site mismatch"
-)
+// 2. Identity-sync has carried the password path into nextgen for every bot
+nextgenChat.users.countDocuments({ "services.password.bcrypt": { $exists: true } })
+// Compare against legacy.users.countDocuments({ "services.password.bcrypt": { $exists: true } })
+// Expect parity (modulo accounts intentionally not synced — humans without SSO-only login, etc.)
 
-// Validate-path performance — random spot check
+// 3. All sessions in this site's DB are pinned to the expected siteId
+assert(nextgenChat.sessions.countDocuments({ siteId: { $ne: CONFIG.siteId } }) === 0,
+       "session site mismatch — some rows landed in the wrong site's DB")
+
+// 4. Validate-path performance — random spot check (one sessions doc, by _id)
 db.sessions.find({ _id: "<sample hash>" }).explain("executionStats")
 // Expect: nReturned: 1, totalDocsExamined: 1, IXSCAN on _id, executionTimeMillis: <5
+
+// 5. Cap enforcement — no account exceeds SESSIONS_MAX_PER_ACCOUNT
+db.sessions.aggregate([
+  { $group: { _id: "$userId", n: { $sum: 1 } } },
+  { $match: { n: { $gt: 100 } } }
+])
+// Expect: empty result. Any returned row indicates either (a) the cap config
+// is < 100 in your site, (b) the import bulk-loaded a bot with > cap legacy
+// tokens (legacy cap was 50, so this shouldn't happen for cap=100), or (c) a bug.
 ```
 
 ---
 
-## 7. Open questions / pending verification
+## 6. Open questions / pending verification
 
 - [ ] **`users.{account, siteId}` compound index** — confirm PR #295 added it, or add in step 1 of this runbook.
-- [ ] **JSON Schema validators** on `credentials` and `sessions` — decision: include or defer?
+- [ ] **JSON Schema validator** on `sessions` — decision: include or defer? (Mechanical to add; would catch malformed rows from the import job before they land.)
 - [ ] **Per-site DB topology** — confirm whether each nextgen site has its own `chat` DB or a shared cluster with site-prefixed collections. Affects how the migration job is parameterized.
-- [ ] **Live users-sync mechanic** — owned by external infra team; confirm it carries `services.password.bcrypt` to `credentials.passwordHash` and not just identity fields.
+- [ ] **Live users-sync mechanic** — owned by external infra team; confirm it carries `services.password.bcrypt` + `requirePasswordChange` (not just identity fields). The session bulk import (step 2) reads legacy directly, so it doesn't depend on the sync.
 - [ ] **Legacy DB read credentials** — ops provisions; this runbook assumes a read-only Mongo user with access to `legacy.users`.
 
 ---
 
-## 8. References
+## 7. References
 
-- Auth spec **Part II** §4 (data model), §6 (migration overview), §10 (cutover), §16 (config)
-- Auth spec **Part I** §5 (critical constraints), §6 (migration)
+- Auth spec **Part II** §4 (data model: `users` for password, `sessions` collection for tokens), §5.6 (cap + FIFO eviction), §6 (mixed migration: passwords no-extract, sessions bulk-import), §10 (cutover)
+- Auth spec **Part I** §5 (critical constraints), §6 (migration overview), §8 (admin-portal + admin-service split, 2026-06-24)
 - Auth spec **Part III** §3 (data-flow), §4.3 (token compatibility)
-- PR #295 — portal-service + provisioning gate (the `users.siteId` field origin)
+- PR #295 — portal-service + provisioning gate (the `users.siteId` field origin + identity-sync that preserves the auth read-paths)

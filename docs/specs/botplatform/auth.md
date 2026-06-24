@@ -21,7 +21,7 @@
 
 **Why:**
 - The legacy system uses a **capped session array (50-token limit)** per user — both a scaling ceiling and an O(n) validation cost.
-- The new system supports **unlimited sessions with O(1) lookup** (one document per session, keyed by token hash).
+- The new system stores **one document per session** in a dedicated `sessions` collection keyed by token hash, with a **configurable per-account FIFO cap** (default 100, env-tunable via `SESSIONS_MAX_PER_ACCOUNT`) enforced at login by count + delete-oldest-by-`issuedAt`. Validate is O(1) — `sessions.findOne({_id: hash})` after a Valkey hit/miss. Replaces the legacy hardcoded 50-cap array-on-user-doc with O(n) scan.
 - It enables **better admin controls**: create bot, rotate password, list/revoke sessions.
 
 **Key constraint:** existing bots using the bot SDK **must keep working with zero code changes** — same URL, same credentials, same request/response contract.
@@ -30,7 +30,7 @@
 
 ## 2. Document map
 - **Part I (sections 1–11, below)** — executive summary, architecture decision, business requirements, constraints, security, success criteria, rollout plan, scope.
-- **Part II — Technical Design** (further below, after Part I) — `credentials`/`sessions` data model, hashing/verify algorithms, login & validation flows, NATS subjects, gateway topology & performance design, configuration, test plan, verification checklist, open questions.
+- **Part II — Technical Design** (further below, after Part I) — auth data model (`users.services.password.bcrypt` + new `sessions` collection), hashing/verify algorithms, login & validation flows, NATS subjects, gateway topology & performance design, configuration, test plan, verification checklist, open questions.
 - **Part III — Components & Integration** (further below, after Part II) — the bot-platform components (`botplatform-server`, websocket server, event consumer), what we build vs. what exists, and the integration points (API proxy, WebSocket auth, token-compatibility phases).
 
 ---
@@ -65,7 +65,15 @@ A would have shipped faster but mixes a web app's security model into the human-
 
 ## 3a. Interfaces & endpoint paths
 
-`botplatform-service` is the **auth provider** — it does **not** proxy `/api/v2/*` (the existing **ApiGW** routes that to `Server`, calling our validate endpoint for auth). All endpoints are **REST** (Q15):
+Three services own the surface (**REVISED 2026-06-24** — Q18 reversed, admin split out into its own portal + service):
+
+1. **`botplatform-service`** — the auth provider. Universal login, password change, token validation. Role-agnostic.
+2. **`admin-service`** — REST JSON APIs for all admin operations (suspend bot, revoke sessions, rotate password, future: rate-limit config). Authn via `/v1/auth/validate`; authz requires `class:"admin"`.
+3. **`admin-portal`** — separate web frontend (HTML/JS) hosted at its own subdomain. Renders the admin UI; calls `admin-service` REST APIs over the user's session cookie.
+
+`botplatform-service` does **not** proxy `/api/v2/*` (the existing **ApiGW** routes that to `Server`, calling our validate endpoint for auth). All endpoints are **REST** (Q15).
+
+**`botplatform-service` surface:**
 
 | Surface | Path | Method | Returns | Auth |
 |---|---|---|---|---|
@@ -74,13 +82,27 @@ A would have shipped faster but mixes a web app's security model into the human-
 | API — legacy bot login | `/api/v1/login` | POST | **JSON** (`authToken`,`userId`,`me`) | — |
 | API — new bot login | `/v1/bot/login` | POST | **JSON** (new token) | — |
 | API — token validation | `/v1/auth/validate` | POST | **JSON** (`valid`,principal) | `{userId,authToken}` |
-| Web — admin console *(role==admin)* | `/admin`, `/admin/bots…` | GET/POST | **HTML** / redirect | admin session cookie + CSRF |
 
-- **`/dev-login` is one role-aware web login** for humans (admin + bot-dev). Admins see an **admin console**; non-admins see a **simple page** (change own password). **Admin is part of the web UI — not a separate API** (Q18).
-- **Web routes** use **session cookies** (HttpOnly/Secure/SameSite) + **CSRF**.
-- **`/v1/auth/validate`** is called by **ApiGW, the WebSocket server, and EventConsumer** to authenticate bot traffic (replacing legacy-proxy validation). Its response includes a **`principal.class`** field (`"bot"|"user"|"admin"`) so downstream services route traffic by class without re-deriving (consumed by the bot-traffic isolation design).
+**`admin-service` surface (REST JSON, all routes require `class:"admin"`):**
+
+| Surface | Path | Method | Returns | Auth |
+|---|---|---|---|---|
+| List bots | `GET /v1/admin/bots` | GET | **JSON** | session cookie → validate → class==admin |
+| Create bot | `POST /v1/admin/bots` | POST | **JSON** | + CSRF token |
+| Suspend bot | `POST /v1/admin/bots/{id}/suspend` | POST | **JSON** | + CSRF token |
+| Rotate password (revokes all sessions) | `POST /v1/admin/bots/{id}/password` | POST | **JSON** | + CSRF token |
+| List sessions for a bot | `GET /v1/admin/bots/{id}/sessions` | GET | **JSON** | session cookie |
+| Revoke one session | `POST /v1/admin/bots/{id}/sessions/{sid}/revoke` | POST | **JSON** | + CSRF token |
+| Revoke all sessions for a bot | `POST /v1/admin/bots/{id}/sessions/revoke-all` | POST | **JSON** | + CSRF token |
+| *(future)* Rate-limit config | `PUT /v1/admin/ratelimit/{key}` | PUT | **JSON** | + CSRF token |
+
+**`admin-portal` surface:** static web app (HTML/JS bundle) hosted at e.g. `admin-{site}.chat-test.test.xx.com`. No backend logic of its own — every action is an XHR/fetch to `admin-service`.
+
+- **`/dev-login` is the universal login form** — served by `botplatform-service`, used by chat frontend AND admin portal. Login is role-agnostic; the **post-login redirect target depends on the `Referer` / `?next=` parameter** the calling portal supplies. An admin who logs in via `https://chat.xxx.com/dev-login` lands on the **chat frontend**; the same admin via `https://admin-{site}.…/dev-login` lands on the **admin portal**. Admin-portal additionally enforces `class:"admin"` server-side on every API call — a non-admin who somehow lands there gets `403 forbiddenNotAdmin`.
+- **Web routes** use **session cookies** (HttpOnly/Secure/SameSite=Lax) + **CSRF**. The cookie is **scoped to the requesting Host**, so the chat-domain cookie and the admin-domain cookie are distinct surfaces backed by the same `sessions` row.
+- **`/v1/auth/validate`** is called by **ApiGW, the WebSocket server, EventConsumer, AND `admin-service`** to authenticate inbound traffic. Its response includes a **`principal.class`** field (`"bot"|"user"|"admin"`) so downstream services route or authorize by class without re-deriving (admin-service uses it for the `class:"admin"` authz check; bot-traffic isolation uses it for routing).
 - **`/api/v1/login`** (legacy contract) + **`/v1/bot/login`** (new) are for **bot processes** (SDK); both via Istio at the same hostnames so bots don't change URLs.
-- **All paths in this table are site-scoped via the hostname** — every site runs its own `botplatform-service` reachable at `{service}-{site}.chat-test.test.xx.com` (e.g. `botpltfr-siteA.…`). There is no central front door and no cross-site rewriting. A bot dials its home site directly; the provisioning gate (§5) refuses logins targeting any other site.
+- **All paths in this table are site-scoped via the hostname** — every site runs its own `botplatform-service` + `admin-service` + `admin-portal`. There is no central front door and no cross-site rewriting. A bot dials its home site directly; the provisioning gate (§5) refuses logins targeting any other site.
 
 ---
 
@@ -96,15 +118,16 @@ A would have shipped faster but mixes a web app's security model into the human-
 ### US2 — Session-based API access
 *As an authenticated bot, I want to make API calls using my token.*
 - Headers: `X-Auth-Token` + `X-User-Id`.
-- **No session limits** — replaces the legacy 50-cap.
+- **Configurable cap with FIFO eviction by `issuedAt`**: at most `SESSIONS_MAX_PER_ACCOUNT` (default 100, env-tunable) live sessions per account. New login at-cap evicts the oldest-issued session(s) by `issuedAt` ASC. Replaces the legacy hardcoded 50-cap stored as an array-on-user-doc with O(n) scan.
 - Validation latency: **< 5 ms cached, < 50 ms uncached**.
 - Support **1,000,000 validations / minute**.
 
-### US3 — Long-lived sessions
-*As a bot, I want my sessions to stay valid while I'm active.*
-- No expiry while active.
-- Auto-expire after **180 days idle**.
-- Extend on each use (**sliding window**).
+### US3 — Permanent sessions until cap-evicted or admin-revoked
+*As a bot, I want my session to keep working as long as my pod is running (the SDK does NOT auto-relogin on 401); and as an operator, I want a hard upper bound on session count per account so a runaway / misbehaving / compromised bot can't accumulate sessions unboundedly.*
+- **No time-based expiry.** Sessions live in Mongo forever until either (a) the per-account cap evicts them, or (b) an admin explicitly revokes them.
+- **Cap at `SESSIONS_MAX_PER_ACCOUNT` per account** (default 100, env-tunable).
+- **FIFO eviction by `issuedAt`** when a new login at-cap arrives — oldest-issued session dropped first. This naturally targets orphaned tokens from prior pod restarts (which are always older than the currently-active one).
+- **Validate is pure read** — no Mongo writes on the hot path. The Valkey cache is the in-memory activity signal (TTL-refreshed via `GETEX` on hit); Mongo row is unchanged across the session's life.
 
 ### US4 — Admin bot creation
 *As an admin, I want to create new bot accounts.*
@@ -141,7 +164,7 @@ A would have shipped faster but mixes a web app's security model into the human-
 ## 5. Critical constraints
 - **User IDs:** 17-char Meteor format (**not** UUID).
 - **Passwords:** `bcrypt(sha256_hex(plaintext))`, **cost = 10**.
-- **Tokens (dual-format during hybrid phase, Part II §4.3):**
+- **Tokens (dual-format during hybrid phase, Part II §4.6):**
   - Legacy tokens: opaque random, stored `base64(sha256(rawToken))` — byte-for-byte RC compatibility.
   - Native v1 tokens: `bp1_<43-char base64url of 32 random bytes>`, stored `base64(HMAC-SHA-256(server_secret, rawToken))`.
   - Validator dispatches on the `bp1_` prefix; legacy fallback only for prefix-less tokens.
@@ -162,7 +185,7 @@ A would have shipped faster but mixes a web app's security model into the human-
 **Dual-token validation (during migration):**
 - **Accept old Rocket.Chat tokens** (imported, validated against the same store).
 - **Issue new botplatform tokens** on every fresh login.
-- **Gradually phase out old tokens** — as bots re-login they get new tokens; legacy tokens age out via the 180-day sliding window and can eventually be rejected outright once telemetry shows none in use.
+- **Gradually phase out old tokens** — as bots re-login they get new `bp1_` tokens; FIFO cap eviction (§5.6) pushes the older imported legacy tokens out first when an account hits cap. Once telemetry shows no live legacy tokens (zero `scheme:"legacy"` validate hits), legacy acceptance can be switched off outright.
 
 ---
 
@@ -229,7 +252,7 @@ Source-of-truth `.drawio` files live in `docs/specs/diagrams/`. PNG previews emb
 
 ![Bot login — old vs new mechanism](./diagrams/login-old-vs-new.drawio.png)
 
-Side-by-side comparison — legacy Rocket.Chat (capped session array, plain SHA-256, no provisioning gate) vs nextgen botplatform-service (unlimited sessions, HMAC-keyed storage, provisioning gate). Bottom panel calls out the wire-level backward compatibility that keeps bots running unchanged.
+Side-by-side comparison — legacy Rocket.Chat (hardcoded 50-cap session array on the user doc, O(n) scan per validate, plain SHA-256, no provisioning gate) vs nextgen botplatform-service (configurable cap with FIFO eviction by `issuedAt`, one doc per session = O(1) validate, HMAC-keyed storage, provisioning gate, **pure-read validate path — no Mongo writes**). Bottom panel calls out the wire-level backward compatibility that keeps bots running unchanged.
 
 Source: [`login-old-vs-new.drawio`](./diagrams/login-old-vs-new.drawio) · PNG: [`login-old-vs-new.drawio.png`](./diagrams/login-old-vs-new.drawio.png)
 
@@ -237,7 +260,7 @@ Source: [`login-old-vs-new.drawio`](./diagrams/login-old-vs-new.drawio) · PNG: 
 
 ![Token generation & validation — dual-scheme (legacy + v1)](./diagrams/token-gen-validate-flow.drawio.png)
 
-Top half = generation pipeline (login → bcrypt verify → 32 bytes random → base64url → `bp1_` prefix → HMAC-SHA-256 storage hash → INSERT sessions). Bottom half = validation with prefix-dispatch (Valkey cache hot path, Mongo cold path, legacy-store fallback only for pre-prefix tokens). Embedded rationale block in the middle explains why each design choice — see Part II §4.3.
+Top half = generation pipeline (login → bcrypt verify → 32 bytes random → base64url → `bp1_` prefix → HMAC-SHA-256 storage hash → INSERT sessions). Bottom half = validation with prefix-dispatch (Valkey cache hot path, Mongo cold path, legacy-store fallback only for pre-prefix tokens). Embedded rationale block in the middle explains why each design choice — see Part II §4.6.
 
 Source: [`token-gen-validate-flow.drawio`](./diagrams/token-gen-validate-flow.drawio) · PNG: [`token-gen-validate-flow.drawio.png`](./diagrams/token-gen-validate-flow.drawio.png)
 
@@ -276,7 +299,7 @@ drawio -x -f png -e -s 2 docs/specs/diagrams/<file>.drawio
 - Human SSO/OIDC (unchanged; stays in `auth-service`).
 - Bot permissions (separate system).
 - Message routing (separate).
-- **Personal access tokens** — bots don't use them. **Recommendation: do not support in this phase** — the session model already covers every bot need (login, long-lived tokens, unlimited sessions). PATs are a human-user feature with no bot benefit here; revisit only if/when human REST API access moves to the nextgen stack.
+- **Personal access tokens** — bots don't use them. **Recommendation: do not support in this phase** — the session model already covers every bot need (login, long-lived tokens, capped per-account session pool with FIFO eviction). PATs are a human-user feature with no bot benefit here; revisit only if/when human REST API access moves to the nextgen stack.
 - **General user administration** (humans + bots — list, search, view profile, change role, deactivate, audit) is **NOT in this spec**. The `/admin/bots…` surface here is **bot-specific** (create / rotate password / list-or-revoke sessions for a bot account). A separate spec is needed for `/admin/users…` because:
   - **Write path ownership** — it writes to the shared `users` collection owned by the PR #295 / portal-service team (we only read from it for the provisioning gate).
   - **Permission boundaries** — site-admin vs super-admin, cross-site visibility, audit log — the bot-only admin surface doesn't need any of these.
@@ -302,7 +325,7 @@ drawio -x -f png -e -s 2 docs/specs/diagrams/<file>.drawio
 
 ### Goals
 1. **Transparent migration for existing accounts.** Admins and bots that authenticate today via the legacy password endpoint keep the same URL, the same credentials, and the same request/response contract. No password resets, no client changes.
-2. **Unlimited concurrent sessions, constant-time validation.** Remove the legacy per-user capped token array; support any number of live sessions per account with O(1) token lookup.
+2. **Higher tunable session cap, O(1) validation.** Move sessions out of the legacy in-array shape and into a dedicated `sessions` collection — one doc per session, keyed by token hash. Cap raised to `SESSIONS_MAX_PER_ACCOUNT` (default 100, env-tunable) with FIFO eviction by `issuedAt` at login (count + delete-oldest). Validate is O(1) — a single `_id` lookup per request, independent of session count.
 3. **Net-new operator surface.** A NATS-native operator UI (+ its request/reply handlers) for admin login and bot provisioning/management (create bot, set/rotate password, list/revoke sessions).
 4. **Zero-downtime cutover** behind the shared Istio gateway, same public URL, new namespace.
 
@@ -347,10 +370,10 @@ The legacy system is Rocket.Chat. Confirmed behavior the migration must honor:
 | Concern | Decision | Why |
 |---|---|---|
 | Bot/admin **identity** | Stays in the shared `users` collection (roles distinguish admin/bot/user) | Every downstream service resolves accounts through the cached `userstore`; a second identity collection forces double lookups and breaks display-name/federation resolution. |
-| **Credentials** | New `credentials` collection, owned by `botplatform-service` (the §7 Option B / DEDICATED-SERVICE choice) | `users` is read-only shared infra cached fleet-wide; a bcrypt hash must not ride in a broadly-cached identity doc, and only the auth service verifies passwords. |
-| **Sessions** | New `sessions` collection, **one doc per session** keyed by a per-row token hash (see §4.3 for the dual-hash scheme: legacy rows use `base64(sha256(token))`, native `v1` rows use `base64(HMAC-SHA-256(server_secret, token))`) | Eliminates the legacy capped array; O(1) lookup independent of session count; sliding idle expiry (§5.5); per-session + per-account revocation. Dual hash preserves bit-for-bit legacy compatibility while raising the storage-leak bar for new tokens. |
-| **Token wire format** | Native `v1` tokens carry a `bp1_` namespace prefix (`bp1_<43-char base64url of 32 random bytes>`); legacy tokens unchanged (§4.3) | Prefix unlocks a single-store fast path for native tokens (no legacy fallback lookup), enables forward-versioning (`bp2_`…), and is detected by every standard secret-scanner. |
-| **Scope** | Credentials + sessions are **account-agnostic** (admins *and* bots) | The legacy login authenticates admins too — shared password-login infrastructure, not bot-only. |
+| **Password material** | `users.services.password.bcrypt` (legacy schema path, in-place; DECIDED 2026-06-24, §4.1) | Internal-only system; bot passwords are machine-generated with strong entropy → bcrypt-10 is computationally infeasible to reverse. Collapsing into `users` eliminates schema migration for the password side, the credentials-extraction step, and every "credentials vs identity" coherency problem. Reasoning + accepted costs in §4.4. |
+| **Sessions** | New `sessions` collection, **one doc per session** keyed by a per-row token hash. Dual-hash scheme (§4.6): legacy rows use `base64(sha256(token))`, native `v1` rows use `base64(HMAC-SHA-256(server_secret, token))`. **Configurable per-account cap with FIFO eviction by `issuedAt`** — default 100, env-tunable via `SESSIONS_MAX_PER_ACCOUNT` (§5.6). **Sessions are permanent** until cap-evicted or admin-revoked; no time-based expiry. **Validate is pure read** — Valkey hit (refreshing in-memory TTL via `GETEX`) or Mongo `findOne({_id: hash})` on miss; no Mongo writes on the hot path. | O(1) lookup independent of session count (validate reads sessions by `_id` regardless of cap); per-session + per-account revocation. Bounded users-doc size (sessions can't bloat the identity doc that every nextgen service caches). Cap bounds account-scope growth (essential since sessions are permanent); FIFO naturally targets old orphaned tokens from prior pod restarts. Bot SDKs that don't auto-relogin on 401 stay working forever as long as the session row exists. Dual hash preserves bit-for-bit legacy compatibility while raising the storage-leak bar for new tokens. Replaces the legacy hardcoded 50-cap stored as a `loginTokens[]` array on the user doc (O(n) scan per validate). |
+| **Token wire format** | Native `v1` tokens carry a `bp1_` namespace prefix (`bp1_<43-char base64url of 32 random bytes>`); legacy tokens unchanged (§4.6) | Prefix unlocks a single-store fast path for native tokens (no legacy fallback lookup), enables forward-versioning (`bp2_`…), and is detected by every standard secret-scanner. |
+| **Scope** | Both surfaces (password on `users`, sessions collection) are **account-agnostic** (admins *and* bots) | The legacy login authenticates admins too — shared password-login infrastructure, not bot-only. |
 | **NATS JWT** | Short-lived, **minted from a valid session**, refreshed without re-entering the password | Reuses existing JWT machinery; session = durable login, JWT = ephemeral capability. |
 | **Validation hot path** | Mongo durable + **read-through cache (in-pod LRU + Valkey)** | Every REST call validates a token; a Mongo read per call is the bottleneck (§9.3). |
 
@@ -358,38 +381,76 @@ The legacy system is Rocket.Chat. Confirmed behavior the migration must honor:
 
 ## 4. Data model
 
-### 4.1 `credentials` collection
-One document per password-login account (admin or bot), keyed to `users._id`.
+### 4.1 Password material on `users` (DECIDED 2026-06-24)
 
-| Field | Type | Tags | Notes |
-|---|---|---|---|
-| ID | `string` | `bson:"_id"` | = `users._id`, a **17-char Meteor ID** preserved verbatim from legacy by identity-sync (Q9). **Not** a generated UUIDv7 — these IDs come from the legacy system, not `idgen`. |
-| Account | `string` | `bson:"account" json:"account"` | Login username (`username@domain` form). Unique index. |
-| PasswordHash | `string` | `bson:"passwordHash" json:"-"` | Migrated verbatim from `services.password.bcrypt`. **Never serialized.** |
-| PasswordScheme | `string` | `bson:"passwordScheme" json:"-"` | `"rc-sha256-bcrypt"` = `bcrypt(sha256_hex(pw))`. Verification accepts plaintext **or** RC `{digest,algorithm:"sha-256"}` input (§2.1). |
-| RequirePasswordChange | `bool` | `bson:"requirePasswordChange" json:"requirePasswordChange"` | Migrated; drives first-login (§5.4). |
-| CreatedAt / UpdatedAt | `int64` | `bson:"createdAt"` / `bson:"updatedAt"` | ms since epoch; `UpdatedAt` bumped on password change. |
+**Passwords stay on the `users` document — no separate `credentials` collection.** Same legacy RC/Meteor schema paths. Reasoning: this is an internal company-only system, bcrypt hashes are computationally hard to reverse (and bot passwords are machine-generated with strong entropy), and collapsing the credential side into `users` eliminates the credentials-extraction step + the per-write "credentials vs identity" coherency problem. **Sessions stay separate** (§4.2) — they are higher-volume, must not bloat the cached identity doc, and need O(1) hash-keyed lookup.
 
-Indexes: unique on `account`.
+| Field path | Type | Notes |
+|---|---|---|
+| `_id` | `string` | **17-char Meteor ID** preserved verbatim from legacy (Q9). Same id space as `X-User-Id`. |
+| `account` | `string` | Login username. Unique index. |
+| `siteId` | `string` | Home site (PR #295). Provisioning gate (§5.1 step 3) reads this. |
+| `roles` | `[]string` | e.g. `["bot"]`, `["admin"]`. |
+| `name`, `active`, `createdAt`, … | (existing identity fields) | Unchanged by this design. |
+| `services.password.bcrypt` | `string` (`json:"-"`) | Bcrypt hash, **same legacy path** (no rename). Read by botplatform-service for verify; never serialized; `String()` method masks on `model.User`. |
+| `services.password.scheme` | `string` (`json:"-"`) | `"rc-sha256-bcrypt"` for imported; same for new (we keep the verify family). Optional — verify uses default scheme if absent. |
+| `requirePasswordChange` | `bool` | First-login flag (§5.4). Existing legacy field at root. |
 
-### 4.2 `sessions` collection
-One document per live session. **No array, no cap.**
+`services.resume.loginTokens[]` is **read but not written** on `users` during the hybrid phase (legacy app still writes there); nextgen reads it only as a fallback during the cutover (§5.3 / Part III §4.3) and copies entries out to the `sessions` collection at migration time (§6).
 
-| Field | Type | Tags | Notes |
-|---|---|---|---|
-| TokenHash | `string` | `bson:"_id"` | Per-row hash, function determined by `Scheme` (§4.3). `legacy` rows: `base64(sha256(rawToken))` (RC/Meteor form, byte-for-byte). `v1` rows: `base64(HMAC-SHA-256(server_secret, rawToken))`. Lookup key; raw token never stored. |
-| UserID | `string` | `bson:"userId" json:"userId"` | = `users._id` (17-char Meteor ID; same id space the bot sends as `X-User-Id` — no mapping). Indexed (revoke-all / list). |
-| Account | `string` | `bson:"account" json:"account"` | Denormalized (`username@domain`). **Kept** so validation returns the account directly — the gateway needs it to build `chat.user.{account}.…` subjects and inject the principal, avoiding a second `userstore` lookup per request. |
-| Scheme | `string` | `bson:"scheme" json:"scheme"` | `"legacy"` (imported RC tokens, §6.2) or `"v1"` (nextgen-issued). No PAT type — bots are password-only; PATs are a human-user feature, out of scope (§2.2). |
-| IssuedAt | `int64` | `bson:"issuedAt" json:"issuedAt"` | ms since epoch. |
-| LastUsedAt | `int64` | `bson:"lastUsedAt" json:"lastUsedAt"` | **Throttled** write (§12 Q4) — not every request. |
-| ExpiresAt | `*time.Time` | `bson:"expiresAt,omitempty" json:"expiresAt,omitempty"` | **Sliding idle expiry** (§5.5): pushed to `now + idleWindow` on the throttled use-bump. `nil`/absent ⇒ never expires (pure-infinite mode). |
+### 4.2 `sessions` collection (NEW)
 
-Indexes: `_id` (token hash); `userId`; **partial TTL** on `expiresAt` (`expireAfterSeconds:0`, partial filter `{expiresAt:{$exists:true}}` so null/infinite sessions are never reaped).
+One Mongo doc per live session, keyed by the per-row token hash.
 
-**Why this beats the legacy array:** RC embedded a `loginTokens[]` array on the user doc → unbounded doc growth, O(n) scan per request, hence a cap. Per-session docs keyed by hash make validation O(1) regardless of session count, so the cap disappears.
+| Field | Type | Notes |
+|---|---|---|
+| `_id` | `string` | The **token hash** — primary lookup key. **`v1` entries:** `base64(HMAC-SHA-256(server_secret, rawToken))` (§4.6). **`legacy` entries (imported):** `base64(sha256(rawToken))` byte-for-byte from RC `Accounts._hashLoginToken`. |
+| `userId` | `string` | The 17-char Meteor ID — matches `X-User-Id` and `users._id`. |
+| `account` | `string` | Denormalized login username so validate returns it without a join. |
+| `siteId` | `string` | Home site stamped at issue time; never changes for the row. |
+| `scheme` | `string` | `"v1"` for new entries; `"legacy"` for imported. Documents which hash function produced `_id`; required for the validator to pick the right hash on cache miss. |
+| `issuedAt` | `int64` (ms epoch) | Issue time. **The FIFO ordering key for cap eviction** (§5.6). |
 
-### 4.3 Token format & storage hash (Q10 — DECIDED 2026-06-16, supersedes the earlier "same format" stance)
+**Not present** (dropped in the 2026-06-24 pivot, §4.4): `lastUsedAt`, `expiresAt`, TTL index.
+
+### 4.3 Indexes
+
+```js
+// users (existing, plus provisioning-gate compound)
+db.users.createIndex({ _id: 1 })                                          // existing primary
+db.users.createIndex({ account: 1 }, { unique: true })                    // existing
+db.users.createIndex({ account: 1, siteId: 1 }, { unique: true })         // provisioning gate (or via PR #295)
+
+// sessions (NEW)
+db.sessions.createIndex({ _id: 1 })                                       // primary, auto — token-hash lookup, the hot path
+db.sessions.createIndex({ userId: 1, issuedAt: 1 })                       // compound: cap-eviction victim lookup (§5.6) AND list-sessions/revoke-all-by-user
+```
+
+The token validate path is `sessions.findOne({_id: hash})` — single index hit, O(1) cost independent of session count. The cap-eviction path at login is `sessions.find({userId}).sort({issuedAt:1}).limit(N).project({_id:1})` then a batch delete by `_id` — IXSCAN on the compound index, bounded by overflow size (typically 1).
+
+### 4.4 Why mixed (passwords on `users`, sessions separate)
+
+**Why passwords collapsed onto `users` (vs the earlier `credentials` collection):**
+- **Zero schema migration for the password side.** Legacy already stores `services.password.bcrypt` on `users`; the identity-sync that PR #295 wires up already carries it end-to-end. The credentials-extraction step in the migration runbook disappears.
+- **Single source of truth for the credential.** Identity and password live on one doc; password rotation is a single `$set` on the user doc (and a parallel `deleteMany` on sessions for revoke-all — §5.6).
+- **Free cache hit.** `pkg/userstore`'s LRU cache holds the user doc; password verify benefits from cached identity reads.
+- **Cost accepted (internal-system context):** `pkg/userstore`'s fleet-wide cache now holds `services.password.bcrypt` in every pod's memory. Mitigations: `model.User`'s password field has `json:"-"` (no JSON serialization) and a `String()` override that masks it (no `%+v` leak). A core-dump leak is still possible. Accepted because (a) internal-only, audited infra, (b) bot passwords are machine-generated with strong entropy — bcrypt-10 on a `crypto/rand(16 bytes)` password takes longer than the heat-death of the universe to brute-force.
+
+**Why sessions stayed in a dedicated collection (vs collapsing them onto `users` too):**
+- **O(1) validate independent of session count.** Validate is `findOne({_id: hash})` — one index hit, no in-doc array scan. Collapsing 100 sessions per account into `users.services.resume.loginTokens[]` would have made every userstore cache entry that much larger and every validate either (a) fetch the whole user doc or (b) need a multikey index plus a doc fetch anyway.
+- **Bounded users-doc size.** `users` is cached fleet-wide by `pkg/userstore`; bloating it with session history blows up the cache footprint and the per-fetch wire size on every identity resolve in every service.
+- **Per-session revocation primitive.** Admin revoke is a single `sessions.deleteOne({_id: hash})` + Valkey del; revoke-all is `sessions.deleteMany({userId})`. No `$pull` against a (potentially concurrently-modified) embedded array.
+- **Clean ownership boundary.** `users` is shared infra; `sessions` is exclusively owned by `botplatform-service` (Mongo RBAC scoped). The credential is the only field that crosses the ownership line — accepted because of the entropy argument above.
+
+### 4.5 What dropped from earlier drafts
+
+- **`lastUsedAt` field on sessions** — validate is pure read (§5.3); no Mongo writes; field would be dead data.
+- **`expiresAt` field on sessions** — sessions are permanent until cap-evicted or admin-revoked (§5.5); no time-based expiry. Bot SDK doesn't auto-relogin on 401, so a hard expiry would silently break long-running bots.
+- **Partial TTL index on `expiresAt`** — no `expiresAt`, no TTL index.
+- **Separate `credentials` collection** — collapsed into `users` (§4.1).
+- **`UpdatedAt` on the credentials row** — there IS no credentials row; password-change timestamp is on the existing `users` doc.
+
+### 4.6 Token format & storage hash (Q10 — DECIDED 2026-06-16, supersedes the earlier "same format" stance)
 
 Two formats coexist for the duration of the hybrid phase. Both are stateful opaque tokens — see §3 for why this is not JWT — but they differ in wire shape and storage-hash function.
 
@@ -416,14 +477,14 @@ Two formats coexist for the duration of the hybrid phase. Both are stateful opaq
 - Passwords still use bcrypt (§14). Tokens don't. Different inputs, different tools.
 
 **Why NOT JWT / PASETO:**
-- We need cheap revocation (US5), session enumeration (US6), sliding idle expiry, per-site issuance, and ≤5 ms cached validation at 1M/min. Stateful opaque tokens give all of those; JWTs make revocation and enumeration into separate operational problems while saving nothing meaningful (Valkey cache handles the lookup latency).
+- We need cheap revocation (US5), session enumeration (US6), per-site issuance, and ≤5 ms cached validation at 1M/min — with **no Mongo writes on the validate path**. Stateful opaque tokens with Valkey read-through cache give all of those; JWTs would replace state with crypto verification but make revocation an out-of-band problem (no kill switch for a leaked token) while saving nothing meaningful (Valkey cache handles the lookup latency).
 
 **Why NOT rotating bot tokens:**
 - Bots are long-lived processes, not browsers. Rotating their access tokens would force credential reloads across the bot fleet for marginal security gain. Stable + revocable + idle-expiring is the right shape for bot tokens. (Web *admin* sessions are a separate question — rotating session cookies per request is reasonable there, tracked separately.)
 
-**Server-secret rotation (HMAC key):** the HMAC `server_secret` is loaded from `TOKEN_HMAC_KEY` (env, required for v1). Rotating it requires a graceful key-rollover: keep the previous key as `TOKEN_HMAC_KEY_PREVIOUS` for one `idleWindow` so existing sessions validate against either key, then drop. Documented in §16.
+**Server-secret rotation (HMAC key):** the HMAC `server_secret` is loaded from `TOKEN_HMAC_KEY` (env, required for v1). Rotating it requires a graceful key-rollover: keep the previous key as `TOKEN_HMAC_KEY_PREVIOUS` while bot operators rotate sessions to the new key (admin-driven password reset across the affected accounts, which revokes all sessions for those accounts and forces re-login under the new HMAC key). Documented in §16.
 
-### 4.4 Bot account namespace & subject tokens (DECIDED 2026-06-16)
+### 4.7 Bot account namespace & subject tokens (DECIDED 2026-06-16)
 
 Bot accounts in production carry the legacy `*.bot` suffix (`xxx.bot`, `yyy.bot`, confirmed against the v2 Mongo `users` collection). The `.` is unsafe as a NATS subject token — it would multi-tokenize, and `chat.user.xxx.bot.…` (4 account tokens) would let a human account `xxx` (grant `chat.user.xxx.>`) match a bot account `xxx.bot`'s subject space. That's an ACL escape, separate from the format-validation problem PR #295 introduces.
 
@@ -484,29 +545,120 @@ PR #295 introduces `subject.IsValidAccountToken` (rejects accounts containing `.
 
 ### 5.1 Password login (admin or bot)
 1. Client `POST`s `{ user, password }` (plaintext **or** RC digest form) to **`POST /api/v1/login`** (the confirmed path, §12 Q1).
-2. Auth service loads `credentials` by account; derives `sha256_hex(pw)` (or uses the supplied digest); `bcrypt.CompareHashAndPassword` against `PasswordHash`. Constant-time; uniform error on unknown-account vs bad-password.
-3. **Provisioning gate (when `REQUIRE_PROVISIONED=true`, default):** look up `{userId, siteId}` in this site's `users` collection. **Miss → `403 account_not_provisioned`.** Store error → **fail closed** (same `403`, loud server-side log). Disabling the gate logs a loud startup warning. Mirrors the auth-service gate from PR #295.
-4. On success: generate a raw v1 token (§4.3 — `bp1_<43-char base64url>`), insert a `sessions` doc (`scheme:"v1"`, `_id = base64(HMAC-SHA-256(server_secret, token))`, `ExpiresAt = now + idleWindow`, §5.5), return the **RC-compatible envelope** (`{ status:"success", data:{ authToken, userId, me } }`) + `X-Auth-Token`/`X-User-Id`.
-5. If the request carries a `natsPublicKey` (native client, e.g. operator UI), the JWT mint is **delegated to `auth-service`** (botplatform-service never holds the signing key — see §7 Option B / DEDICATED-SERVICE rationale). This delegation is **deferred from the July scope** — for the initial release, native-bot JWT minting is not exposed; REST bots omit this field and get the `X-Auth-Token` headers only. When wired later: botplatform-service calls `auth-service` over the service-to-service control plane (`AUTH_SERVICE_URL`, §16) and returns the minted JWT in the same response envelope.
-6. If `RequirePasswordChange`, signal it (§5.4).
+2. Auth service loads the user by account from the `users` collection; reads `services.password.bcrypt`; derives `sha256_hex(pw)` (or uses the supplied digest); `bcrypt.CompareHashAndPassword` against the bcrypt hash. Constant-time; uniform error on unknown-account vs bad-password (dummy compare on miss).
+3. **Provisioning gate (when `REQUIRE_PROVISIONED=true`, default):** same `users` row, check `siteId == SITE_ID`. **Miss → `403 account_not_provisioned`.** Store error → **fail closed** (same `403`, loud server-side log). Disabling the gate logs a loud startup warning. Mirrors the auth-service gate from PR #295.
+4. On success: generate a raw v1 token (§4.6 — `bp1_<43-char base64url>`), compute `hashedToken = base64(HMAC-SHA-256(server_secret, raw))`.
+5. **INSERT the session row + enforce the cap (§5.6):**
+   ```js
+   db.sessions.insertOne({
+     _id: hashedToken, userId, account, siteId,
+     scheme: "v1", issuedAt: nowMs,
+   })
+   // Cap enforcement (FIFO by issuedAt) — runs synchronously after the INSERT:
+   over := db.sessions.countDocuments({userId}) - SESSIONS_MAX_PER_ACCOUNT
+   if over > 0:
+     victims := db.sessions.find({userId}).sort({issuedAt:1}).limit(over).project({_id:1})
+     db.sessions.deleteMany({_id: {$in: victims._ids}})
+     for v in victims: valkey.del(v._id)   // explicit cache invalidation
+   ```
+   IXSCAN on the `{userId, issuedAt}` compound index (§4.3); `over` is typically 0 or 1. Tolerates a brief concurrent-login overshoot (cap+1 or cap+2 for a few ms — Mongo doesn't serialize across docs, but two parallel `insertOne`s + count-then-delete are safe enough); next login heals to cap.
+6. Return the **RC-compatible envelope** (`{ status:"success", data:{ authToken, userId, me } }`) + `X-Auth-Token`/`X-User-Id`.
+7. If the request carries a `natsPublicKey` (native client, e.g. operator UI), the JWT mint is **delegated to `auth-service`** (botplatform-service never holds the signing key — see §7 Option B / DEDICATED-SERVICE rationale). This delegation is **deferred from the July scope** — for the initial release, native-bot JWT minting is not exposed; REST bots omit this field and get the `X-Auth-Token` headers only. When wired later: botplatform-service calls `auth-service` over the service-to-service control plane (`AUTH_SERVICE_URL`, §16) and returns the minted JWT in the same response envelope.
+8. If `RequirePasswordChange`, signal it (§5.4).
 
 ### 5.2 NATS JWT minting from a session
 Present a valid session token → validate (§5.3) → mint a short-lived NATS user JWT scoped to `chat.user.{account}.>` (reusing `auth-service` grants). JWT expiry ≪ session expiry; refresh from the still-valid session without the password.
 
 ### 5.3 Session validation (every request)
-Prefix-dispatch the hash function (§4.3):
-- token starts with `bp1_` → `h = base64(HMAC-SHA-256(server_secret, token))` → cache → `sessions.findOne({_id: h})`; no legacy fallback.
-- no prefix (legacy) → `h = base64(sha256(token))` → cache → `sessions.findOne({_id: h})`; on miss, fall back to the legacy-store probe (Part III §4.3).
 
-Hit + not expired → resolve `userId`/`account`, throttled `LastUsedAt` bump. TTL index reaps expired docs. Prefix dispatch eliminates the double-lookup penalty for native tokens once bots have re-logged in post-migration.
+Prefix-dispatch the hash function (§4.6) then look up the sessions row directly by `_id`:
+
+```
+h := hashFor(xAuthToken)                                    // HMAC for "bp1_*", SHA-256 otherwise
+cached := valkey.GETEX(h, EX=5min)                          // get + refresh in-memory TTL (Valkey op, no Mongo write)
+if cached != nil:
+    if xUserId != "" && xUserId != cached.userId -> 401     // sanity check
+    return cached.principal
+
+s := db.sessions.findOne({_id: h})                          // cold path: O(1) primary-key read (READ ONLY)
+if s != nil:
+    if xUserId != "" && xUserId != s.userId -> 401          // sanity check; same 17-char id space
+    principal := buildPrincipal(s)                          // {userId, account, roles, class, siteId}
+    valkey.SETEX(h, principal, 5min)                        // populate cache; Valkey op, no Mongo write
+    return principal
+
+// Token hash not found in our store
+if !hasPrefix(xAuthToken, "bp1_"):
+    s = legacyStore.Validate(xAuthToken, xUserId)            // legacy-fallback (Part III §4.3)
+    if s != nil: return s
+return 401
+```
+
+**Zero Mongo writes** on the validate path. The `findOne({_id: h})` is a pure read; Valkey ops are in-memory cache. `xUserId` is a sanity check, not the lookup key — the token hash is.
 
 ### 5.4 First-login `requirePasswordChange`
 Bots can't fill a form, so this is **operator-time**: a provisioned account has `RequirePasswordChange:true`; the operator sets the real password via the change-password handler (§8), which updates `PasswordHash`, clears the flag, and revokes existing sessions.
 
-### 5.5 Session lifetime — effectively infinite (sliding idle)
-Sessions do **not** have a fixed TTL. On each (throttled) use-bump, `ExpiresAt` is pushed to `now + idleWindow` (recommend `idleWindow` ≈ 180d), so an actively-used token never expires — infinite for any real bot. Only a token left unused past the window is reaped by the partial TTL index, bounding collection growth and limiting the blast radius of a leaked-then-abandoned token. Revocation (operator action, or rotate-password revoking all of an account's sessions) remains the immediate kill switch. Pure literally-never mode = leave `ExpiresAt` null; then revocation is the only cleanup and the collection grows unbounded.
+### 5.5 Session lifetime — permanent until cap-eviction or admin-revoke
 
-### 5.6 "Resume" / session reuse
+**Sessions do not time-expire.** There is no `expiresAt`, no sliding window, no idle reap. A session row in Mongo lives forever — until one of two things happens:
+
+1. The per-account cap (`SESSIONS_MAX_PER_ACCOUNT`, default 100) fills up and a new login pushes this session out via FIFO eviction (§5.6).
+2. An admin explicitly revokes the session (the kill switch — single session via `/admin/bots/<id>/sessions/<sid>`, or all sessions for an account via rotate-password).
+
+**Why this shape:** the bot SDK in this environment does **not** auto-relogin on `401 sessionExpired`. A hard time-based expiry would silently break long-running bots when their token aged out. Making sessions permanent removes that failure class — bots stay logged in as long as their session row exists.
+
+**Trade-off accepted (Q-leaked-tokens-permanent, DECIDED 2026-06-24):** a leaked or phished token will continue to validate **until cap eviction pushes it out** (could be never, if the attacker is the most recent re-loginner for that account) **or until an admin detects and revokes it**. The original sliding-180d design would have auto-reaped leaked-but-unused tokens at the idle boundary; this design does not.
+
+**Mitigations:**
+- **Admin revoke** is the kill switch — invoked from the role-gated `/admin/bots` web UI (§8).
+- **Per-token anomaly metrics** — `auth_session_validate_total` labelled by source (cache vs Mongo) and validate rate per token, surfaced via the per-class dashboard (§17). Sustained high-rate validation on an unexpected source IP/region is the operator's signal to revoke.
+- **Audit queries** on `sessions` to find long-lived sessions: `db.sessions.find().sort({issuedAt: 1}).limit(N)` — exposes the oldest sessions fleet-wide for review (IXSCAN on `{userId, issuedAt}` for per-account variants).
+
+**Eventual consistency cleanup of "ghost" sessions:** an account that never logs in again has its sessions rows sit in Mongo indefinitely (cap eviction only triggers on new logins). Storage cost is bounded by `accounts × cap` rows (~10M worst case at 100K accounts × 100 cap) — well within Mongo's comfort zone. If you ever need to clean up: an offline reaper job can delete sessions for accounts not seen in N days; not in scope here.
+
+### 5.6 Session cap — count + delete-oldest after INSERT
+
+**Cap.** `SESSIONS_MAX_PER_ACCOUNT` (env, default `100`) bounds the number of `sessions` rows for any single `userId`.
+
+**Mechanism: post-INSERT count + delete oldest by `issuedAt`.** At login (§5.1 step 5), after `sessions.insertOne(...)`:
+
+```js
+over := db.sessions.countDocuments({userId}) - SESSIONS_MAX_PER_ACCOUNT
+if over > 0:
+  victims := db.sessions.find({userId})
+                        .sort({issuedAt: 1})
+                        .limit(over)
+                        .project({_id: 1})
+  db.sessions.deleteMany({_id: {$in: victims._ids}})
+  for v in victims: valkey.del(v._id)            // explicit cache invalidation
+  metric.auth_sessions_evicted_total.add(len(victims), {reason: "cap"})
+```
+
+The `find({userId}).sort({issuedAt:1})` walks the `{userId:1, issuedAt:1}` compound index (§4.3) — IXSCAN, sub-ms. `over` is typically 0 (account under cap) or 1 (this login pushed it over). FIFO by `issuedAt` deliberately drops the oldest tokens first — across many pod restarts those are the orphaned ones from prior pods.
+
+**Race tolerance.** Two parallel logins for the same account can briefly push the row count to `cap+2` (both threads' `countDocuments` reads `cap` before either INSERT, both compute `over=0`, both INSERT → row count is `cap+1` then `cap+2` momentarily). The next login on that account heals it back to cap. No Mongo transaction needed — cost of a transaction far exceeds the cost of a brief 2-row overshoot that auto-corrects.
+
+**Why FIFO over LRU.** LRU would require maintaining `lastUsedAt` on every validate — a Mongo write on the hot path (1M/min). We don't want that; validate is pure-read (§5.3). FIFO uses the `issuedAt` we already write at login, so the cap-eviction index doubles as the existing `userId` lookup index.
+
+**Explicit Valkey invalidation on cap eviction.** Unlike admin revoke (instant), cap eviction happens during a login — we have the victim's `_id` (which IS the Valkey cache key) in hand, so `valkey.del` is a single round-trip per victim. Cheap; no reason to leave the entry to age out naturally.
+
+**Failure mode — cap must exceed max concurrent active sessions per account.** If cap is too low (e.g., 3 for a 5-replica bot), eviction will drop a currently-active session during a rolling deploy → bot 401s → SDK can't recover. Cap should comfortably exceed `replica_count × deploy_overlap_factor + dev_access_buffer` for the largest bot fleet. Default 100 covers any bot with ≤20 replicas.
+
+**Operator override:** admin revokes individual sessions via the role-gated `/admin/bots/<id>/sessions` UI (§8):
+```js
+db.sessions.deleteOne({_id: victimHash})
++ valkey.del(victimHash)                          // explicit cache invalidation
+```
+
+Password rotation revokes all sessions:
+```js
+db.users.updateOne({_id: userId}, {$set: {"services.password.bcrypt": newHash}})
+db.sessions.deleteMany({userId})                  // IXSCAN on {userId, issuedAt}; bounded by cap
++ valkey: lazily expires via TTL (no per-key delete needed at this scale)
+```
+
+### 5.7 "Resume" / session reuse
 **Legacy REST bots:** no resume verb — a bot logs in once (username + password) and reuses its `X-Auth-Token` header on every call; the header *is* session reuse.
 
 **Internal primitive:** §5.2 — a native client or the REST edge exchanges a still-valid session token for a fresh short-lived NATS JWT, without re-entering the password. Session token = durable resume credential; JWT = ephemeral capability.
@@ -517,20 +669,28 @@ Sessions do **not** have a fixed TTL. On each (throttled) use-bump, `ExpiresAt` 
 
 ## 6. Migration (legacy RC Mongo → nextgen Mongo)
 
-### 6.1 Credential import
-For each legacy `users` doc that is an admin or bot account **with a local password** (`services.password.bcrypt`):
-- Ensure the nextgen `users` identity row exists (existing identity-sync path, not owned here) — it carries the **same 17-char `_id`**.
-- Insert `credentials` with `_id = legacy users._id` (verbatim, 17-char Meteor ID): **copy `services.password.bcrypt` → `PasswordHash` byte-for-byte — do NOT rehash or recompute** (we don't have the plaintext, and the verify path already matches RC's `bcrypt(sha256_hex(pw))`). `PasswordScheme:"rc-sha256-bcrypt"`, legacy force-change flag → `RequirePasswordChange`, timestamps.
+### 6.1 Password side — no extraction (DECIDED 2026-06-24)
 
-### 6.2 Live-session import (no-reauth cutover)
-Import **only regular login tokens** from `services.resume.loginTokens[]` — i.e. entries where **`type` is empty/absent**. **Explicitly skip `type:"personalAccessToken"`** (human PATs, out of scope, §2.2). For each imported entry: insert a `sessions` doc with `_id = hashedToken` (already `base64(sha256(token))`, copied verbatim), `UserID = legacy _id`, `Scheme:"legacy"`, and `ExpiresAt = now + idleWindow` (sliding, §5.5 — legacy `when` ignored since sessions are effectively infinite). Because we reuse RC's hash form **and** the same `_id`, an in-flight bot's existing `X-Auth-Token`+`X-User-Id` validate against the imported row unchanged. The next login issues a native `v1` token.
+Password material stays on `users` in **exactly the legacy schema paths** (§4.1):
+- `users.services.password.bcrypt` — bcrypt hash, read directly by nextgen for verify
+- `users.requirePasswordChange` — first-login flag, unchanged
 
-### 6.3 Cutover source-of-truth — real-time users-collection sync (Q3)
+The identity-sync that PR #295 wires up already carries `services.password.*` + `requirePasswordChange` end-to-end (verification item in the runbook). No bulk credential import, no real-time credential sync to build, no `credentials` collection.
 
-The migration has **no risky data "flip"** — two separable axes:
+### 6.2 Session side — bulk import from legacy `loginTokens[]` to `sessions`
 
-- **Credentials (passwords) — solved by a real-time sync.** Credentials are static and imported verbatim (§6.1); to also cover any password *change* during the ~1-week ramp, ride the **real-time legacy→nextgen `users`-collection sync** (the same identity-sync that preserves the 17-char `_id`), **extended to carry `services.password.bcrypt` → nextgen `credentials`**. With that, a password change on legacy propagates automatically — both sides hold the same hash, **no freeze required**. Conditions: (a) the sync must route the hash into the `credentials` collection (it lives there, not on the `users` doc); (b) keep **one write-authority** during the window — legacy writes, sync is one-directional legacy→nextgen, and nextgen-side password changes (`/changepwd`, rotation) stay disabled until 100% cutover (avoids bidirectional races). *(A literal read-only "freeze" is the trivial fallback if the sync can't carry credentials.)*
-- **Tokens — a separate axis (not solved by the users sync).** Legacy tokens import/validate on both sides, but **nextgen-issued `v1` tokens don't exist on the legacy side**, so any downstream that re-validates a bearer token must use our dual-token validator — see **Q14 / §9.8**. Token continuity during the ramp rests on dual-token import + a **monotonic ramp** (only shift weight toward nextgen) + routing affinity, not on the credential sync.
+Live legacy sessions DO need to land in the new `sessions` collection so existing bot tokens validate immediately on nextgen with zero re-login. The migration job iterates legacy `users.services.resume.loginTokens[]` and inserts one `sessions` row per non-PAT entry, **keeping the legacy `hashedToken` verbatim as `_id`** (`base64(sha256(token))`). See the runbook for the import script, allow-list filter, idempotency, and reconciliation queries.
+
+Bot tokens in-flight at cutover continue to validate: the bot sends `X-Auth-Token` + `X-User-Id`; nextgen computes `h = base64(sha256(token))` (no `bp1_` prefix → legacy hash function), does `sessions.findOne({_id: h})`, returns the principal.
+
+PATs (`type:"personalAccessToken"` entries) are **skipped** by the import job (and by the legacy-fallback validator) — humans only, out of scope. New `bp1_` logins under nextgen create fresh `sessions` rows (`scheme:"v1"`); as the per-account cap fills, FIFO eviction by `issuedAt` drops the oldest entries first (typically the legacy ones imported at cutover) — clean phase-out with no separate sunset step.
+
+### 6.3 Cutover source-of-truth (Q3, revised)
+
+**Two surfaces, two answers:**
+- **Password material** lives on the same `users` doc both stacks read; identity-sync keeps it current. **One write-authority guard:** during the canary window, keep nextgen-side password changes (`/changepwd`, rotation) **disabled** until 100% cutover. Otherwise simultaneous legacy + nextgen writes to the same doc could lose updates. After 100% cutover, nextgen owns all writes to the password paths.
+- **Sessions** live in the new `sessions` collection nextgen owns end-to-end after the bulk import. Legacy continues to write `users.services.resume.loginTokens[]` during the canary window; we **do not** sync those new legacy writes back into nextgen's `sessions` collection mid-canary (a bot that re-logs in via legacy gets a legacy-shaped token; if traffic then shifts to nextgen, the bot misses-fast on the new token and re-logs via nextgen — acceptable because the canary monotonically shifts traffic forward and re-login is cheap).
+- **Tokens (downstream re-validation).** Nextgen-issued `v1` tokens don't exist on the legacy side, so any downstream that re-validates a bearer token must use our dual-token validator — see **Q14 / §9.8**.
 
 ---
 
@@ -568,7 +728,8 @@ Istio ingress
   └─▶ bot-gateway:8080    (bot password)    POST /api/v1/login
                                             GET/POST /api/v2/*   (REST -> NATS translation)
                                             admin operations     (NATS RPC)
-      bot-gateway owns credentials+sessions (own Mongo+Valkey);
+      bot-gateway reads users.services.password.* (shared users coll) and
+        owns the new sessions coll + Valkey;
       calls auth-service to mint NATS JWTs.
 ```
 
@@ -586,51 +747,73 @@ Istio ingress
 | Long-term maintainability | moderate | **better** |
 | Team ownership | single owner | split ownership |
 
-**Decision: Option B / DEDICATED-SERVICE.** A dedicated `botplatform-service` was chosen because the service is **more than a JSON bridge** — it serves a web UI (§9.6) with CSRF + session cookies and must validate legacy + new tokens, concerns best kept out of the pure-SSO `auth-service`. The new service owns `credentials`+`sessions` (its own Mongo+Valkey) and calls `auth-service` to mint NATS JWTs. (Option A / EXTEND-AUTH would have been faster but mixes those web/auth concerns into human auth.)
+**Decision: Option B / DEDICATED-SERVICE.** A dedicated `botplatform-service` was chosen because the service is **more than a JSON bridge** — it serves a web UI (§9.6) with CSRF + session cookies and must validate legacy + new tokens, concerns best kept out of the pure-SSO `auth-service`. The new service is the sole writer of `users.services.password.*` (§4.1) on the shared `users` collection AND the sole owner of the new `sessions` collection (§4.2) + Valkey validation cache, and calls `auth-service` to mint NATS JWTs. (Option A / EXTEND-AUTH would have been faster but mixes those web/auth concerns into human auth.)
 
 > The rest of this spec (stores, flows, §9 responsibilities) is **placement-agnostic** — it holds under either option. Under the chosen Option B / DEDICATED-SERVICE they live in `botplatform-service`; the JWT-mint is a service-to-service call to `auth-service`.
 
 ---
 
-## 8. Admin = role-gated web UI (Q15, Q18)
+## 8. Admin = separate portal + service (Q18 — REVISED 2026-06-24)
 
-There is **no separate admin API.** `/dev-login` is the **one** web login for humans (admins *and* bot-account holders / devs); after auth the **server-rendered UI is role-aware**:
+Earlier drafts kept admin inside `botplatform-service` as a role-gated web UI (the "Q18 — no separate admin API" answer). **Revised 2026-06-24** based on ops feedback: admin gets its own frontend and backend, distinct from the bot-platform auth provider.
 
-- **admin** (`roles ∋ admin`) → an **admin console**: create bot, set/rotate password, list/revoke sessions.
-- **non-admin** (bot account / dev) → a **simple page**: you're logged in; change your own password.
+**Why split admin out:**
+- **Distinct frontend UX.** The admin console (suspend bot, kill specific sessions, configure rate-limits, audit views) is a different web app from the bot dev's "change my password" page — and a different web app from the chat frontend. Bundling all three into `botplatform-service` HTML handlers couples three lifecycles into one deploy.
+- **Distinct deployment/ownership.** Admin features ship on a different cadence than the auth hot path; an admin-UI bug must not be able to take down `/v1/auth/validate` (1M/min hot path). Different service = independent rollback.
+- **Clean authz boundary.** A standalone `admin-service` makes the `class:"admin"` check the *only* mode of authz — there's no risk of "did we remember to gate that handler?" because every route on the service requires it. Mixing admin and non-admin handlers in one service makes that brittle.
+- **Reuses the same login.** `/dev-login` (on `botplatform-service`) stays the universal login form. After auth, the **caller's origin host** (via `Referer` or `?next=` param) determines whether the user lands on the **chat frontend** or the **admin portal**. The same admin user can land in either depending on which URL they hit:
+  - `https://chat.xxx.com/dev-login` → chat frontend (regardless of role)
+  - `https://admin-{site}.…/dev-login` → admin portal (admin-portal additionally rejects non-admins server-side)
 
-Admin actions are **CSRF-protected form POSTs on role-gated web routes** within the same UI — *not* a JSON API the front-end "calls again," and *not* NATS. Each is a Gin handler that renders HTML / redirects (errors via the web flow). Bot **processes** never use these — they authenticate programmatically via `POST /api/v1/login` / `/v1/bot/login`.
+**The three components after the split:**
 
-| Admin action (web, `role==admin`) | Route | Writes |
+| Component | Owner | Hosts | What it does |
+|---|---|---|---|
+| `botplatform-service` | this spec | `botpltfr-{site}.…` | Universal login (`/dev-login`), password change (`/changepwd`), token issue + validate. **Web UI scope reduced to just these two pages** — no `/admin/*` HTML routes anymore. |
+| `admin-service` | this spec | `admin-{site}.…` (internal, mTLS) | REST JSON APIs for **all** admin operations. Every endpoint calls `/v1/auth/validate` → requires `class:"admin"` → writes to `sessions` and/or `users.services.password.*`. |
+| `admin-portal` | this spec | `admin-{site}.…` (public) | Static web app (HTML/JS bundle). Renders the admin UI; every action is an XHR/fetch to `admin-service` under the session cookie. No backend logic of its own. |
+
+**Admin operation routes (JSON on `admin-service`):**
+
+| Operation | Route | Backend write |
 |---|---|---|
-| console / list bots | `GET /admin` | reads |
-| create bot | `POST /admin/bots` | `users` + `credentials` (`RequirePasswordChange:true`) |
-| set/rotate password | `POST /admin/bots/{id}/password` | `credentials`, revoke `sessions` |
-| list sessions | `GET /admin/bots/{id}/sessions` | reads `sessions` by `userId` |
-| revoke session / all | `POST /admin/bots/{id}/sessions/revoke` | `sessions` |
+| List bots | `GET /v1/admin/bots` | reads `users` |
+| Create bot | `POST /v1/admin/bots` | `users` doc: identity fields + `services.password.bcrypt` + `requirePasswordChange:true` |
+| Suspend bot | `POST /v1/admin/bots/{id}/suspend` | `users.active:false`; `sessions.deleteMany({userId})` (revokes all) |
+| Rotate password | `POST /v1/admin/bots/{id}/password` | `users.services.password.bcrypt`; clears `requirePasswordChange`; `sessions.deleteMany({userId})` |
+| List sessions | `GET /v1/admin/bots/{id}/sessions` | reads `sessions` by `userId` (IXSCAN on `{userId, issuedAt}`) |
+| Revoke one session | `POST /v1/admin/bots/{id}/sessions/{sid}/revoke` | `sessions.deleteOne({_id})` + `valkey.del` |
+| Revoke all sessions | `POST /v1/admin/bots/{id}/sessions/revoke-all` | `sessions.deleteMany({userId})` |
+| *(future)* Configure rate-limit | `PUT /v1/admin/ratelimit/{key}` | rate-limit config store (out of July scope) |
 
-> A **JSON** admin API would only be added later **if** programmatic provisioning is needed (e.g. CI creating bots) — not now (Q18). `docs/client-api.md` (NATS `chat.user.` RPCs) does not apply; document these web routes in `botplatform-service`'s own README/API doc.
+All admin endpoints require CSRF (admin-portal sends the token in `X-CSRF-Token` from a cookie) and `class:"admin"` (verified via `/v1/auth/validate` against the inbound session cookie). Bot **processes** never call `admin-service` — admin operations are operator-only.
+
+> **Cross-spec note (`docs/client-api.md`).** The admin REST API on `admin-service` is **not** part of `docs/client-api.md`, which is the bot/user-facing NATS `chat.user.` / `chat.bot.` RPC surface. Admin endpoints get their own API doc owned by the admin-service team.
 
 ---
 
-## 9. `botplatform-service` — the auth provider (login · validate · sessions · web UI · admin)
+## 9. `botplatform-service` — the auth provider (login · validate · sessions · login web UI)
 
-`botplatform-service` (the §7 Option-B service; Part II's earlier "bot-gateway") is **not** a data-path proxy. It is the **auth provider**: it owns the `credentials`/`sessions` stores, issues and validates tokens, serves the bot/admin web UI, and exposes the admin surface. The existing **ApiGW** keeps routing/rate-limit/metrics and **delegates auth to us** (Q17).
+`botplatform-service` (the §7 Option-B service; Part II's earlier "bot-gateway") is **not** a data-path proxy and (after Q18's 2026-06-24 revision, §8) **no longer hosts the admin UI** — that moved to `admin-portal` + `admin-service`. It is the **auth provider**: it reads/writes `users.services.password.*` (§4.1) and owns the `sessions` collection (§4.2) plus the Valkey validation cache, issues and validates tokens, and serves the universal login + password-change web pages. The existing **ApiGW** keeps routing/rate-limit/metrics and **delegates auth to us** (Q17).
 
 > **Topology (Part III §4.1).** `bot → ApiGW → Server(/api/v2/*)`. ApiGW validates each request by calling our **`POST /v1/auth/validate`** (replacing today's slow proxy-to-legacy validation), then routes to `Server` with the validated principal in headers; `Server` trusts ApiGW under **Istio mTLS**. The WebSocket server and EventConsumer likewise call `/v1/auth/validate`. So **we never sit in the `/api/v2/*` data path** — no reverse proxy, no REST→NATS bridge here (that's downstream, Q13). Our only NATS use is a possible control-plane JWT-mint call to `auth-service` for *native* bots (future).
 
 ### 9.1 Responsibilities
-1. **Web UI (server-rendered HTML)** — `GET/POST /dev-login` and `GET/POST /changepwd` (§9.6); render forms, handle submits, set/clear **session cookies**, enforce **CSRF** on POST.
-2. **Login** — `POST /api/v1/login` (legacy contract) + `POST /v1/bot/login` (new); verify credentials, issue a token into the `sessions` store, return the RC-compatible envelope.
-3. **Validation** — **`POST /v1/auth/validate`** (§9.8): the single dual-token (`legacy`+`v1`) authority, cache-fronted, called by ApiGW / WS / EventConsumer.
-4. **Stores** — own `credentials` + `sessions` (Mongo) and the Valkey validation cache.
-5. **Admin surface** — REST endpoints for bot provisioning / password rotation / session management (§9.6, §15), consumed by a web operator UI.
+1. **Universal login web UI (server-rendered HTML)** — `GET/POST /dev-login` and `GET/POST /changepwd` (§9.6); render forms, handle submits, set/clear **session cookies** (Host-scoped), enforce **CSRF** on POST. Post-login redirect honors the calling portal's `?next=` (chat frontend vs admin portal — §8).
+2. **Login** — `POST /api/v1/login` (legacy contract) + `POST /v1/bot/login` (new); verify credentials, `sessions.insertOne(...)` + cap enforcement via count + delete-oldest-by-`issuedAt` (§5.6), return the RC-compatible envelope.
+3. **Validation** — **`POST /v1/auth/validate`** (§9.8): the single dual-token (`legacy`+`v1`) authority, cache-fronted, called by ApiGW / WS / EventConsumer / **admin-service**.
+4. **Stores** — sole writer of `users.services.password.*` on the shared `users` collection (writes only happen on `/changepwd` and on admin-service rotate-password proxied through us, see §8); sole owner of the new `sessions` collection (Mongo) and the Valkey validation cache.
+
+> Admin operations (suspend, revoke, rate-limit, etc.) are **not** on this service — see §8 and `admin-service`. `admin-service` calls `/v1/auth/validate` for authn and then writes directly to `sessions` / `users.services.password.*` (it shares the Mongo URI; the "sole writer" status is really "the two services that may write to these paths, with `botplatform-service` owning the write on bot-self change-pwd and `admin-service` owning the write on admin-driven rotate / revoke / suspend").
 ### 9.2 Topology
 
 ```text
-bot ──HTTP──▶ ApiGW ──(POST /v1/auth/validate)──▶ botplatform-service ──▶ Valkey/Mongo (sessions)
-              │ rate-limit, metrics                  │ login · validate · admin · web UI
+bot ──HTTP──▶ ApiGW ──(POST /v1/auth/validate)──▶ botplatform-service ──▶ Valkey / Mongo (users + sessions)
+              │ rate-limit, metrics                  │ login · validate · login web UI
               └──route (principal in hdrs, mTLS)──▶ Server (/api/v2/*)
+
+admin-portal (web) ──XHR + session cookie──▶ admin-service ──(POST /v1/auth/validate, class==admin?)──▶ botplatform-service
+                                                              └──writes──▶ Mongo (sessions, users.services.password.*)
 WS server :8899 ──(POST /v1/auth/validate)──▶ botplatform-service
 EventConsumer    ──(POST /v1/auth/validate)──▶ botplatform-service
 ```
@@ -642,9 +825,9 @@ The 1M/min hot path is **`/v1/auth/validate`**, so the whole design optimizes it
 
 **(a) Cache-fronted validation.** In-pod LRU + cross-pod **Valkey** in front of Mongo (same pattern as `pkg/userstore`). Login writes Mongo + warms the cache; revoke deletes Mongo + busts the cache (pub/sub invalidation or short TTL). Common case = a Valkey GET (<5 ms), not a Mongo round-trip. ApiGW may add an optional short-TTL micro-cache on top.
 
-**(b) Throttle `LastUsedAt`** (§12 Q4): writing per request would negate the cache and double as the sliding-expiry refresh (§5.5) — update only when stale > 5 min.
+**(b) Pure-read validate path** — no Mongo writes during validate. Activity tracking is in-memory via Valkey TTL refresh (`GETEX`) only; sessions never time-expire so there's nothing to write back. Eliminates the write-amplification problem that throttled-update designs solve.
 
-**(c) O(1) lookup, unlimited sessions** — keyed by `base64(sha256(token))` (§4.2); session count never affects validate cost.
+**(c) O(1) lookup per validate, capped per-account session pool with FIFO eviction** — keyed by `base64(HMAC-SHA-256/SHA-256(token))` (§4.3); validate cost is independent of cap and session count (`sessions.findOne({_id: hash})` is one IXSCAN). Cap (§5.6) bounds writes + storage, not reads.
 
 **(d) Stateless service** → horizontal scale; the validate endpoint is read-mostly so it scales out trivially.
 
@@ -662,7 +845,7 @@ Build a **thin Go/Gin service**, consistent with the repo (`auth-service` is alr
 | Login latency (`POST /api/v1/login`) | **P99 < 200 ms** |
 | Token validation — hot path (Valkey cache hit) | **< 5 ms** |
 | Token validation — cold path (Mongo miss) | **< 50 ms** |
-| Concurrent sessions per account | **unlimited**, O(1) lookup (hash `_id`) |
+| Concurrent sessions per account | **capped at `SESSIONS_MAX_PER_ACCOUNT`** (default 100), FIFO eviction by `issuedAt` (count + delete-oldest at login, §5.6); O(1) validate independent of cap. Sessions permanent until cap-evicted or admin-revoked (no time-based expiry). |
 | Session cache hit ratio | **> 95%** |
 
 **Load criteria (must sustain)**
@@ -670,7 +853,7 @@ Build a **thin Go/Gin service**, consistent with the repo (`auth-service` is alr
 - **100,000 active sessions**.
 - **1,000,000 token validations / minute**.
 
-These drive the design choices in §9.3 (cache-fronted validation, throttled `LastUsedAt`) and are asserted by a load-test stage before cutover. Metrics in §17 expose each (`auth_session_validate_latency_seconds`, `auth_session_cache_hits_total`, `auth_login_total`) so the SLAs are observable in prod.
+These drive the design choices in §9.3 (cache-fronted validation, **pure-read** hot path) and are asserted by a load-test stage before cutover. Metrics in §17 expose each (`auth_session_validate_latency_seconds`, `auth_session_cache_hits_total`, `auth_login_total`) so the SLAs are observable in prod.
 
 ### 9.6 Endpoint inventory — all REST (Q15)
 
@@ -679,7 +862,6 @@ These drive the design choices in §9.3 (cache-fronted validation, throttled `La
 | Web — login form | `/dev-login` | GET | HTML | — | — |
 | Web — login submit | `/dev-login` | POST | redirect + Set-Cookie | form | **yes** |
 | Web — change-pwd | `/changepwd` | GET/POST | HTML / redirect | session cookie | **yes** (POST) |
-| Web — admin console *(role==admin)* | `/admin`, `/admin/bots[...]` | GET/POST | HTML / redirect | admin session cookie | **yes** (POST) |
 | API — legacy bot login | `/api/v1/login` | POST | JSON (`authToken`,`userId`,`me`) | — | n/a |
 | API — new bot login | `/v1/bot/login` | POST | JSON (new token) | — | n/a |
 | API — token validation | `/v1/auth/validate` | POST | JSON `{valid,principal}` where `principal = {userId,account,username,roles,class,siteId}` and `class ∈ {bot,user,admin}` (§9.8) | `{userId,authToken}` body | n/a |
@@ -690,11 +872,11 @@ These drive the design choices in §9.3 (cache-fronted validation, throttled `La
 
 - **Web** = server-rendered HTML, **session cookies** (HttpOnly/Secure/SameSite=Lax), CSRF on every POST.
 - **API** = bearer tokens only; **no cookies, no CSRF** (no ambient credential to forge).
-- `/api/v1/login` reproduces the legacy RC contract verbatim (existing SDK). `/v1/bot/login` is the new re-architected path. Both write to the same `sessions` store.
+- `/api/v1/login` reproduces the legacy RC contract verbatim (existing SDK). `/v1/bot/login` is the new re-architected path. Both write to the same `sessions` store (one INSERT + cap-eviction, §5.6).
 - `/v1/auth/validate` is the **once-per-connection** hook the websocket server (:8899) calls before accepting a connection (Part III §4.2). `/api/v2/*` is validated then reverse-proxied to `botplatform-server:8080` (Part III §4.1).
 
 ### 9.7 Dual-token validation (migration)
-Validation (§5.3) accepts **both** token schemes against one store: imported legacy RC tokens (`scheme:"legacy"`) and gateway-issued (`scheme:"v1"`). As bots re-login they receive `v1` tokens; legacy tokens age out via the 180-day sliding window. A `auth_session_validate_total{scheme}` metric tracks the legacy share so legacy acceptance can be **switched off** once it trends to zero — the planned phase-out.
+Validation (§5.3) accepts **both** token schemes against one store: imported legacy RC tokens (`scheme:"legacy"`) and gateway-issued (`scheme:"v1"`). As bots re-login they receive `v1` tokens; legacy tokens age out via FIFO cap eviction (§5.6) as the older imported rows get pushed out first when accounts hit cap. A `auth_session_validate_total{scheme}` metric tracks the legacy share so legacy acceptance can be **switched off** once it trends to zero — the planned phase-out.
 
 ### 9.8 `/v1/auth/validate` — the single dual-token authority (Q14)
 `POST /v1/auth/validate` is the **one** place token validation lives; it runs §5.3 (dual-token: `legacy` + `v1`) and returns the principal:
@@ -718,7 +900,7 @@ Validation (§5.3) accepts **both** token schemes against one store: imported le
 
 The `class` field is the **authoritative principal class** consumed by every downstream that does traffic isolation — ApiGW stamps `X-Principal-Class` on the request before forwarding to `Server`; the WebSocket server tags the connection; EventConsumer tags each webhook. Derived inside `botplatform-service` from the resolved principal's role (`role==bot → "bot"`, `role==admin → "admin"`, else `"user"`); never re-derived downstream. This is the contract the bot-traffic-isolation spec consumes — see that spec's Part II §3.
 
-**The caching is part of this API** — Valkey hot path (<5 ms, >95% hit), Mongo on miss, legacy-fallback, sliding-expiry bump, and lockout all live behind it — so callers get fast, correct validation without re-implementing any of it or coupling to our cache schema. Downstreams **must not** re-implement token logic or blindly trust a raw `X-User-Id`:
+**The caching is part of this API** — Valkey hot path (<5 ms, >95% hit) with `GETEX` TTL refresh, Mongo `findOne` on miss, legacy-fallback for prefix-less tokens, and lockout all live behind it — so callers get fast, correct validation without re-implementing any of it or coupling to our cache schema. **No Mongo writes on the validate path.** Downstreams **must not** re-implement token logic or blindly trust a raw `X-User-Id`:
 
 - **ApiGW** — the front-door router; **calls `/v1/auth/validate`** before routing (replacing today's proxy-to-legacy validation, which added latency + failure points). May add an optional short-TTL micro-cache.
 - **WebSocket server (:8899)** and **EventConsumer** — not behind ApiGW, so they **call `/v1/auth/validate`** directly.
@@ -738,8 +920,9 @@ Rule of thumb: **front-door / no trusted upstream → call `/v1/auth/validate`; 
 
 - **DNS unchanged forever:** chat domain → **chat gateway (fz2)**. No bot-facing DNS or cert change, ever. (Per-namespace DNS binding makes the previously-listed DNS-repoint alternative impossible — see callout above.)
 - The bot host's `VirtualService` on the chat gateway gets **two weighted backends**: legacy (local, `chat` ns) and **nextgen cross-cluster** to the **wsp gateway (fz1)** — reached via Istio multi-cluster mesh **or** a `ServiceEntry` to the wsp gateway's address.
-- The **wsp gateway accepts the chat host** (a Gateway server block + cert/SNI for the chat domain alongside the wsp domain) and routes it to nextgen `botplatform-service`/ApiGW in the `wsp` ns.
+- The **wsp gateway accepts the chat host** (a Gateway server block + cert/SNI for the chat domain alongside the wsp domain) and routes it to nextgen `botplatform-service`/ApiGW in the `wsp` ns. *Dual-host claim on wsp-GW is safe:* DNS for the chat domain points only at chat-GW, so direct bot traffic never reaches wsp-GW with a chat host; wsp-GW only sees the chat host on the cross-cluster forwarding path from chat-GW. The Istio "duplicate (host, port)" Gateway-collision rule fires only inside one cluster, never across.
 - **Steady-state implication.** After cutover, chat-GW becomes a permanent thin forwarder for the chat domain (100% weight to wsp-GW; zero legacy backends). HA the chat-GW accordingly — its blast radius is now load-bearing forever.
+- **Deploy nextgen in fz1 only during the ramp.** The `botplatform-service.wsp.svc` Service has zero endpoints in fz2 (we don't deploy pods there), so the cross-cluster mesh resolves all forwarded traffic to fz1 pods — no accidental fz2-side routing. (Note: if pods ever did exist in both clusters, Istio's default locality-aware LB would prefer same-cluster endpoints — fz2 sender → fz2 pod. Override via `DestinationRule.trafficPolicy.loadBalancer.localityLbSetting` if needed; keeping fz1-only during the ramp avoids the question entirely.)
 
 ### 10.2 Sequence
 
@@ -748,10 +931,10 @@ Rule of thumb: **front-door / no trusted upstream → call `/v1/auth/validate`; 
 1. Deploy nextgen dark in `fz1`/`wsp`; chat-gateway weight 100% → legacy (fz2); health-gate on `/healthz`.
 2. **Canary ramp over ~1 week:** `1% → 10% → 50% → 100%` of the chat-gateway VirtualService weight shifted **cross-cluster to fz1/wsp**, holding at each step on SLOs; **gate on error rate < 0.1%** + §9.5 latency. Monitor 24h at 100%.
 3. **Rollback within 1 hour** = shift weights back to the fz2 subset (instant via `VirtualService`).
-4. **Zero data loss** — credentials/sessions migrated + kept current by the real-time users-sync (§6.3); either stack authenticates identically (§10.3).
+4. **Zero data loss** — password material lives on the existing `users` collection (§4.1), shared by both stacks; bulk-imported sessions live in nextgen's `sessions` collection (§6.2); a bot's existing token validates on either stack via dual-token logic (§10.3).
 
 ### 10.3 Why either-stack routing is safe
-nextgen honors **migrated credentials** (§6.1) *and* **migrated live legacy tokens** (§6.2, same hash form), so a request routed to either stack stays authenticated — the precondition that makes weighted routing non-disruptive.
+Both stacks read the password from the **same `users` collection** (§4.1) — no credential sync layer. Sessions diverge on storage but converge on authority: legacy continues to read/write `users.services.resume.loginTokens[]`; nextgen reads/writes its own `sessions` collection (seeded at cutover from the legacy array, §6.2). Validate accepts **both** schemes — legacy tokens (`_id = base64(sha256(token))`) imported at cutover and v1 tokens (`_id = base64(HMAC-SHA-256(secret, token))`) issued on nextgen. A bot's existing legacy token validates on either stack; new logins (post-canary) issue v1 tokens that work on nextgen and (since legacy doesn't know the HMAC function and never sees the new sessions row) silently fail on legacy — acceptable because the canary monotonically shifts traffic forward.
 
 ### 10.4 Scope boundary
 Clean no-downtime for the **login/session slice**. If both stacks also serve live room/message traffic in the window, dual-write/federation consistency is a **separate track**.
@@ -759,16 +942,16 @@ Clean no-downtime for the **login/session slice**. If both stacks also serve liv
 ---
 
 ## 11. Security & rules compliance
-- `PasswordHash` / raw tokens are **never** serialized (`json:"-"`) and **never** logged; `sessions._id` stores only `base64(sha256(token))`.
+- `services.password.bcrypt` (`json:"-"`) and raw tokens are **never** serialized and **never** logged. `model.User` has a `String()` override masking the password field for `%+v` safety. `sessions._id` stores only the hash (HMAC-SHA-256 for v1, SHA-256 for legacy) — raw token never reaches Mongo.
 - **Timing-safe credential comparison** — run the bcrypt compare even on unknown accounts (dummy hash); uniform error + timing (no account enumeration).
 - **Login rate limiting / lockout:** **5 failed attempts → 15-minute lockout** (keyed by account, ideally also by source IP). Backed by Valkey (shared across pods); lockout returns a uniform auth error, not a distinct "locked" leak. Successful login resets the counter.
 - **HTTPS only** — TLS terminated at the Istio ingress gateway; the edge service speaks plain HTTP only inside the mesh.
 - **CSRF protection on web (form) routes** (`/dev-login`, `/changepwd`) — synchronizer-token (or double-submit) pattern; verified on every POST. **API/token routes are exempt** (bearer token is not an ambient credential, so not CSRF-forgeable).
-- **Session cookies (web)** — `HttpOnly`, `Secure`, `SameSite=Lax`, scoped path; the cookie carries the same session token (validated identically to the API header, §5.3). Distinct surface from API bearer tokens; both resolve to the one `sessions` store.
+- **Session cookies (web)** — `HttpOnly`, `Secure`, `SameSite=Lax`, scoped path; the cookie carries the same session token (validated identically to the API header, §5.3). Distinct surface from API bearer tokens; both resolve against the same `sessions` collection.
 - Client-facing errors use `pkg/errcode` named constructors + a domain `reason` where the frontend must branch (`requirePasswordChange`, `invalidCredentials`); replied via `errnats.Reply`. Infra failures return raw wrapped errors (collapse to `internal`).
 - New client-facing handlers → update `docs/client-api.md` in the same PR.
 
-**WebSocket auth (integration note).** The bot SDK also opens a realtime/WebSocket connection; that transport must authenticate against the **same** `sessions` store (validate the token on connect/upgrade, reuse §5.3). Captured here because Part I's rollout calls out "fix WebSocket authentication" (Phase 2); the WebSocket handshake path and any per-frame auth belong in the Part III components guide.
+**WebSocket auth (integration note).** The bot SDK also opens a realtime/WebSocket connection; that transport must authenticate against the **same** `sessions` collection (validate the token on connect/upgrade, reuse §5.3). Captured here because Part I's rollout calls out "fix WebSocket authentication" (Phase 2); the WebSocket handshake path and any per-frame auth belong in the Part III components guide.
 
 ---
 
@@ -777,25 +960,25 @@ Clean no-downtime for the **login/session slice**. If both stacks also serve liv
 > "Confirmed" entries were verified against the internal codebase or decided in design review. As of 2026-06-16 **all open questions are decided** — the recommendation was accepted for each; Q12/Q13 remain subject to external-team wiring confirmation but the design assumes the recommended answer.
 
 ### Decided 2026-06-16 (recommendation accepted)
-- **Q1b — Resume RPC.** ✅ **Defer the public `session.refresh` verb to the native-SDK milestone**; the underlying session→JWT exchange (§5.2) ships anyway. Legacy REST bots use header reuse (§5.6).
-- **Q3 — Cutover source-of-truth.** ✅ **Real-time `users`-collection sync extended to carry the bcrypt hash into `credentials`** → password changes propagate, **no freeze** (§6.3). One write-authority during the ramp (legacy writes; nextgen-side changes off until cutover). Tokens are a separate axis (Q14). *Infra: confirm the sync can carry the credential field; read-only freeze is the trivial fallback.*
-- **Q10 — Token format.** ✅ **Two formats coexist** (§4.3): legacy tokens accepted byte-for-byte during the hybrid phase (Meteor `base64(sha256(token))` storage); native `v1` tokens are **`bp1_<43-char base64url of 32 random bytes>`** stored as **`base64(HMAC-SHA-256(server_secret, token))`**. The `bp1_` prefix is **always-on for new tokens** (not optional) — it gates the validator's hash-dispatch (§5.3) so native tokens never pay the dual-lookup penalty, enables forward-versioning (`bp2_`…), and is detected by standard secret scanners. HMAC storage hardens the v1 sessions table against offline attack on a DB dump. Legacy tokens stay on plain SHA-256 storage byte-for-byte to preserve zero-bot-change compatibility.
+- **Q1b — Resume RPC.** ✅ **Defer the public `session.refresh` verb to the native-SDK milestone**; the underlying session→JWT exchange (§5.2) ships anyway. Legacy REST bots use header reuse (§5.7).
+- **Q3 — Cutover source-of-truth.** ✅ **Split answer** (§6.3, REVISED 2026-06-24): **password material** stays on the shared `users.services.password.bcrypt` path — no credential extraction, identity-sync already carries it end-to-end. **Sessions** are bulk-imported once at cutover from the legacy `users.services.resume.loginTokens[]` array into the new nextgen-owned `sessions` collection (§6.2); imported rows keep the legacy `hashedToken` verbatim as `_id` so existing bot tokens validate immediately on nextgen with zero re-login. One write-authority guard: nextgen-side password changes (`/changepwd`, rotation) are disabled until 100% cutover to avoid simultaneous writes to the same `users` doc.
+- **Q10 — Token format.** ✅ **Two formats coexist** (§4.6): legacy tokens accepted byte-for-byte during the hybrid phase (Meteor `base64(sha256(token))` storage on the `loginTokens[].hashedToken` field); native `v1` tokens are **`bp1_<43-char base64url of 32 random bytes>`** stored as **`base64(HMAC-SHA-256(server_secret, token))`** on the same field, distinguished by an added `scheme:"v1"` entry attribute. The `bp1_` prefix is **always-on for new tokens** — it gates the validator's hash-dispatch (§5.3), enables forward-versioning (`bp2_`…), and is detected by standard secret scanners. HMAC storage hardens against offline attack on a DB dump. Legacy entries stay on plain SHA-256 storage byte-for-byte to preserve zero-bot-change compatibility.
 - **Q12 — WebSocket validation.** ✅ WS server **calls `/v1/auth/validate`** (Part III §7). *Wired during implementation/migration — not a design blocker.*
 - **Q13 — REST→NATS bridge ownership.** ✅ Bridge lives in **`Server`/data-plane track**, never our auth service (Part III §4.1). *Wired during implementation/migration — not a design blocker.*
 
 ### Confirmed — closed
-- **Q18 — Admin surface.** ✅ **No separate admin API.** `/dev-login` is one role-aware web login; admin = role-gated server-rendered web routes + CSRF form POSTs (§8). Bot processes use the login API only. A JSON admin API is deferred until programmatic provisioning is actually needed. *(2026-06-16.)*
-- **Q17 — Service scope.** ✅ **`botplatform-service` is the auth provider, not a data-path proxy** (Option (b), 2026-06-16). ApiGW (existing) keeps routing/rate-limit/metrics and calls our `/v1/auth/validate`; `Server` serves `/api/v2/*`. We own login + validate + `credentials`/`sessions` + web UI + admin (§9).
+- **Q18 — Admin surface.** ✅ **REVISED 2026-06-24: separate `admin-portal` (web frontend) + `admin-service` (REST JSON API)** distinct from `botplatform-service` (§8). Earlier "no separate admin API" stance reversed based on ops feedback — admin gets independent deploy/rollback, isolated authz boundary (every route requires `class:"admin"`), and a distinct UX from the bot-dev change-pwd page and the chat frontend. `/dev-login` stays the universal login form on `botplatform-service`; the post-login redirect target depends on the calling portal (chat-frontend vs admin-portal). Bot processes use the login API only.
+- **Q17 — Service scope.** ✅ **`botplatform-service` is the auth provider, not a data-path proxy** (Option (b), 2026-06-16). ApiGW (existing) keeps routing/rate-limit/metrics and calls our `/v1/auth/validate`; `Server` serves `/api/v2/*`. We own login + validate + the password path on `users` (§4.1) + the new `sessions` collection (§4.2) + web UI + admin (§9).
 - **Q16 — Sequencing.** ✅ **Validation-first** (§19): move validation off the legacy proxy first (biggest win), then login, then sunset legacy. Login is phase-2.
-- **Q15 — Admin/auth surface protocol.** ✅ **REST, not NATS** (§8, §15). Every caller (bots, browsers, ApiGW, WS) speaks HTTP; NATS is reserved for the nextgen backend's own comms. Admin ops are REST endpoints on `botplatform-service`.
+- **Q15 — Admin/auth surface protocol.** ✅ **REST, not NATS** (§8, §15). Every caller (bots, browsers, ApiGW, WS, admin-portal) speaks HTTP; NATS is reserved for the nextgen backend's own comms. Admin ops are REST endpoints on `admin-service` (post Q18 revision); auth ops (login + validate) are REST on `botplatform-service`.
 - **Q14 — Downstream validation.** ✅ `/v1/auth/validate` is the single dual-token authority (§9.8); ApiGW/WS/EventConsumer call it; `Server` trusts ApiGW's mTLS-injected principal (no double-validate).
 - **Q11 — `/api/v1` scope.** ✅ **`/api/v1/login` only** + `/v1/bot/login`; data is `/api/v2/*` on `Server` (legacy v2 REST), never proxied by us. *(confirmed 2026-06-16.)*
-- **Q5 — Architecture.** ✅ **Option B / DEDICATED-SERVICE** — dedicated `botplatform-service` (design review 2026-06-15). Driven by the web-UI scope (HTML/CSRF/cookies, §9.6) + dual-token validation; blast-radius/key-safety and independent scaling settle it. The new service owns `credentials`+`sessions`; `auth-service` keeps the signing key and mints JWTs on request (§7). (Cross-spec note: the bot-traffic isolation spec independently DECIDES its own "Option A / SUBJECT-SPLIT" — different decision, different namespace.)
+- **Q5 — Architecture.** ✅ **Option B / DEDICATED-SERVICE** — dedicated `botplatform-service` (design review 2026-06-15). Driven by the web-UI scope (HTML/CSRF/cookies, §9.6) + dual-token validation; blast-radius/key-safety and independent scaling settle it. The new service is sole writer of `users.services.password.*` AND sole owner of the new `sessions` collection + Valkey cache; `auth-service` keeps the signing key and mints JWTs on request (§7). (Cross-spec note: the bot-traffic isolation spec independently DECIDES its own "Option A / SUBJECT-SPLIT" — different decision, different namespace.)
 - **Q6 — Cache layer.** ✅ In-pod LRU + **Valkey from day one** for the validation hot path (§9.3); **Valkey cluster confirmed available in prod**.
 - **Q1 — Login contract.** ✅ `POST /api/v1/login`; body `{ user, password }` plaintext **or** `{ user, password:{ digest, algorithm:"sha-256" } }` (digest optional, for compatibility); response `{ status:"success", data:{ authToken, userId:<17-char>, me:{ _id, username, name, active, roles:["bot"] } } }`; subsequent headers `X-User-Id` + `X-Auth-Token`. Legacy bots use header reuse, not a resume verb (new-SDK resume = Q1b). *(Q1a folded in: path is `/api/v1/login`.)*
-- **Q2 — Session lifetime.** ✅ **Sliding idle expiry**, effectively infinite at **180-day idle** — matches current v2 Go repo behavior (§5.5). Refreshed on the throttled use-bump; revocation is the kill switch.
-- **Q4 — `LastUsedAt` throttle.** ✅ **5-minute window (300s)** — prevents write amplification while keeping reasonable activity tracking; doubles as the sliding-expiry refresh (§5.5).
-- **Q7 — `idleWindow`.** ✅ **180 days** (`SESSION_IDLE_WINDOW=4320h`, §16).
+- **Q2 — Session lifetime.** ✅ **REVISED 2026-06-24: permanent sessions** (no time-based expiry). Sessions are removed only by cap eviction (§5.6 FIFO by `issuedAt`) or admin revoke (§5.5). Earlier "sliding 180-day idle" stance was dropped because the bot SDK does not auto-relogin on `401 sessionExpired` — a hard time-based expiry would silently break long-running bots.
+- **Q4 — `LastUsedAt` throttle.** ✅ **REMOVED 2026-06-24.** No `lastUsedAt` field; validate is pure-read (§5.3). Activity tracking is in-memory via Valkey TTL refresh (`GETEX`); no Mongo writes on the validate path.
+- **Q7 — `idleWindow`.** ✅ **REMOVED 2026-06-24.** Sessions are permanent (§5.5) — no idle reap. Cap eviction (§5.6, FIFO by `issuedAt`) + admin revoke are the only session-removal mechanisms. Bot SDK does not auto-relogin on 401, so a hard time-based expiry would silently break long-running bots.
 - **Q8 — Bot auth mechanism.** ✅ Bots use **password login only**; PATs are human-only, **out of scope** (§2.2, §6).
 - **Q9 — Identity ID mapping.** ✅ v2 Go repo **preserves the 17-char legacy Meteor `_id`**; nextgen `users._id` == `X-User-Id`. No `LegacyUserID`, no mapping (§2.2, §4).
 
@@ -803,29 +986,55 @@ Clean no-downtime for the **login/session slice**. If both stacks also serve liv
 
 ## 13. Go types (proposed)
 
-`pkg/model` (shared domain types, both `json` + `bson` tags per house rule):
+`pkg/model` (shared domain types, both `json` + `bson` tags per house rule). **Mixed model (§4):** password material lives on `model.User`; sessions are a dedicated `model.Session` type backed by `pkg/sessions`.
 
 ```go
-// model/credential.go
-type Credential struct {
-    ID                    string `json:"id"                    bson:"_id"` // 17-char Meteor ID (legacy-preserved)
-    Account               string `json:"account"               bson:"account"`
-    PasswordHash          string `json:"-"                     bson:"passwordHash"`
-    PasswordScheme        string `json:"-"                     bson:"passwordScheme"`
-    RequirePasswordChange bool   `json:"requirePasswordChange" bson:"requirePasswordChange"`
-    CreatedAt             int64  `json:"createdAt"             bson:"createdAt"`
-    UpdatedAt             int64  `json:"updatedAt"             bson:"updatedAt"`
+// model/user.go — additions to the existing User struct (password material only)
+type User struct {
+    ID                    string `json:"id"                              bson:"_id"`     // existing — 17-char Meteor ID
+    Account               string `json:"account"                         bson:"account"` // existing
+    SiteID                string `json:"siteId"                          bson:"siteId"`  // existing (PR #295)
+    Roles                 []string `json:"roles"                         bson:"roles"`   // existing
+    // ... other existing identity fields (Name, Active, CreatedAt, etc.) ...
+
+    // Auth fields (legacy paths, no rename):
+    Services              UserServices `json:"-"                          bson:"services"`             // nested; never serialized to JSON
+    RequirePasswordChange bool         `json:"requirePasswordChange"      bson:"requirePasswordChange"`
 }
 
-// model/session.go
+// String overrides %+v / %s formatting so accidental log lines / panic stacks
+// don't leak the bcrypt hash. Mirror this on UserServices and Password too.
+func (u User) String() string {
+    return fmt.Sprintf("User{ID:%q Account:%q SiteID:%q Roles:%v}", u.ID, u.Account, u.SiteID, u.Roles)
+}
+
+type UserServices struct {
+    Password Password `bson:"password"`
+    // Resume.LoginTokens is read at migration time only (§6.2); not written by nextgen.
+}
+
+type Password struct {
+    Bcrypt string `bson:"bcrypt"`              // bcrypt(sha256_hex(plaintext)) — NEVER LOGGED, NEVER SERIALIZED
+    Scheme string `bson:"scheme,omitempty"`    // optional — "rc-sha256-bcrypt"; verify uses this family if absent
+}
+
+func (p Password) String() string { return "Password{REDACTED}" }
+
+// model/session.go — owned by botplatform-service (§4.2)
 type Session struct {
-    TokenHash    string     `json:"-"                    bson:"_id"`          // base64(sha256(token))
-    UserID       string     `json:"userId"               bson:"userId"`        // 17-char Meteor ID
-    Account      string     `json:"account"              bson:"account"`
-    Scheme       string     `json:"scheme"               bson:"scheme"`       // "legacy" | "v1"
-    IssuedAt     int64      `json:"issuedAt"             bson:"issuedAt"`
-    LastUsedAt   int64      `json:"lastUsedAt"           bson:"lastUsedAt"`
-    ExpiresAt    *time.Time `json:"expiresAt,omitempty"  bson:"expiresAt,omitempty"`
+    HashedToken string `json:"-"        bson:"_id"`       // token hash; per-scheme (§4.6)
+    UserID      string `json:"userId"   bson:"userId"`    // 17-char Meteor ID
+    Account     string `json:"account"  bson:"account"`   // denormalized for fast validate response
+    SiteID      string `json:"siteId"   bson:"siteId"`    // stamped at issue, immutable
+    Scheme      string `json:"scheme"   bson:"scheme"`    // "legacy" or "v1"
+    IssuedAt    int64  `json:"issuedAt" bson:"issuedAt"`  // ms epoch; FIFO ordering key (§5.6)
+}
+
+// Migration-only shape — legacy entry as it sits on users.services.resume.loginTokens[] (§6.2)
+type legacyLoginToken struct {
+    HashedToken string    `bson:"hashedToken"`
+    When        time.Time `bson:"when"`
+    Type        string    `bson:"type,omitempty"`        // PATs skipped by importer
 }
 ```
 
@@ -861,15 +1070,15 @@ Gateway→handler principal injection rides as **NATS message headers** (not bod
 
 ---
 
-## 14. Algorithms (precise) — ✅ confirmed 2026-06-15 (amended 2026-06-16 for §4.3 dual-hash)
+## 14. Algorithms (precise) — ✅ confirmed 2026-06-15 (amended 2026-06-16 for §4.6 dual-hash)
 
 **Token issuance (v1):**
 ```go
 raw := "bp1_" + base64url.NoPadding(crypto/rand.Read(32 bytes))   // 4 + 43 = 47 chars
-h   := base64.StdEncoding(hmac_sha256(server_secret, raw))        // 44 chars, stored in sessions._id
+h   := base64.StdEncoding(hmac_sha256(server_secret, raw))        // 44 chars, stored as sessions._id
 ```
 
-**Token hashing (per scheme — §4.3):**
+**Token hashing (per scheme — §4.6):**
 - `legacy` rows: `tokenHash = base64.StdEncoding(sha256(rawToken))` — Meteor `Accounts._hashLoginToken`, byte-for-byte (golden fixture gates the implementation, §18).
 - `v1` rows: `tokenHash = base64.StdEncoding(hmac_sha256(server_secret, rawToken))`.
 
@@ -885,26 +1094,28 @@ i.e. **SHA-256 the plaintext → hex string, then `bcrypt.CompareHashAndPassword
 **Session validation (gateway hot path):**
 ```go
 h := tokenHashFor(xAuthToken)            // §5.3: HMAC for "bp1_*", SHA-256 otherwise
-s := valkey.Get(h)                       // hot path
-if miss: s = sessionStore.Lookup(h)                  // cold path (in-process): Mongo read + Valkey warmup
-                                                      // NOT a NATS request — botplatform-service exposes no NATS surface (§15).
-                                                      // Other consumers (ApiGW / WS / EventConsumer) reach this same logic via
-                                                      // POST /v1/auth/validate (§9.8), not directly.
-if s == nil:
-    if !hasPrefix(xAuthToken, "bp1_"):   // legacy: fall back to the legacy-store probe (Part III §4.3)
-        s = legacyStore.Validate(xAuthToken, xUserId)
-    if s == nil -> 401 invalidCredentials
-if s.ExpiresAt != nil && now > s.ExpiresAt -> 401 sessionExpired
-if xUserId != "" && xUserId != s.UserID  -> 401 invalidCredentials   // sanity check; same 17-char id space, no mapping
-if now - s.LastUsedAt > throttleWindow: async bump LastUsedAt + ExpiresAt=now+idleWindow (Mongo + cache)
-return principal{account, userId}
+hit := valkey.GETEX(h, EX=5m)            // hot path; GETEX refreshes the in-memory TTL (no Mongo write)
+if hit != nil:
+    return principal(hit)
+// cold path: O(1) sessions read by _id
+s := sessionStore.FindByID(h)            // mongo.findOne({_id: h}) — pure READ
+if s != nil:
+    principal := buildPrincipal(s)        // {userId, account, roles, class, siteId}
+    valkey.SETEX(h, principal, 5m)        // populate cache
+    return principal
+if !hasPrefix(xAuthToken, "bp1_"):       // legacy: fall back to the legacy-store probe (Part III §4.3)
+    s := legacyStore.Validate(xAuthToken, xUserId)
+    if s != nil: return principal(s)
+return 401 invalidCredentials
+// NO sessionExpired check — sessions are permanent (§5.5; no expiresAt field)
+// NO LastUsedAt bump — validate is pure-read (§5.3; no lastUsedAt field)
 ```
 
 ---
 
 ## 15. Routes & error reasons (REST — Q15)
 
-`botplatform-service` is a **REST/HTTP service** (Gin). Its full route surface is the §9.6 inventory: web (`/dev-login`, `/changepwd`), login (`/api/v1/login`, `/v1/bot/login`), validation (`/v1/auth/validate`), and admin (`/admin/bots…`). **No NATS subjects** are exposed by this service.
+`botplatform-service` is a **REST/HTTP service** (Gin). Its full route surface is the §9.6 inventory: web (`/dev-login`, `/changepwd`), login (`/api/v1/login`, `/v1/bot/login`), validation (`/v1/auth/validate`). Admin (`/v1/admin/*`) lives on **`admin-service`** (§8), not here. **No NATS subjects** are exposed by either service.
 
 > **NATS is out of this service's surface.** It's reserved for the nextgen chat backend's internal service-to-service comms and native-client access. The *only* possible NATS use is a future control-plane call to `auth-service` to mint a NATS JWT for *native* bots — not part of the July scope.
 
@@ -912,7 +1123,7 @@ return principal{account, userId}
 
 Reviewer FAQ: this codebase uses NATS request/reply for synchronous operations (CLAUDE.md §6), so why is `/v1/auth/validate` HTTP and not `nc.Request("chat.auth.validate", …)`? Both are synchronous — the question is operational fit. We chose HTTP because:
 
-1. **Web UI forces HTTP on this service anyway.** `/dev-login`, `/changepwd`, `/admin/bots…` are HTML + CSRF + session cookies — inherently HTTP. Adding a parallel NATS handler for `/v1/auth/validate` is more operational surface (second transport, second observability story, second auth model) for marginal gain.
+1. **Web UI forces HTTP on this service anyway.** `/dev-login`, `/changepwd` (and the admin-service REST surface that shares the auth-validate authority) are HTML/JSON + CSRF + session cookies — inherently HTTP. Adding a parallel NATS handler for `/v1/auth/validate` is more operational surface (second transport, second observability story, second auth model) for marginal gain.
 2. **ApiGW is Envoy-native.** ApiGW is the highest-volume validate caller. HTTP routing is its native skill; calling NATS from inside an Envoy filter is awkward (custom Lua/WASM or sidecar). HTTP keeps ApiGW simple.
 3. **Latency is well inside SLA.** In-mesh HTTP hop is ~1 ms; §9.5 SLA is `<5 ms cached`. The NATS-RPC latency saving (~0.5 ms) doesn't move the dial at our throughput target.
 
@@ -925,53 +1136,66 @@ Sync vs async is **not** the differentiator here. Both HTTP and NATS request/rep
 ---
 
 **Error reasons** (attached via `errcode.WithReason`, surfaced through `errhttp.Write`):
-`invalidCredentials`, `sessionExpired`, `requirePasswordChange`, `accountExists`, `notBotAccount`, `forbiddenNotAdmin`, `rateLimited`, `account_not_provisioned`.
+`invalidCredentials`, `requirePasswordChange`, `accountExists`, `notBotAccount`, `forbiddenNotAdmin`, `rateLimited`, `account_not_provisioned`. *(`sessionExpired` is intentionally absent — sessions are permanent until cap-evicted or admin-revoked, §5.5.)*
 
 ---
 
 ## 16. Configuration (env, `caarlos0/env`)
 
-**`botplatform-service`** (the §7 Option-B auth provider): Mongo URI/DB (required, owns `credentials`+`sessions`), `SITE_ID` (required when `REQUIRE_PROVISIONED=true` — the membership-row site key), `VALKEY_ADDRS` (required), `SESSION_CACHE_TTL` (`"5m"`), `BCRYPT_COST` (`"10"` — match legacy), `LOGIN_MAX_ATTEMPTS` (`"5"`), `LOGIN_LOCKOUT` (`"15m"`), `SESSION_IDLE_WINDOW` (`"4320h"` ≈180d), `SESSION_LASTUSED_THROTTLE` (`"5m"`), `TOKEN_HMAC_KEY` (**required secret**, 32 bytes — keys the v1 token storage hash §4.3), `TOKEN_HMAC_KEY_PREVIOUS` (optional, 32 bytes — graceful key rollover; kept for one `SESSION_IDLE_WINDOW` after rotation, then dropped), `REQUIRE_PROVISIONED` (`"true"` — provisioning gate §5.1 step 3; mirrors auth-service from PR #295; fail-closed on store errors; disabling logs a loud startup warning), web-surface vars `COOKIE_DOMAIN`, `COOKIE_SECURE` (`"true"`), `CSRF_KEY` (required secret), and `HTTP_MAX_CONCURRENCY` (`"500"`), `PORT` (`"8080"`). No NATS/proxy vars (not a data-path proxy). *Future native-bot JWT mint would add `AUTH_SERVICE_URL`.* Secrets never defaulted (house rule). HTTP middleware (request-ID, access-log, CORS) sourced from `pkg/ginutil` (introduced by PR #295) — no per-service reimplementation. Outbound HTTP via `pkg/restyutil`.
+**`botplatform-service`** (the §7 Option-B auth provider): Mongo URI/DB (required — reads `users.services.password.*` and owns the `sessions` collection), `SITE_ID` (required when `REQUIRE_PROVISIONED=true` — the membership-row site key), `VALKEY_ADDRS` (required), `SESSION_CACHE_TTL` (`"5m"` — Valkey in-memory TTL refreshed via `GETEX` on each validate hit; cache miss falls back to `sessions.findOne({_id: hash})`), `BCRYPT_COST` (`"10"` — match legacy), `LOGIN_MAX_ATTEMPTS` (`"5"`), `LOGIN_LOCKOUT` (`"15m"`), `SESSIONS_MAX_PER_ACCOUNT` (`"100"` — per-account cap, FIFO eviction by `issuedAt` via count + delete-oldest at login, §5.6), `TOKEN_HMAC_KEY` (**required secret**, 32 bytes — keys the v1 token storage hash §4.6), `TOKEN_HMAC_KEY_PREVIOUS` (optional, 32 bytes — graceful key rollover; admin-driven password reset across affected accounts revokes their sessions to force re-login under the new key), `REQUIRE_PROVISIONED` (`"true"` — provisioning gate §5.1 step 3; mirrors auth-service from PR #295; fail-closed on store errors; disabling logs a loud startup warning), web-surface vars `COOKIE_DOMAIN`, `COOKIE_SECURE` (`"true"`), `CSRF_KEY` (required secret), and `HTTP_MAX_CONCURRENCY` (`"500"`), `PORT` (`"8080"`). No NATS/proxy vars (not a data-path proxy). *Future native-bot JWT mint would add `AUTH_SERVICE_URL`.* Secrets never defaulted (house rule). HTTP middleware (request-ID, access-log, CORS) sourced from `pkg/ginutil` (introduced by PR #295) — no per-service reimplementation. Outbound HTTP via `pkg/restyutil`.
+
+> **Removed env vars (pivot 2026-06-24):** `SESSION_IDLE_WINDOW` and `SESSION_LASTUSED_THROTTLE` — sessions are permanent (§5.5) and validate is pure-read (§5.3); neither setting has anything to anchor on anymore.
 
 ---
 
 ## 17. Observability (metrics)
 - `auth_login_total{result}`, `auth_login_lockouts_total`, `auth_session_validate_total{source=cache|mongo,result,scheme}`, `auth_session_validate_latency_seconds`, `auth_session_cache_hits_total{hit}`, `auth_active_sessions` (gauge).
+- **`auth_sessions_evicted_total{reason}`** (counter; `reason=cap` for FIFO eviction by `issuedAt` at login (§5.6), `reason=revoke` for admin action). No `reason=ttl` — sessions never time-expire (§5.5). Watch for sustained `reason=cap` increase on a single account — signal of runaway login behavior or compromise.
+- **`auth_sessions_per_account`** (histogram of `sessions.countDocuments({userId})` at login time, sampled) — distribution shape tells ops whether the cap is meaningfully bounding any accounts.
 - HTTP middleware: `http_request_duration_seconds{route,status}`.
 - Logging: `log/slog` JSON, request-id propagated; **never** log tokens / password input / hashes.
 
 ---
 
 ## 18. Test plan (TDD, ≥80% / 90% core)
-- **Golden hash fixtures** — both schemes (§4.3) gated by golden tests, **first tests; gate all store code**:
+- **Golden hash fixtures** — both schemes (§4.6) gated by golden tests, **first tests; gate all store code**:
   - `TestHashLegacyToken`: a known `(rawToken → base64(sha256))` pair proving parity with Meteor `Accounts._hashLoginToken`.
   - `TestHashV1Token`: a known `(server_secret, rawToken → base64(hmac_sha256))` pair locking the v1 storage hash.
   - `TestTokenPrefixDispatch`: validator picks the correct hash function from the wire prefix (`bp1_` → HMAC; else SHA-256).
   - `TestV1TokenShape`: issued v1 tokens start with `bp1_`, total length 47, base64url body has 256 bits of entropy (statistical check across N samples).
 - **Password verify** — `TestVerifyPassword` (table): plaintext-correct, digest-correct, wrong password, unknown account (uniform timing/error), `requirePasswordChange` surfaced.
-- **Migration filter** — `TestImportLoginTokens_SkipsPAT`: a seed mixing `type:""` and `type:"personalAccessToken"` entries; assert only the regular tokens become `sessions` rows.
+- **Migration filter** — `TestImportLoginTokens_SkipsPAT`: a seed mixing `type:""` and `type:"personalAccessToken"` entries on legacy `users.services.resume.loginTokens[]`; the importer (§6.2) writes only the regular tokens as `sessions` rows; PATs are silently skipped.
 - **Rate limit** — `TestLoginRateLimit`: 5 failures → 6th is locked out (uniform error); successful login resets the counter; lockout expires after the window.
 - **Web/CSRF** — `TestDevLoginForm` (GET renders form + CSRF token), `TestDevLoginSubmit` (POST sets HttpOnly/Secure cookie on success; **rejects POST without/with bad CSRF token**), `TestChangePwd` (requires cookie + CSRF; revokes other sessions on success).
-- **Dual-token** — `TestValidate_AcceptsLegacyAndV1`: both a `scheme:"legacy"` and a `scheme:"v1"` token validate via the same path.
-- **Session lifecycle** (unit, mocked store): create, validate hit, expired, `X-User-Id` mismatch, throttled-bump skip vs. apply, revoke, revoke-all.
-- **Provisioning handlers** (table, mocked store): create bot (happy/`accountExists`/`notBotAccount`), set-password (clears flag + revokes), non-admin caller → `forbiddenNotAdmin`.
-- **Validate endpoint** (unit): `/v1/auth/validate` happy/expired/unknown, `errhttp` status mapping, cache hit vs Mongo miss path.
-- **Integration** (`//go:build integration`, `pkg/testutil`): `credentials`/`sessions` Mongo store incl. partial-TTL index behavior; Valkey read-through + invalidation; **migration script** against a Mongo seeded with legacy-RC-shaped docs (password + non-PAT `resume.loginTokens`). Assert 17-char `_id`s are preserved verbatim into `credentials._id`.
+- **Dual-token** — `TestValidate_AcceptsLegacyAndV1`: a `scheme:"legacy"` row and a `scheme:"v1"` row in the same `sessions` collection both validate via the same `findOne({_id: hash})` path; the hash dispatch is correct per wire prefix.
+- **Cap + FIFO eviction** (§5.6):
+  - `TestLogin_BelowCap_NoEviction`: account with `< cap` rows; login inserts → row count grows by 1, no rows deleted.
+  - `TestLogin_AtCap_EvictsOldestByIssuedAt`: pre-seed `cap` sessions with monotonically-increasing `issuedAt`; login → row count stays at cap, the oldest row is deleted (FIFO by `issuedAt`).
+  - `TestLogin_OverCap_TrimsToCap`: pre-seed `cap+3` rows (e.g. via direct insert); next login → row count trimmed to exactly cap, 4 oldest rows deleted.
+  - `TestValidate_PureRead_NoMongoWrites`: drive 1000 validates against a single session; assert zero `update`/`insert`/`delete` operations on the `sessions` collection (use Mongo's slow-query log or a wrapping store mock).
+  - `TestLogin_ConcurrentOvershoot_HealsOnNext`: parallel logins for the same account briefly push the row count to `cap+2`; the next login evicts down to cap.
+  - `TestEviction_InvalidatesValkey`: each cap-evicted row's hash is `valkey.del`'d, not just removed from Mongo.
+  - `TestAdminRevoke_DeletesByID`: `/admin/bots/<id>/sessions/revoke` issues `sessions.deleteOne({_id: hash})` AND deletes the Valkey key — subsequent validate misses both.
+  - `TestPasswordRotation_RevokesAll`: `/admin/bots/<id>/password` sets the new bcrypt AND `sessions.deleteMany({userId})` — all prior sessions stop validating.
+  - `TestEviction_EmitsMetric`: each cap-driven eviction increments `auth_sessions_evicted_total{reason="cap"}` by the right delta.
+- **Provisioning handlers** (table, mocked store): create bot (happy/`accountExists`/`notBotAccount`), set-password (clears flag + `deleteMany` on sessions), non-admin caller → `forbiddenNotAdmin`.
+- **Validate endpoint** (unit): `/v1/auth/validate` happy/unknown, `errhttp` status mapping, Valkey hit vs Mongo `findOne` miss path, `X-User-Id` mismatch.
+- **Integration** (`//go:build integration`, `pkg/testutil`): `userstore` reads `services.password.bcrypt`; sessions store (CRUD + the compound `{userId, issuedAt}` index) under concurrent writes; Valkey read-through + admin-revoke + cap-eviction invalidation; **migration script** against a Mongo seeded with legacy-RC-shaped `users.services.resume.loginTokens[]` (mix of regular + PAT entries) → assert sessions count matches the non-PAT count, all imported rows carry `scheme:"legacy"`, and `_id`s equal the legacy `hashedToken`s byte-for-byte.
 
 ---
 
 ## 19. Implementation phases (each = TDD + own PR)
 *Architecture: Option B / DEDICATED-SERVICE — `botplatform-service` as the auth provider (§7, §9). **Validation-first** sequencing (Q16): the urgent win is moving validation off the legacy proxy.*
 
-1. Scaffold `botplatform-service` (repo service template) + `model` types + `credentials`/`sessions` stores (Mongo) + indexes + mocks.
-2. **Migration script** (credential import — verbatim hashes; non-PAT live-token import) with `--dry-run` + verify; ensure existing tokens land in the new store (+ real-time token sync, or rely on legacy-fallback until login moves).
-3. **Validation (the win): `POST /v1/auth/validate`** — dual-token (legacy+v1), Valkey read-through cache + invalidation, throttled `LastUsedAt`. Wire **ApiGW + WS + EventConsumer** to call it (replacing legacy-proxy validation).
-4. **Login:** `POST /api/v1/login` + `POST /v1/bot/login` — verify credentials, issue v1 tokens into the new store. Reroute `/login` to us at the Istio layer (same URL).
-5. **Web UI:** `/dev-login` + `/changepwd` HTML forms, session cookies, CSRF middleware.
-6. **Admin REST** (`/v1/admin/bots…`) + admin authz + service API doc.
+1. Scaffold `botplatform-service` (repo service template) + extend `model.User` with `Services.Password` (§13) + extend `pkg/userstore` with the read methods + add a new `pkg/sessions` Mongo store (§4.2/§4.3) + mocks.
+2. **Migration script** — bulk-import the legacy `users.services.resume.loginTokens[]` array entries into the new `sessions` collection (allow-list: skip PATs; verbatim `hashedToken` → `_id`; `scheme:"legacy"`); `--dry-run` + verify (§6.2).
+3. **Validation (the win): `POST /v1/auth/validate`** — dual-token (legacy + v1), Valkey read-through cache (`GETEX` TTL refresh, **no Mongo writes on the validate path** — §5.3), admin-revoke explicit invalidation. Wire **ApiGW + WS + EventConsumer** to call it (replacing legacy-proxy validation).
+4. **Login:** `POST /api/v1/login` + `POST /v1/bot/login` — verify credentials, `sessions.insertOne(...)` + count + delete-oldest-by-`issuedAt` cap enforcement (§5.6). Reroute `/login` to us at the Istio layer (same URL).
+5. **Web UI on botplatform-service:** `/dev-login` + `/changepwd` HTML forms (universal login, post-login redirect honors `?next=`), session cookies (Host-scoped), CSRF middleware.
+6. **`admin-service` + `admin-portal`** — separate service + web frontend for admin operations (suspend bot, revoke sessions, rotate password, future: rate-limit config). See §9b/§10 + Q18.
 7. **Load test** against the §9.5 SLAs/criteria — gate cutover on pass.
 8. Istio routing + canary runbook (validation cutover, then login); monitor → sunset legacy auth.
-9. Operator UI frontend + (future) native-bot `session.refresh` (Q1b) — likely separate tracks.
+9. (Future) native-bot `session.refresh` (Q1b) — separate track.
 
 ---
 
@@ -985,8 +1209,9 @@ Sync vs async is **not** the differentiator here. Both HTTP and NATS request/rep
 ## 21. Risks
 - ~~PAT vs password (Q8)~~ — **closed:** bots are password-only, PATs out of scope (§2.2).
 - ~~ID mapping (Q9)~~ — **closed:** legacy 17-char `_id` preserved end-to-end, no mapping (§2.2).
-- **Infinite sessions** — standing bearer tokens; mitigated by sliding reap + revocation, but operators must have working revoke before go-live.
-- **Cache/Mongo divergence on revoke** — a revoke that updates Mongo but not the cache leaves a token live until cache TTL; prefer explicit invalidation over TTL-only.
+- **Permanent sessions** — standing bearer tokens with no time-based expiry (§5.5). Mitigation: cap eviction (§5.6 FIFO by `issuedAt` naturally retires old orphaned entries) + admin revoke. **Operators must have working revoke before go-live.** A leaked token survives until cap eviction pushes it out or an admin detects + revokes — accepted trade-off (Q-leaked-tokens-permanent, DECIDED 2026-06-24) because the bot SDK does not auto-relogin on 401.
+- **Cache/Mongo divergence on revoke** — a revoke that updates Mongo but not the cache leaves a token live until cache TTL; admin-revoke AND cap-eviction paths both explicitly `valkey.del` (§5.6); we don't rely on TTL for invalidation.
+- **Password hash exposure via `userstore` fleet cache** — every nextgen pod's `pkg/userstore` cache holds the full `users` doc including `services.password.bcrypt`. Mitigated by `json:"-"` + `String()` masking on `model.User` (§4.4); core-dump leakage is still possible. Accepted because it is an internal-only system and bot passwords are machine-generated with strong entropy.
 
 ---
 
@@ -1001,7 +1226,7 @@ Tick each before promoting this spec to a plan. These are the assumptions the de
 - [ ] Login-token storage: `services.resume.loginTokens[]`, `hashedToken = base64(sha256(raw))`, field names. **(§6.2)**
 - [x] **Bots use password login only; PATs are human-only / out of scope.** *(confirmed 2026-06-15, Q8)*
 - [x] **Token hashing matches Meteor `Accounts._hashLoginToken`** = `base64(sha256(token))`. *(confirmed 2026-06-15, §14)* — golden fixture still gates the code.
-- [x] **Sliding-infinite chosen; `loginExpirationDays` irrelevant.** *(confirmed 2026-06-15, Q2/Q7)*
+- [x] **Permanent sessions chosen** (no time-based expiry); removal only via cap-eviction (§5.6) or admin revoke (§5.5). `loginExpirationDays` is irrelevant. *(revised 2026-06-24, Q2/Q7)*
 
 **Nextgen / identity**
 - [ ] Does identity-sync already populate **admin + bot** accounts in nextgen `users`, with `roles`? **(§6.1)**
@@ -1013,10 +1238,11 @@ Tick each before promoting this spec to a plan. These are the assumptions the de
 - [ ] Shared Istio ingress gateway + who owns the `VirtualService`/`DestinationRule`; the new namespace name; cert ownership. **(§10)**
 - [ ] **ApiGW** can be wired to call `/v1/auth/validate`; **Server** trusts ApiGW's injected principal via mTLS. **(Q14/Q17)**
 - [ ] External-dev confirmations: **WS server** calls `/v1/auth/validate` (Q12); **Server/data-plane** owns the REST→NATS bridge (Q13).
-- [ ] Real-time `users`-collection sync can carry the bcrypt hash into `credentials` (Q3).
+- [x] **Password side: no extraction needed** — `users.services.password.bcrypt` stays in-place (§4.1); identity-sync already carries it end-to-end.
+- [ ] **Session side: bulk-import** legacy `users.services.resume.loginTokens[]` entries (skip PATs) into the new `sessions` collection at cutover, preserving `hashedToken` verbatim as `_id` (§6.2). Reconciliation: post-import count of `sessions{scheme:"legacy"}` matches the legacy non-PAT count.
 
 **Decisions (§12) — all decided 2026-06-16** *(Q12/Q13 get wired during implementation/migration — not blockers)*
-- [x] Q1 contract · [x] Q1b defer-resume · [x] Q2 sliding-infinite · [x] Q3 sync-not-freeze · [x] Q4 throttle=5m · [x] Q5 Option B · [x] Q6 Valkey · [x] Q7 180d · [x] Q8 password-only · [x] Q9 id-preserved · [x] Q10 same-format · [x] Q11 v1-login-only · [x] Q14 validate-authority · [x] Q15 REST-admin · [x] Q16 validation-first · [x] Q17 auth-provider
+- [x] Q1 contract · [x] Q1b defer-resume · [x] Q2 permanent-sessions (revised 2026-06-24) · [x] Q3 split-cutover (revised 2026-06-24: password no-extract / sessions bulk-import) · [x] Q4 lastUsedAt-removed (revised 2026-06-24, pure-read validate) · [x] Q5 Option B · [x] Q6 Valkey · [x] Q7 idleWindow-removed (revised 2026-06-24, no time-based expiry) · [x] Q8 password-only · [x] Q9 id-preserved · [x] Q10 dual-hash · [x] Q11 v1-login-only · [x] Q14 validate-authority · [x] Q15 REST-admin · [x] Q16 validation-first · [x] Q17 auth-provider · [x] Q18 separate-admin-service (revised 2026-06-24)
 
 
 ---
@@ -1031,7 +1257,9 @@ Tick each before promoting this spec to a plan. These are the assumptions the de
 ---
 
 ## 1. Naming
-- **`botplatform-service`** — *the new service we build* (Part II calls it `bot-gateway`; same thing). Auth + web UI + token validation + admin RPCs. **Not** a data-path proxy — `/api/v2/*` traffic flows ApiGW → `Server` directly (Part III §4.1).
+- **`botplatform-service`** — *the new service we build*. Universal login + password change web UI + token validation + login API. **Not** a data-path proxy and (after Q18 revision, Part II §8) **not** the admin surface — `/api/v2/*` traffic flows ApiGW → `Server` directly (Part III §4.1).
+- **`admin-portal`** — *new web frontend* (HTML/JS bundle). Renders the admin UI; every action is XHR/fetch to `admin-service` under the admin's session cookie. Hosted at `admin-{site}.…`.
+- **`admin-service`** — *new backend service* (REST JSON APIs). All admin operations (suspend bot, revoke sessions, rotate password, future: rate-limit config). Calls `botplatform-service`'s `/v1/auth/validate` for authn and requires `class:"admin"` for every route.
 - **`botplatform-server` :8080** — *existing* service (external-dev track): serves `/api/v2/*`. Today it reverse-proxies to the **legacy v2 REST code**; as the data plane migrates it will **bridge REST→NATS** to the nextgen backend (Q13). **ApiGW (not us) routes `/api/v2/*` to `botplatform-server`** under mTLS, with `X-User-Id` / `X-Account` / `X-Principal-Class` injected from our validate response. `botplatform-service` is NOT in this data path (§4.1).
 - **websocket server :8899** — *existing*: real-time bot connections; **calls our service to authenticate**.
 - **event consumer** — *existing*: NATS → webhook delivery.
@@ -1044,28 +1272,43 @@ Tick each before promoting this spec to a plan. These are the assumptions the de
 
 | Component | Owner | Role |
 |---|---|---|
-| **Login web pages** (`/dev-login`, `/changepwd`) | **we build** | HTML forms + submit |
-| **Token validation** (`/v1/auth/validate`, Valkey + Mongo) | **we build** | dual-token, cache-fronted authority |
-| **New token issuance** (login) | **we build** | our store issues session tokens |
-| **Admin REST** (`/v1/admin/bots…`) | **we build** | provision / rotate / revoke |
+| **Login web pages** (`/dev-login`, `/changepwd`) | **we build** (`botplatform-service`) | universal HTML forms; post-login redirect honors caller's portal |
+| **Token validation** (`/v1/auth/validate`, Valkey + Mongo) | **we build** (`botplatform-service`) | dual-token, cache-fronted authority |
+| **New token issuance** (login) | **we build** (`botplatform-service`) | issue + INSERT into sessions; cap-eviction |
+| **Admin REST** (`/v1/admin/bots…`, `/v1/admin/sessions…`) | **we build** (`admin-service`, NEW 2026-06-24) | suspend / revoke / rotate / list; authz `class:"admin"` |
+| **Admin frontend** (web UI for the above) | **we build** (`admin-portal`, NEW 2026-06-24) | static HTML/JS; calls admin-service |
 | **ApiGW** (routing, rate-limit, metrics) | **exists** | **calls our `/v1/auth/validate`**, routes to `Server` |
 | Room / message APIs (`/api/v2/*`) | exists | `Server` (legacy v2 REST today) |
 | Webhook delivery (event consumer) | exists | NATS → webhook; **calls our validate** |
 | WebSocket transport + logic | exists | websocket server :8899 (**calls our validate**) |
 
-**Net:** we own **auth** (login + validate + stores + web UI + admin). The **data plane is ApiGW → Server** (existing); we are **not** in it — every component just calls our `/v1/auth/validate` for auth (Q17).
+**Net:** we own **auth** (`botplatform-service`: login + validate + sessions store + login web UI) and **admin** (`admin-service` + `admin-portal`). The **data plane is ApiGW → Server** (existing); we are **not** in it — every component just calls our `/v1/auth/validate` for auth (Q17).
 
 ---
 
-## 3. The new service — `botplatform-service` (auth provider)
+## 3. The new services
+
+### 3a. `botplatform-service` (auth provider)
 
 Endpoints (all REST):
-- `GET/POST /dev-login` — HTML login form + submit (session cookie, CSRF).
+- `GET/POST /dev-login` — universal HTML login form + submit (Host-scoped session cookie, CSRF). Redirect target honors `?next=` from the calling portal.
 - `POST /api/v1/login` (legacy contract) + `POST /v1/bot/login` (new) — issue tokens.
 - `GET/POST /changepwd` — HTML password change.
-- `POST /v1/auth/validate` — **the dual-token validation authority** called by ApiGW / WS / EventConsumer (§4.1–§4.2).
-- `/admin/bots…` — **role-gated web handlers** (provision / rotate / sessions) — server-rendered HTML + CSRF form POSTs on the same `/dev-login` session, `roles ∋ admin`. NOT a separate JSON admin API (Q18, §8) and NOT NATS (Q15).
-- Backed by **Valkey cache + Mongo** (`credentials` + `sessions`).
+- `POST /v1/auth/validate` — **the dual-token validation authority** called by ApiGW / WS / EventConsumer / admin-service (§4.1–§4.2).
+- Backed by **Valkey cache + Mongo** — reads `users.services.password.*` on the shared `users` collection; sole owner of the new `sessions` collection (Part II §4.1/§4.2).
+
+### 3b. `admin-service` (admin REST) + `admin-portal` (admin web frontend) — NEW 2026-06-24
+
+`admin-service` endpoints (all REST JSON, all require `class:"admin"` via `/v1/auth/validate`):
+- `GET /v1/admin/bots`, `POST /v1/admin/bots` — list / create
+- `POST /v1/admin/bots/{id}/suspend` — flip `users.active:false` + revoke all sessions
+- `POST /v1/admin/bots/{id}/password` — rotate bcrypt + revoke all sessions
+- `GET /v1/admin/bots/{id}/sessions` — list sessions for a bot
+- `POST /v1/admin/bots/{id}/sessions/{sid}/revoke` — single-session kill
+- `POST /v1/admin/bots/{id}/sessions/revoke-all` — bulk revoke
+- *(future)* `PUT /v1/admin/ratelimit/{key}` — rate-limit config
+
+`admin-portal` is a static HTML/JS bundle (no backend logic of its own) hosted at e.g. `admin-{site}.chat-test.test.xx.com`. Unauthenticated users get bounced to `botplatform-service`'s `/dev-login?next=/admin/` (the cookie comes back scoped to the admin host); authenticated users see the admin UI; every UI action is an XHR to `admin-service`. A non-admin who hits the admin host gets `403 forbiddenNotAdmin` from `admin-service`'s `class:"admin"` check.
 
 **Not here:** the `/api/v2/*` proxy (ApiGW owns routing → `Server`), and any NATS surface.
 
@@ -1141,7 +1384,7 @@ Unlike humans (PR #295, portal-service → auth-service → NATS), **bots skip t
 ## 7. Resolved integration decisions
 
 ### Q10 — Is the new token format the same as legacy, or different? ✅ DECIDED 2026-06-16
-**Two formats coexist (Part II §4.3):** legacy tokens accepted byte-for-byte for compatibility; native v1 tokens use a versioned wire format and a keyed storage hash.
+**Two formats coexist (Part II §4.6):** legacy tokens accepted byte-for-byte for compatibility; native v1 tokens use a versioned wire format and a keyed storage hash.
 - Legacy: opaque random string, stored `base64(sha256(token))`. Unchanged.
 - v1: **`bp1_<43-char base64url of 32 random bytes>`**, stored `base64(HMAC-SHA-256(server_secret, token))`.
 
@@ -1152,7 +1395,7 @@ Bots still treat the token as opaque (no client change) — the `bp1_` prefix do
 
 ### Q12 — WebSocket auth: call our HTTP endpoint, or read shared Valkey directly?
 **Recommendation: call our HTTP `/v1/auth/validate` endpoint** (not direct Valkey). Reasons:
-- **Single source of truth** — dual-token/legacy-fallback, cache-miss→Mongo, lockout, and sliding-expiry logic live in *one* place; direct Valkey access would force the WS server to reimplement all of it and couple to our cache-key schema.
+- **Single source of truth** — dual-token/legacy-fallback, cache-miss→Mongo, and lockout logic live in *one* place; direct Valkey access would force the WS server to reimplement all of it and couple to our cache-key schema.
 - **No false rejects** — a Valkey-only read fails on cache miss (valid-in-Mongo, not-yet-cached); our endpoint handles the miss correctly.
 - **Cost is negligible** — WS auth is **once per connection** (long-lived), not per message, so the <5 ms per-API-call budget doesn't apply. Keep the call mesh-internal (Istio mTLS) and cache the result for the connection lifetime.
 

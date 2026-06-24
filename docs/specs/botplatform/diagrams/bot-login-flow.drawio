@@ -63,9 +63,9 @@
           <mxGeometry x="970" y="540" width="180" height="30" as="geometry" />
         </mxCell>
 
-        <!-- Step 7: botplatform -> mongo find credentials -->
-        <mxCell id="m7" value="7. find credentials by account" style="edgeStyle=none;html=1;endArrow=classic;strokeColor=#37474F;fontSize=12;verticalAlign=bottom;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="1030" y="610" as="sourcePoint" /><mxPoint x="1260" y="610" as="targetPoint" /></mxGeometry></mxCell>
-        <mxCell id="m8" value="8. { passwordHash, requirePasswordChange }" style="edgeStyle=none;html=1;endArrow=classic;dashed=1;strokeColor=#37474F;fontSize=12;verticalAlign=bottom;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="1260" y="660" as="sourcePoint" /><mxPoint x="1030" y="660" as="targetPoint" /></mxGeometry></mxCell>
+        <!-- Step 7: botplatform -> mongo find user by account -->
+        <mxCell id="m7" value="7. db.users.findOne({account}) — read services.password.bcrypt" style="edgeStyle=none;html=1;endArrow=classic;strokeColor=#37474F;fontSize=12;verticalAlign=bottom;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="1030" y="610" as="sourcePoint" /><mxPoint x="1260" y="610" as="targetPoint" /></mxGeometry></mxCell>
+        <mxCell id="m8" value="8. user { services.password.bcrypt, requirePasswordChange, siteId, roles }" style="edgeStyle=none;html=1;endArrow=classic;dashed=1;strokeColor=#37474F;fontSize=11;verticalAlign=bottom;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="1260" y="660" as="sourcePoint" /><mxPoint x="1030" y="660" as="targetPoint" /></mxGeometry></mxCell>
 
         <!-- Step 9: in-process bcrypt -->
         <mxCell id="m9_act" value="9. bcrypt verify (constant-time)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFF8DC;strokeColor=#B8860B;fontSize=11;align=center;" vertex="1" parent="1">
@@ -81,11 +81,16 @@
           <mxGeometry x="930" y="870" width="260" height="30" as="geometry" />
         </mxCell>
 
-        <!-- Step 13: INSERT sessions -->
-        <mxCell id="m13" value="13. INSERT sessions { _id: hash, scheme:'v1', expiresAt: now+180d }" style="edgeStyle=none;html=1;endArrow=classic;strokeColor=#2E7D32;strokeWidth=2;fontSize=12;verticalAlign=bottom;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="1030" y="950" as="sourcePoint" /><mxPoint x="1260" y="950" as="targetPoint" /></mxGeometry></mxCell>
+        <!-- Step 13: INSERT sessions row -->
+        <mxCell id="m13" value="13. db.sessions.insertOne({ _id: hash, userId, account, siteId, scheme:'v1', issuedAt: now })" style="edgeStyle=none;html=1;endArrow=classic;strokeColor=#2E7D32;strokeWidth=2;fontSize=11;verticalAlign=bottom;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="1030" y="940" as="sourcePoint" /><mxPoint x="1260" y="940" as="targetPoint" /></mxGeometry></mxCell>
+
+        <!-- Step 13b: cap enforcement — count + delete oldest by issuedAt -->
+        <mxCell id="m13b_act" value="13b. cap check — over := count({userId}) - SESSIONS_MAX_PER_ACCOUNT; if over > 0: find({userId}).sort({issuedAt:1}).limit(over) → deleteMany + valkey.del each victim (FIFO by issuedAt)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFE0B2;strokeColor=#EF6C00;fontSize=10;align=center;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="780" y="965" width="550" height="30" as="geometry" />
+        </mxCell>
 
         <!-- Step 14: warm Valkey -->
-        <mxCell id="m14" value="14. SETEX hash → principal (TTL 5m)" style="edgeStyle=none;html=1;endArrow=classic;strokeColor=#2E7D32;fontSize=12;verticalAlign=bottom;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="1030" y="1000" as="sourcePoint" /><mxPoint x="1420" y="1000" as="targetPoint" /></mxGeometry></mxCell>
+        <mxCell id="m14" value="14. SETEX hash → principal (TTL 5m)" style="edgeStyle=none;html=1;endArrow=classic;strokeColor=#2E7D32;fontSize=12;verticalAlign=bottom;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="1030" y="1015" as="sourcePoint" /><mxPoint x="1420" y="1015" as="targetPoint" /></mxGeometry></mxCell>
 
         <!-- Step 15: response botplatform -> wsp-GW -->
         <mxCell id="m15" value="15. 200 { authToken:'bp1_…', userId, me }" style="edgeStyle=none;html=1;endArrow=classic;dashed=1;strokeColor=#1565C0;strokeWidth=2;fontSize=12;fontStyle=1;verticalAlign=bottom;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="1030" y="1070" as="sourcePoint" /><mxPoint x="790" y="1070" as="targetPoint" /></mxGeometry></mxCell>
@@ -117,6 +122,9 @@
         </mxCell>
         <mxCell id="ann_12" value="(12) raw = 'bp1_' + base64url(crypto/rand.Read(32))   hash = base64(HMAC-SHA-256(TOKEN_HMAC_KEY, raw))" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="1">
           <mxGeometry x="1530" y="860" width="240" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="ann_13" value="(13) One INSERT per login into the dedicated `sessions` collection (NEW, owned by botplatform-service). Sessions are PERMANENT — no expiresAt, no TTL index. Cap-eviction (FIFO by issuedAt) or admin-revoke are the only removal paths. IXSCAN on {userId, issuedAt} compound serves both 13b and admin list/revoke." style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFE0B2;strokeColor=#EF6C00;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="1">
+          <mxGeometry x="1530" y="950" width="240" height="130" as="geometry" />
         </mxCell>
 
         <!-- Legend -->

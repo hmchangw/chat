@@ -9,8 +9,8 @@
         <mxCell id="title" value="Bot Login — Old vs New Mechanism" style="text;html=1;align=center;verticalAlign=middle;fontSize=18;fontStyle=1;fontColor=#263238;" vertex="1" parent="1">
           <mxGeometry x="100" y="20" width="1800" height="30" as="geometry" />
         </mxCell>
-        <mxCell id="subtitle" value="Side-by-side: legacy Rocket.Chat / Meteor (capped session array + plain SHA-256) vs nextgen botplatform-service (provisioning gate + bp1_ prefix + HMAC-keyed storage)" style="text;html=1;align=center;verticalAlign=middle;fontSize=12;fontColor=#546E7A;fontStyle=2;" vertex="1" parent="1">
-          <mxGeometry x="100" y="50" width="1800" height="20" as="geometry" />
+        <mxCell id="subtitle" value="Side-by-side: legacy RC/Meteor (hardcoded 50-cap loginTokens[] on user doc + plain SHA-256, O(n) validate scan) vs nextgen botplatform-service (passwords stay on users; sessions move to a dedicated `sessions` collection — one doc per session keyed by token hash, O(1) validate, configurable cap with FIFO eviction by issuedAt, provisioning gate, bp1_ prefix, HMAC-keyed storage, permanent sessions)" style="text;html=1;align=center;verticalAlign=middle;fontSize=11;fontColor=#546E7A;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="100" y="50" width="1800" height="30" as="geometry" />
         </mxCell>
 
         <!-- LEFT panel: OLD -->
@@ -75,7 +75,7 @@
         <mxCell id="n_step2" value="Step 2   Validate format + verify password" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2E7D32;fontSize=12;fontStyle=1;align=left;verticalAlign=top;" vertex="1" parent="new">
           <mxGeometry x="40" y="160" width="850" height="100" as="geometry" />
         </mxCell>
-        <mxCell id="n_step2_body" value="IsValidBotAccount(&#x27;xxx.bot&#x27;)                ← reject malformed before DB hit&#xa;load credentials by account (Mongo)&#xa;bcrypt.CompareHashAndPassword(...)             constant-time + dummy compare on miss" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontFamily=Courier New;" vertex="1" parent="new">
+        <mxCell id="n_step2_body" value="IsValidBotAccount(&#x27;xxx.bot&#x27;)                ← reject malformed before DB hit&#xa;db.users.findOne({account}) — read services.password.bcrypt (in-place; SAME legacy schema path)&#xa;bcrypt.CompareHashAndPassword(...)             constant-time + dummy compare on miss" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontFamily=Courier New;" vertex="1" parent="new">
           <mxGeometry x="60" y="185" width="810" height="70" as="geometry" />
         </mxCell>
 
@@ -93,11 +93,11 @@
           <mxGeometry x="60" y="425" width="810" height="90" as="geometry" />
         </mxCell>
 
-        <mxCell id="n_step5" value="Step 5   INSERT into sessions   (one doc per session)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2E7D32;fontSize=12;fontStyle=1;align=left;verticalAlign=top;" vertex="1" parent="new">
-          <mxGeometry x="40" y="540" width="850" height="120" as="geometry" />
+        <mxCell id="n_step5" value="Step 5   INSERT sessions row + cap enforcement (FIFO by issuedAt)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2E7D32;fontSize=12;fontStyle=1;align=left;verticalAlign=top;" vertex="1" parent="new">
+          <mxGeometry x="40" y="540" width="850" height="140" as="geometry" />
         </mxCell>
-        <mxCell id="n_step5_body" value="db.sessions.insertOne({ _id: hash, userId, account, siteId, scheme:&#x27;v1&#x27;,&#xa;                       issuedAt, lastUsedAt, expiresAt: now + 180d })&#xa;✓ unlimited sessions per account (no cap)        ✓ O(1) lookup by _id" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontFamily=Courier New;" vertex="1" parent="new">
-          <mxGeometry x="60" y="565" width="810" height="90" as="geometry" />
+        <mxCell id="n_step5_body" value="db.sessions.insertOne({ _id: hash, userId, account, siteId,&#xa;                       scheme:&#x27;v1&#x27;, issuedAt: now })&#xa;over := db.sessions.countDocuments({userId}) - SESSIONS_MAX_PER_ACCOUNT&#xa;if over &gt; 0:&#xa;    victims := find({userId}).sort({issuedAt:1}).limit(over)  ← IXSCAN on {userId,issuedAt}&#xa;    deleteMany(victims._ids) + valkey.del(each)               ← explicit cache invalidation&#xa;✓ O(1) validate by _id (cap doesn&#x27;t affect read cost)" style="text;html=1;align=left;verticalAlign=middle;fontSize=10;fontFamily=Courier New;" vertex="1" parent="new">
+          <mxGeometry x="60" y="565" width="810" height="110" as="geometry" />
         </mxCell>
 
         <mxCell id="n_step6" value="Step 6   Warm Valkey cache + return RC-compatible envelope" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2E7D32;fontSize=12;fontStyle=1;align=left;verticalAlign=top;" vertex="1" parent="new">
@@ -110,15 +110,15 @@
         <mxCell id="n_wins" value="What the new mechanism wins" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#2E7D32;fontSize=12;fontStyle=1;align=left;verticalAlign=top;" vertex="1" parent="new">
           <mxGeometry x="40" y="820" width="850" height="200" as="geometry" />
         </mxCell>
-        <mxCell id="n_wins_body" value="✓ Unlimited sessions per account — O(1) lookup by token hash _id&#xa;✓ Provisioning gate — login only at the bot&#x27;s home site&#xa;✓ HMAC-keyed storage — DB dump is opaque without TOKEN_HMAC_KEY&#xa;✓ Versioned wire format (bp1_) — forward rotation, secret-scanner detection&#xa;✓ Hot path served from Valkey (1M validations/min target, &lt;5ms cached)&#xa;✓ Multi-site native, with per-site sessions / credentials / users isolation" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;" vertex="1" parent="new">
-          <mxGeometry x="60" y="850" width="810" height="160" as="geometry" />
+        <mxCell id="n_wins_body" value="✓ Configurable cap with FIFO eviction by issuedAt (default 100 vs legacy hardcoded 50)&#xa;✓ Validate = single sessions.findOne({_id: hash}) — O(1), independent of cap and session count&#xa;✓ Per-session row carries {userId, account, siteId, scheme, issuedAt} — admin revoke is one deleteOne; revoke-all is one deleteMany({userId})&#xa;✓ Sessions PERMANENT (no expiresAt / no time-based reap) — bot SDK without 401 auto-relogin stays working forever; cap eviction + admin revoke are the only removal paths&#xa;✓ Validate is pure-read (no Mongo writes; GETEX refreshes the in-memory TTL) — keeps the 1M/min hot path off the write log&#xa;✓ Provisioning gate — login only at the bot&#x27;s home site (REQUIRE_PROVISIONED=true)&#xa;✓ HMAC-keyed storage for v1 rows — DB dump is opaque without TOKEN_HMAC_KEY&#xa;✓ Versioned wire format (bp1_) — forward rotation, secret-scanner detection&#xa;✓ Bounded users-doc size — sessions don&#x27;t bloat the identity doc that every nextgen service caches via pkg/userstore&#xa;✓ Multi-site native (same users.siteId from PR #295)" style="text;html=1;align=left;verticalAlign=middle;fontSize=10;" vertex="1" parent="new">
+          <mxGeometry x="60" y="850" width="810" height="170" as="geometry" />
         </mxCell>
 
         <!-- Bottom: backward compat callout -->
         <mxCell id="compat" value="Backward compatibility — what stays IDENTICAL on the wire" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=12;fontStyle=1;align=left;verticalAlign=top;" vertex="1" parent="1">
           <mxGeometry x="60" y="1170" width="1880" height="100" as="geometry" />
         </mxCell>
-        <mxCell id="compat_body" value="• Path: POST /api/v1/login   (legacy contract)         • Body shape: { user, password } plaintext or { digest, algorithm:&#x27;sha-256&#x27; }         • Response envelope: { status, data:{ authToken, userId, me:{...} } }&#xa;• Headers: X-Auth-Token + X-User-Id                    • User ID: 17-char Meteor base62 preserved verbatim         • Migrated tokens: imported byte-for-byte, scheme:&#x27;legacy&#x27;, still validate after cutover&#xa;Result: bots run unchanged — no SDK redeploy, no credential reset, no URL change. Same wire surface, new server-side mechanics." style="text;html=1;align=left;verticalAlign=middle;fontSize=10;" vertex="1" parent="1">
+        <mxCell id="compat_body" value="• Path: POST /api/v1/login   (legacy contract)         • Body shape: { user, password } plaintext or { digest, algorithm:&#x27;sha-256&#x27; }         • Response envelope: { status, data:{ authToken, userId, me:{...} } }&#xa;• Headers: X-Auth-Token + X-User-Id                    • User ID: 17-char Meteor base62 preserved verbatim         • Password storage: SAME users-doc path (services.password.bcrypt) — no credentials collection, no extraction&#xa;• Existing legacy tokens are BULK-IMPORTED once at cutover (skip PATs; verbatim hashedToken → sessions._id; scheme:&#x27;legacy&#x27;), so they validate immediately on nextgen with no re-login. New v1 logins issue scheme:&#x27;v1&#x27; rows; FIFO cap drops the oldest legacy ones first as the cap fills.&#xa;Result: bots run unchanged — no SDK redeploy, no credential reset, no URL change. Same wire surface AND password schema; sessions move to a clean dedicated collection with O(1) lookup." style="text;html=1;align=left;verticalAlign=middle;fontSize=10;" vertex="1" parent="1">
           <mxGeometry x="80" y="1200" width="1840" height="65" as="geometry" />
         </mxCell>
       </root>
