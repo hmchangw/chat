@@ -56,6 +56,13 @@ func (v *Validator) Validate(ctx context.Context, siteID, shortcode string) (str
 	if !shortcodeRe.MatchString(shortcode) {
 		return "", fmt.Errorf("validate shortcode %q: %w", shortcode, ErrInvalidShortcode)
 	}
+
+	// Built-in standard emoji are accepted without a custom-store lookup; the
+	// custom_emojis collection is an additive per-site extension (issue #382).
+	if _, ok := standardEmoji[shortcode]; ok {
+		return shortcode, nil
+	}
+
 	ok, err := v.lookup.CustomEmojiExists(ctx, siteID, shortcode)
 	if err != nil {
 		return "", fmt.Errorf("lookup custom emoji %q for site %q: %w", shortcode, siteID, err)
