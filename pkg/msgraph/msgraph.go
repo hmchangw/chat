@@ -105,13 +105,13 @@ func WithTokenURL(u string) Option {
 func New(cfg Config, opts ...Option) Client {
 	hc := &http.Client{Timeout: 30 * time.Second}
 	if cfg.TLSInsecureSkipVerify {
-		hc.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{
-				// #nosec G402 -- InsecureSkipVerify is opt-in via TLSInsecureSkipVerify config for dev/on-prem environments
-				InsecureSkipVerify: true, //nolint:gosec
-				MinVersion:         tls.VersionTLS12,
-			},
-		}
+		// Clone the default transport so proxy (ProxyFromEnvironment) and dial
+		// settings survive — an on-prem Graph behind a self-signed cert is the
+		// scenario most likely to also sit behind a corporate proxy.
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		// #nosec G402 -- InsecureSkipVerify is opt-in via TLSInsecureSkipVerify config for dev/on-prem environments
+		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12} //nolint:gosec
+		hc.Transport = tr
 	}
 	g := &graphClient{
 		cfg:        cfg,
