@@ -137,8 +137,8 @@ k8s/migration/
     01-subscriptions.yaml
     01-avatars.yaml
     02-room-members.yaml
-    02-thread-subscriptions.yaml
     02-thread-rooms.yaml
+    03-thread-subscriptions.yaml
     03-cassandra-messages-by-id.yaml
     03-cassandra-messages-by-room.yaml
     03-cassandra-pinned-messages.yaml
@@ -204,14 +204,20 @@ backfill pass is needed.
 
 **Estimated duration: ~30–60 minutes (PROD) — dominated by `thread_rooms` derivation**
 
-All three jobs need `users` from Phase 1. They run in parallel with each other.
+Both jobs need `users` from Phase 1. They run in parallel with each other.
 `thread_rooms` is the critical gate: Phase 3 cannot start until it completes.
+
+> **Why `thread_subscriptions` is NOT in Phase 2:** `thread_subscriptions` has a
+> `threadRoomId` field that is resolved by looking up `thread_rooms.parentMessageId`
+> in the target. Since `thread_rooms` does not exist as a source collection (it is
+> derived in Phase 2), `thread_subscriptions` must wait for Phase 2 to complete and
+> runs in Phase 3 alongside the Cassandra jobs — both groups share exactly the same
+> dependency.
 
 | Job | Source Collections Read | Target | Target Dep | Count (PROD est.) | Est. Duration |
 |---|---|---|---|---|---|
 | `02-room-members` | `tsmc_room_members` | `room_members` | `users` | ~1,450,000 | ~5 min |
-| `02-thread-subscriptions` | `tsmc_thread_subscriptions` + `rocketchat_room` | `thread_subscriptions` | `users` | ~2,400,000 | ~8 min |
-| `02-thread-rooms` | `rocketchat_message` + `tsmc_thread_subscriptions` + `rocketchat_room` | `thread_rooms` *(derived)* | `users` | scan of 216M | ~30–60 min |
+| `02-thread-rooms` | `rocketchat_message` + `rocketchat_room` | `thread_rooms` *(derived)* | `users` | scan of 216M | ~30–60 min |
 
 **`thread_rooms` derivation:** Scans source messages where `tcount > 0` within
 the migration time window and constructs one `thread_rooms` document per thread root.
@@ -220,20 +226,24 @@ job tracks the latest reply per thread as it processes messages. No separate
 backfill pass is needed.
 
 Before Phase 3 starts: create an index on `thread_rooms.parentMessageId` in the
-target — every Phase 3 Cassandra write for a thread message hits this lookup.
+target — every Phase 3 job (both Cassandra writes and `thread_subscriptions`) hits
+this lookup.
 
 ---
 
-### Phase 3 — Cassandra Message Tables (all parallel, need target `thread_rooms`)
+### Phase 3 — thread_subscriptions + Cassandra Message Tables (all parallel, need target `thread_rooms`)
 
 **Estimated duration: ~1–2 hours (PROD, 2-year window) or ~45 min–1 hour (1-year window)**
 
-All jobs filter source messages to `created_at >= MESSAGE_START_DATE AND created_at <= CUTOFF_TIMESTAMP`.
-All four tables need `thread_room_id` — resolved by looking up `thread_rooms.parentMessageId`
-in the target for each thread-related message. All four jobs run in parallel.
+All 5 jobs share exactly the same dependency: `thread_rooms` (Phase 2 critical gate) must be complete.
+They run fully in parallel — none depend on each other.
+
+The four Cassandra jobs filter source messages to `created_at >= MESSAGE_START_DATE AND created_at <= CUTOFF_TIMESTAMP`.
+All four tables need `thread_room_id` resolved by looking up `thread_rooms.parentMessageId` in the target.
 
 | Job | Source | Target | Count (PROD est.) | Est. Duration |
 |---|---|---|---|---|
+| `03-thread-subscriptions` | `tsmc_thread_subscriptions` + `thread_rooms` (target) | `thread_subscriptions` | ~2,400,000 | ~8 min |
 | `03-cassandra-messages-by-id` | `rocketchat_message` | `messages_by_id` | ~80–100M (2yr) / ~40–60M (1yr) | ~1.5–2 hrs / ~45 min–1 hr |
 | `03-cassandra-messages-by-room` | `rocketchat_message` | `messages_by_room` | ~80–100M (2yr) / ~40–60M (1yr) | ~1.5–2 hrs / ~45 min–1 hr |
 | `03-cassandra-pinned-messages` | `rocketchat_message` (pinned, in window) | `pinned_messages_by_room` | small subset | <30 min |
@@ -241,8 +251,9 @@ in the target for each thread-related message. All four jobs run in parallel.
 
 > `messages_by_id` and `messages_by_room` read the same source but write to
 > different Cassandra tables — parallel jobs halve the wall-clock time vs sequential.
+> `thread_subscriptions` finishes well before the Cassandra jobs.
 >
-> All jobs insert in ascending `created_at` order within the window.
+> All Cassandra jobs insert in ascending `created_at` order within the window.
 
 ---
 
@@ -256,8 +267,8 @@ in the target for each thread-related message. All four jobs run in parallel.
 |---|---|---|---|
 | Pre-Migration | Dry-run, baseline counts, confirm time boundary | ~1 hour | 1 hr |
 | Phase 1 | users, rooms, subscriptions, avatars | ~25 min | ~1 hr 25 min |
-| Phase 2 | room_members, thread_subscriptions, **thread_rooms** (critical gate) | ~30–60 min | ~2–2.5 hrs |
-| Phase 3 | all 4 Cassandra tables (~80–100M messages) | **~1.5–2 hours** | ~3.5–4.5 hrs |
+| Phase 2 | room_members, **thread_rooms** (critical gate) | ~30–60 min | ~2–2.5 hrs |
+| Phase 3 | thread_subscriptions + all 4 Cassandra tables (~80–100M messages) | **~1.5–2 hours** | ~3.5–4.5 hrs |
 | Connector catch-up | Replay events since cutoff resume token | ~30–60 min | **~4–5.5 hrs total** |
 
 **1-year message window:**
@@ -266,8 +277,8 @@ in the target for each thread-related message. All four jobs run in parallel.
 |---|---|---|---|
 | Pre-Migration | Dry-run, baseline counts, confirm time boundary | ~1 hour | 1 hr |
 | Phase 1 | users, rooms, subscriptions, avatars | ~25 min | ~1 hr 25 min |
-| Phase 2 | room_members, thread_subscriptions, **thread_rooms** (critical gate) | ~30–60 min | ~2–2.5 hrs |
-| Phase 3 | all 4 Cassandra tables (~40–60M messages) | **~45 min–1 hour** | ~2.75–3.5 hrs |
+| Phase 2 | room_members, **thread_rooms** (critical gate) | ~30–60 min | ~2–2.5 hrs |
+| Phase 3 | thread_subscriptions + all 4 Cassandra tables (~40–60M messages) | **~45 min–1 hour** | ~2.75–3.5 hrs |
 | Connector catch-up | Replay events since cutoff resume token | ~30–60 min | **~3.25–4.5 hrs total** |
 
 > Throughput assumptions — MongoDB: ~5,000 docs/sec per job;
