@@ -2424,9 +2424,9 @@ func TestMongoStore_ToggleSubscriptionMute(t *testing.T) {
 	assert.Equal(t, "alice", got.User.Account)
 	assert.Equal(t, "r1", got.RoomID)
 
-	persisted, err := store.GetSubscription(ctx, "alice", "r1")
-	require.NoError(t, err)
-	assert.True(t, persisted.Muted)
+	// muted is not projected by GetSubscription (no handler reads it from a read
+	// result), so verify persistence with a direct field read.
+	assert.True(t, subBoolField(t, db, "r1", "alice", "muted"))
 	// muteUpdatedAt is stamped at the supplied instant (BSON ms precision) so the
 	// origin doc shares the federated event's high-water mark.
 	assert.Equal(t, ts1.UnixMilli(), subTimeField(t, db, "r1", "alice", "muteUpdatedAt").UnixMilli())
@@ -2459,6 +2459,22 @@ func subTimeField(t *testing.T, db *mongo.Database, roomID, account, field strin
 	return dt.Time().UTC()
 }
 
+// subBoolField reads a boolean field straight from the stored subscription
+// document. Used to assert persistence of fields (muted, favorite) that
+// GetSubscription deliberately does not project, so the read-back cannot rely
+// on the projected struct.
+func subBoolField(t *testing.T, db *mongo.Database, roomID, account, field string) bool {
+	t.Helper()
+	var doc bson.M
+	require.NoError(t, db.Collection("subscriptions").
+		FindOne(context.Background(), bson.M{"roomId": roomID, "u.account": account}).Decode(&doc))
+	v, ok := doc[field]
+	require.True(t, ok, "field %q missing on subscription", field)
+	b, ok := v.(bool)
+	require.True(t, ok, "field %q is %T, want bool", field, v)
+	return b
+}
+
 func TestMongoStore_ToggleSubscriptionFavorite(t *testing.T) {
 	db := testutil.MongoDB(t, "room-svc-fav")
 	store := NewMongoStore(db)
@@ -2488,9 +2504,9 @@ func TestMongoStore_ToggleSubscriptionFavorite(t *testing.T) {
 	assert.Equal(t, "alice", got.User.Account)
 	assert.Equal(t, "r1", got.RoomID)
 
-	persisted, err := store.GetSubscription(ctx, "alice", "r1")
-	require.NoError(t, err)
-	assert.True(t, persisted.Favorite)
+	// favorite is not projected by GetSubscription (no handler reads it from a
+	// read result), so verify persistence with a direct field read.
+	assert.True(t, subBoolField(t, db, "r1", "alice", "favorite"))
 	// favoriteUpdatedAt is stamped at the supplied instant so the origin doc
 	// shares the federated event's high-water mark.
 	assert.Equal(t, ts1.UnixMilli(), subTimeField(t, db, "r1", "alice", "favoriteUpdatedAt").UnixMilli())
