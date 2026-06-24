@@ -1,27 +1,29 @@
 # org-sync-worker — Design
 
-**Date:** 2026-06-17
+**Date:** 2026-06-17 (updated 2026-06-24 to the Final integration contract)
 **Status:** Approved (design locked)
 **Service:** `org-sync-worker`
 **Branch:** `claude/blissful-carson-kihdek`
-**Source spec:** `spec_from_me_to_claude.md` (Organization Membership Sync Worker Specification)
+**Authoritative contract:** the HR producer integration spec ("Final — implement
+from this document only"). Its facts are inlined below so this design is
+self-contained; the hand-off files are removed from the branch before merge.
 
 ## Summary
 
 `org-sync-worker` is a site-local JetStream consumer that synchronizes
-organization-membership changes from a central HR event stream into local room
+organization-membership changes from the HR event stream into local room
 memberships. Each site runs its own instance and only mutates rooms it hosts
-(`siteId == SITE_ID`). The worker consumes zstd-compressed batches, decompresses
-them, and applies idempotent MongoDB writes (create/remove subscriptions +
-membership-source records, adjust member counts).
+(`siteId == SITE_ID`). The worker consumes one zstd-compressed message whose
+decompressed payload is a JSON **array** of `OrgMembershipBatch` objects, and
+applies idempotent, **order-independent** MongoDB writes (create/remove
+subscriptions + membership-source records, recompute member counts).
 
-This document adapts the external `spec_from_me_to_claude.md` (written for a
-standalone `cmd/`+`internal/` external repo) onto this monorepo: flat-root
-`main.go` (no `cmd/`), the `internal/` layout of `history-service`, the root
-`go.mod`, and reuse of the existing `pkg/` libraries. **The stream/subject/
-consumer design follows the real `hr-syncer`: HR is broadcast-only on
-`chat.hr.{siteID}.org.membership.changed`, consumed via the single filter
-`chat.hr.{central}.>` (no `.to.{site}` routing — see §3).**
+This document adapts the contract onto this monorepo: flat-root `main.go` (no
+`cmd/`), the `internal/` layout of `history-service`, the root `go.mod`, and
+reuse of the existing `pkg/` libraries. **Stream/subject use the worker's own
+local `SITE_ID`: HR is published to `chat.hr.{siteID}.org.membership.changed` and
+consumed via the single filter `chat.hr.{siteID}.>` (see §3). There is no
+`CENTRAL_SITE_ID` and no `.to.{site}` routing.**
 
 ## 1. Package structure
 
@@ -45,7 +47,7 @@ org-sync-worker/
 │   │   └── consumer.go                        # pull-iterator + wg + Stop/Wait; maps result → Ack/Nak/Term
 │   ├── service/
 │   │   ├── service.go                         # interfaces + OrgSyncService + New() + //go:generate + compile-time checks
-│   │   ├── process.go                         # ProcessBatch: decompress(codec) → unmarshal → per-change dispatch
+│   │   ├── process.go                         # ProcessMessage: decompress → []OrgMembershipBatch → dedup → per-change dispatch
 │   │   ├── process_test.go
 │   │   ├── membership.go                      # handleMemberAdded / handleMemberRemoved
 │   │   ├── membership_test.go                 # unit tests, mocked repos
@@ -72,13 +74,13 @@ org-sync-worker/
 
 Import path: `github.com/hmchangw/chat/org-sync-worker/internal/…`.
 Reused root packages: `natsutil`, `mongoutil`, `stream`, `subject`, `idgen`,
-`shutdown`, `errcode`, `model`, `health`, `otelutil`, `logctx`, `jobguard`,
-`pipelines` (partial — see §14), `testutil` (tests). See §14 for the full
+`shutdown`, `errcode`, `model` (incl. `model.IsBotAccount`), `health`,
+`otelutil`, `logctx`, `jobguard`, `testutil` (tests). See §14 for the full
 package-reuse audit, including what was deliberately NOT reused.
 
 ## 2. Domain mapping (spec vocabulary → real model)
 
-The source spec uses generic vocabulary. The real collections and `pkg/model`
+The HR contract uses generic vocabulary. The real collections and `pkg/model`
 structs:
 
 | Spec term | Collection | `pkg/model` struct | Key fields / constraints |
@@ -95,39 +97,37 @@ structs:
   collections and their indexes are owned by `room-service`/`room-worker`.
   `org-sync-worker` reuses them and MUST NOT create indexes or own schema.
 
-## 3. Stream / subject / consumer — aligned to the actual hr-syncer
+## 3. Stream / subject / consumer
 
-HR events are **broadcast-only**. The real publisher (`hr-syncer`, in its own
-repo) publishes to `chat.hr.{siteID}.org.membership.changed`, where `{siteID}` is
-the central HR site. There is **no `.to.{site}` routing for HR** — that pattern
-belongs to other (non-HR) services that do not exist in this repo. The source
-spec (`spec_from_me_to_claude.md`) lists a second `chat.hr.{central}.to.{site}.>`
-filter; that filter is **unused for HR** and is intentionally dropped here.
+Keyed entirely on the worker's own local `SITE_ID`. The HR producer publishes to
+`chat.hr.{siteID}.org.membership.changed` (broadcast); the worker consumes via the
+single wildcard filter `chat.hr.{siteID}.>`. There is **no `CENTRAL_SITE_ID`** and
+**no `.to.{site}` routing** — both were artifacts of an earlier draft and are
+dropped. Build subject strings and filters with the `pkg/subject` helpers, never
+raw `fmt.Sprintf` (CLAUDE.md §3 NATS Subject Naming).
 
 - **Stream:** `HR_{siteID}`. The authoritative stream config (name, subjects,
-  federation sourcing) is owned by `hr-syncer`/ops — org-sync-worker MUST source
+  federation sourcing) is owned by the HR producer/ops — org-sync-worker sources
   from the actual `pkg/stream` HR config rather than redefining it. The dev-only
   `bootstrap.go` sets only `Name` + `Subjects`; `Sources`/`SubjectTransforms`
   are ops/IaC-owned (INBOX convention).
 - **Consumer filter — single subject:**
   ```
-  chat.hr.{central}.>   // catches all HR events (incl. org.membership.changed)
+  chat.hr.{siteID}.>   // catches all HR events (incl. org.membership.changed)
   ```
-  This is the ONLY filter required; `{central}` = `CENTRAL_SITE_ID` (the HR
-  publishing site). It matches the real `chat.hr.{central}.org.membership.changed`
-  subject. Built via `subject.HRConsumerFilters(centralSiteID)` — never raw
-  `fmt.Sprintf` (CLAUDE.md §3 NATS Subject Naming).
+  This is the ONLY filter required; `{siteID}` = the worker's own `SITE_ID`. It
+  matches `chat.hr.{siteID}.org.membership.changed`.
 - **Consumer:** durable `org-sync-worker-{site-id}`, `AckPolicy=Explicit`,
   `DeliverPolicy=All`, `MaxDeliver=5`, `AckWait=30m`, via
   `stream.ConsumerSettings` (env-tunable `CONSUMER_*`).
 - **`pkg/subject` additions:**
-  - `HROrgMembershipBroadcast(central) = chat.hr.{central}.org.membership.changed`
-    (the real subject; used by the integration test publisher)
-  - `HRConsumerFilters(central) = []string{ "chat.hr."+central+".>" }`
+  - `HROrgMembershipSubject(siteID) = chat.hr.{siteID}.org.membership.changed`
+    (the published subject; used by the integration-test publisher)
+  - `HRConsumerFilters(siteID) = []string{ "chat.hr."+siteID+".>" }`
 - **`pkg/stream`:** use the existing/owned HR config if present; otherwise
-  org-sync-worker adds `HR(siteID, centralSiteID) Config` → `Name: "HR_"+siteID`,
-  `Subjects: []string{"chat.hr."+centralSiteID+".>"}`. Verify the exact name and
-  subjects against hr-syncer before implementing — do not diverge from it.
+  org-sync-worker adds `HR(siteID) Config` → `Name: "HR_"+siteID`,
+  `Subjects: []string{"chat.hr."+siteID+".>"}`. Verify the exact name and subjects
+  against the HR producer before implementing — do not diverge from it.
 
 ## 4. Event model (`pkg/model/event.go`)
 
@@ -157,6 +157,19 @@ type OrgMembershipBatch struct {
 Change-type constants live alongside in `pkg/model`. The orgId/account format
 validation (see §7) is business logic and stays in `service` (a small
 `validateChange` helper), keeping `pkg/model` to data + constants only.
+`Account` is `omitempty` because the producer omits it for `org_disbanded` (the
+wire example carries no `account` for that type).
+
+**Wire format (one NATS message):**
+- Header `Nats-Encoding: zstd` (always present).
+- Payload: a JSON **array** of `OrgMembershipBatch`, zstd-compressed. After
+  decompressing, the worker parses `[]OrgMembershipBatch` and flattens
+  `batch.changes` across all batches into one change list.
+- The producer caps each message at ~100 changes / 64KB compressed and may emit
+  **multiple messages** per sync run.
+- **Duplicates are expected** across runs/redeliveries. The worker dedups the
+  flattened changes by the key `(type, orgId, account)` before applying, and all
+  writes are idempotent, so re-applying a processed change is a no-op.
 
 ## 5. `service.go` — interfaces + wiring (history-service idiom)
 
@@ -176,10 +189,6 @@ type SubscriptionRepository interface {
 }
 
 type RoomMemberRepository interface {
-    // AccountsViaOrg returns the accounts of users in orgID (sectId|deptId==orgID)
-    // that currently hold a subscription in roomID — the org_disbanded /
-    // member_removed candidate set. See §7 for the enumeration limitation.
-    AccountsViaOrg(ctx context.Context, roomID, orgID, siteID string) ([]string, error)
     HasIndividualRecord(ctx context.Context, roomID, account string) (bool, error)
     // HasOrgRecordExcept reports whether roomID has an org member-record whose
     // member.id ∈ orgIDs but ≠ excludeOrgID. Implemented as
@@ -209,6 +218,7 @@ type UserRepository interface {
 }
 
 type OrgSyncService struct {
+    dec     codec.Decompressor // injected; ProcessMessage decompresses with it
     subs    SubscriptionRepository
     members RoomMemberRepository
     rooms   RoomRepository
@@ -216,7 +226,7 @@ type OrgSyncService struct {
     siteID  string
 }
 
-func New(subs SubscriptionRepository, members RoomMemberRepository,
+func New(dec codec.Decompressor, subs SubscriptionRepository, members RoomMemberRepository,
     rooms RoomRepository, users UserRepository, siteID string) *OrgSyncService
 
 var _ SubscriptionRepository = (*mongorepo.SubscriptionRepo)(nil)
@@ -236,12 +246,10 @@ shared repository struct.
   + `BulkWrite` (the `$set`-based `BulkUpsert` shortcut is NOT used — we must
   not overwrite `joinedAt` on retry).
 - `room_member.go` — `RoomMemberRepo{ members *mongoutil.Collection[model.RoomMember] }`.
-  `AccountsViaOrg` aggregates the `users` collection — match `sectId|deptId ==
-  orgID` (projection must include `sectId`/`deptId`), `$lookup` subscriptions
-  filtered to `roomID`, keep accounts with a subscription — reusing the sect/dept
-  org-match shape from `pkg/pipelines/member.go` for consistency with
-  room-worker. `UpsertIndividualRecord` stamps `ID: idgen.GenerateUUIDv7()`,
-  `Ts: now`, `Member: {type:"individual", id:user.ID, account}` and writes with
+  `HasIndividualRecord` / `HasOrgRecordExcept` / `DeleteIndividualRecord` /
+  `DeleteOrgRecord` are simple `room_members` queries/updates.
+  `UpsertIndividualRecord` stamps `ID: idgen.GenerateUUIDv7()`, `Ts: now`,
+  `Member: {type:"individual", id:user.ID, account}` and writes with
   `$setOnInsert`.
 - `room.go` — `RoomRepo{ rooms *mongoutil.Collection[model.Room] }`.
   `RoomsWithOrg` aggregates `room_members{member.type:"org", member.id:orgID}`,
@@ -257,11 +265,11 @@ shared repository struct.
   `GetUserByAccount` → `FindOne(bson.M{"account": account})` with a projection
   that **includes `sectId` and `deptId`** (plus `_id`, `account`). We do NOT
   reuse `pkg/userstore.NewMongoStore` here: its `FindUserByAccount` projection
-  (`userstore.go:26`) omits `sectId`/`deptId`, which the member_removed /
-  org_disbanded "covered by another org" check requires. A hand-rolled
+  (`userstore.go:26`) omits `sectId`/`deptId`, which the member_removed
+  "covered by another org" check (`HasOrgRecordExcept`) requires. A hand-rolled
   `UserRepo` with the right projection is the correct call.
 
-Pipeline shapes for the two net-new aggregations (for test authors):
+Pipeline shape for the one net-new aggregation (for test authors):
 
 ```
 // RoomsWithOrg(orgID, siteID) — source: room_members
@@ -270,19 +278,15 @@ Pipeline shapes for the two net-new aggregations (for test authors):
   {$unwind:"$r"}, {$match: {"r.siteId":siteID}},
   {$replaceRoot:{newRoot:"$r"}},
   {$project: {_id:1, siteId:1, name:1, type:1}} ]
-
-// AccountsViaOrg(roomID, orgID, siteID) — source: users
-[ {$match: {$or:[{sectId:orgID},{deptId:orgID}], siteId:siteID}},
-  {$lookup: {from:"subscriptions", let:{a:"$account"},
-     pipeline:[{$match:{$expr:{$and:[{$eq:["$roomId",roomID]},{$eq:["$u.account","$$a"]}]}}},{$limit:1},{$project:{_id:1}}],
-     as:"sub"}},
-  {$match: {sub:{$ne:[]}}}, {$project:{_id:0, account:1}} ]
 ```
 
 ## 7. Business logic
 
-All operations are scoped to the local site (`SITE_ID`) and are idempotent.
-`OrgSyncService.ProcessChange(ctx, change)` dispatches on `change.Type`.
+All operations are scoped to the local site (`SITE_ID`), idempotent, and
+**order-independent** (the contract gives no ordering guarantee within or across
+batches). `ProcessMessage(ctx, raw)` decompresses, parses `[]OrgMembershipBatch`,
+flattens + dedups changes by `(type, orgId, account)`, then calls
+`processChange(ctx, change)` for each; `processChange` dispatches on `change.Type`.
 
 **Member-count discipline (applies to all three handlers):** member counts are
 NEVER adjusted with `$inc`. After a handler finishes mutating subscriptions in a
@@ -299,11 +303,9 @@ pseudo accounts are identified with `model.IsBotAccount(account)` and stamped on
 `sub.u.isBot` at creation so the recompute counts non-bots into `userCount`
 exactly as room-worker does.
 
-(Source-spec note: `spec_from_me_to_claude.md` shows `incrementMemberCount` /
-`decrementMemberCount` pseudocode. This design intentionally substitutes
-recompute-and-`$set` for `$inc` to gain redelivery idempotency and room-worker
-convergence — a deliberate, documented deviation from the illustrative
-pseudocode, not the routing/contract.)
+(The contract explicitly calls for "recompute-and-`$set` (not `$inc`) for
+redelivery idempotency" — this design matches it and reuses room-worker's
+`ReconcileMemberCounts` discipline.)
 
 **member_added** (`membership.go`):
 1. `rooms := rooms.RoomsWithOrg(orgId, siteID)` (full `model.Room` docs).
@@ -330,27 +332,20 @@ pseudocode, not the routing/contract.)
 4. Else `subs.DeleteSubscription`, `members.DeleteIndividualRecord`,
    `rooms.ReconcileUserCount(room.ID)`.
 
-**org_disbanded** (`disband.go`):
+**org_disbanded** (`disband.go`) — `account` is empty; do NOT use it. Per the
+contract the **producer also emits a separate `member_removed` for each former
+member in the same run**, so this handler does NOT enumerate/remove members
+itself — it only drops the org's membership-source row:
 1. `rooms := rooms.RoomsWithOrg(orgId, siteID)`.
-2. For each room: `accounts := members.AccountsViaOrg(room.ID, orgId, siteID)`.
-   For each account apply the same keep-checks as member_removed
-   (`HasIndividualRecord`, `HasOrgRecordExcept`); `DeleteSubscription` +
-   `DeleteIndividualRecord` for the non-covered ones.
-3. `members.DeleteOrgRecord(room.ID, orgId)` (remove the org membership-source row).
-4. `rooms.ReconcileUserCount(room.ID)` once per room (after all removals).
+2. For each room: `members.DeleteOrgRecord(room.ID, orgId)` then
+   `rooms.ReconcileUserCount(room.ID)`.
 
-**Enumeration limitation (org_disbanded / member_removed):** the data model does
-NOT record which org introduced an individual `room_members` row (individual
-rows carry `member.id:user.ID`, no back-link to the org). So "members via org X"
-is approximated by **current** users in org X (`sectId|deptId==orgID`) holding a
-subscription. A user who left org X *before* the disband is no longer matched
-here — they are expected to have been removed by their own earlier
-`member_removed` event. This is an accepted limitation, consistent with the
-source spec's reliance on the per-change event stream; it is not a silent
-divergence. `DeleteOrgRecord` always removes the single org member-source row
-regardless.
+The accompanying `member_removed` events do the per-member cleanup through the
+normal `member_removed` path (with its individual / other-org keep-checks). This
+is why there is no `AccountsViaOrg` enumeration and no org→member back-link
+problem: the producer is the source of truth for who leaves.
 
-**Validation (security, source spec §Message Validation):** a service-level
+**Validation (security):** a service-level
 `validateChange(change)` rejects malformed input before any DB work — `type` ∈
 {member_added, member_removed, org_disbanded}; `orgId` non-empty and matching
 `^[A-Za-z0-9._-]{1,128}$`; `account` (required except for org_disbanded) matching
@@ -358,24 +353,24 @@ the same allowlist. A validation failure is a per-change skip (logged with
 `type`/`orgId`), not a batch failure. The allowlist blocks operator/regex
 injection into the Mongo filters built from these values.
 
-**Within-batch ordering:** changes are applied in array order; because every
-write is idempotent and counts are reconciled (not incremented), a duplicated or
-out-of-order pair for the same `(account, orgId)` converges to the correct state.
+**Ordering & dedup:** there is no ordering guarantee, so handlers never depend on
+order. The flattened change list is deduped by `(type, orgId, account)` before
+applying (collapses producer-emitted duplicates within a run); idempotent writes
++ recompute-and-`$set` counts make redelivery a no-op. (Sequential consume — §9 —
+is a throughput/simplicity choice per the contract, not an ordering crutch.)
 
-**Partial-batch semantics:** `ProcessBatch` continues on per-change errors,
+**Partial-message semantics:** `ProcessMessage` continues on per-change errors,
 counting successes. Ack if ≥1 change succeeded; `NakWithDelay(30s)` if every
-change failed (transient); `Term` if the batch itself is undecodable (see §9).
-`Nats-Msg-Id` (source §Message Format) provides JetStream-level dedup; combined
-with reconcile-and-`$set` counts, redelivery is fully idempotent.
+change failed (transient Mongo errors); `Term` if the message itself is
+undecodable (see §9).
 
-**First-run / oversized-batch contract:** the source spec's first-run behavior
-publishes "all current org members as `member_added`". A batch with more than
-`MAX_BATCH_SIZE` (default 1000) changes is `Term`-ed as poison (§9) — so the HR
-**producer owns chunking**: first-run cohorts MUST be split into ≤`MAX_BATCH_SIZE`
-batches. An over-cap batch is treated as a producer-contract violation, not a
-worker bug; the worker logs `batch too large` (with `count`/`max`) so first-run
-deployments are observable. Operators should raise `MAX_BATCH_SIZE` only in
-lockstep with the producer's chunk size.
+**First-run / oversized-message contract:** on first run the producer emits all
+current org members as `member_added` (no `member_removed`/`org_disbanded`) — a
+large burst, but split by the producer into multiple messages each ≤~100 changes
+/ ≤64KB compressed. A single message whose total flattened change count exceeds
+`MAX_BATCH_SIZE` (default 1000) is `Term`-ed as poison (§9), logged `batch too
+large` (`count`/`max`); this is a producer-contract violation, not a worker bug.
+Raise `MAX_BATCH_SIZE` only in lockstep with the producer's chunk size.
 
 ## 8. `internal/codec` — zstd decompression
 
@@ -399,7 +394,7 @@ func New(maxCompressed int) (*Decoder, error)
 // zstd.NewReader(nil, WithDecoderConcurrency(1), WithDecoderMaxMemory(16<<20), IgnoreChecksum(true))
 
 // Decompress rejects empty input and input larger than maxCompressed BEFORE
-// decoding (the 64KB compressed cap from source §Compression), then
+// decoding (the 64KB compressed cap from the contract), then
 // d.DecodeAll(data, nil). Over-cap / decode errors return a sentinel the
 // consumer maps to Term (poison).
 func (d *Decoder) Decompress(data []byte) ([]byte, error)
@@ -415,24 +410,25 @@ the `Decompressor` interface so `process_test.go` can inject a fake. Both the
 Reuses the inbox-worker pull-consumer pattern (OTel via `oteljetstream`,
 `jobguard.Guard` panic recovery per message, `natsutil.StampRequestID` →
 request-id in every log line). The consumer owns Ack/Nak/Term mechanics and
-calls `service.ProcessBatch(ctx, msg.Data()) (acked int, err error)`.
+calls `service.ProcessMessage(ctx, msg.Data()) (processed int, err error)`.
 
-- **Sequential consume** (`cons.Consume()`), NOT a worker pool. HR batches are
-  daily/low-volume, and concurrent batch processing could reorder a later
-  `member_removed` ahead of an earlier `member_added` for the same user.
-  `MAX_WORKERS` is retained in config for forward-compat but the default path is
-  sequential.
-- **Dedup:** the consumer honors the `Nats-Msg-Id` header (source §Message
-  Format). With JetStream dedup plus reconcile-and-`$set` counts, redelivery is
-  idempotent at both layers.
-- **Term** (no retry, poison): decompress failure, compressed input over
-  `HRSYNC_BATCH_MAX_COMPRESSED_SIZE`, JSON parse failure, batch size >
+- **Sequential consume** (`cons.Consume()`), per the contract's "sequential
+  processing (not parallel worker pool)" directive. HR is daily/low-volume; the
+  design is order-independent regardless, so this is a simplicity choice, not an
+  ordering crutch. `MAX_WORKERS` is retained in config for forward-compat but
+  unused on the default path.
+- **Encoding check:** the consumer verifies the `Nats-Encoding: zstd` header
+  (always present per the contract) before handing the body to `codec`; a
+  missing/unknown encoding is poison (`Term`).
+- **Term** (no retry, poison): missing/unknown `Nats-Encoding`, decompress
+  failure, compressed input over `HRSYNC_BATCH_MAX_COMPRESSED_SIZE`, JSON parse
+  failure (payload not a valid `[]OrgMembershipBatch`), total change count >
   `MAX_BATCH_SIZE`. The service returns these as `errcode.Permanent`; the
-  consumer calls `msg.Term()` (preserves the source spec's reject-not-processed
-  semantics; `oteljetstream` supports `Term`).
+  consumer calls `msg.Term()` (reject-not-processed; `oteljetstream` supports
+  `Term`).
 - **Nak / NakWithDelay(30s)** (retry): Mongo timeout/contention and other
-  transient infra errors (`errcode.IsPermanent` == false), and the all-changes
-  -failed batch case.
+  transient infra errors (`errcode.IsPermanent` == false), and the
+  all-changes-failed message case.
 - **E11000 on `UpsertSubscription`** (concurrent insert race with room-worker)
   is treated as success, not poison — the document already exists.
 - Graceful shutdown via `shutdown.Wait(25s)`, CLAUDE.md worker order:
@@ -442,15 +438,14 @@ calls `service.ProcessBatch(ctx, msg.Data()) (acked int, err error)`.
 ## 10. Configuration (`internal/config`, caarlos0/env)
 
 ```
-SITE_ID                          required   site identifier
-CENTRAL_SITE_ID                  required   central HR stream site (builds filters)
+SITE_ID                          required   site identifier (also the HR subject token)
 NATS_URL                         required
 NATS_CREDS_FILE                  optional
 MONGO_URI                        required
 MONGO_DB                         default chat
 MAX_WORKERS                      default 100   (retained; sequential consume is default)
 HRSYNC_BATCH_MAX_COMPRESSED_SIZE default 65536 (64KB compressed cap)
-MAX_BATCH_SIZE                   default 1000  (max changes per batch → Term if exceeded)
+MAX_BATCH_SIZE                   default 1000  (max total changes per message → Term if exceeded)
 HEALTH_ADDR                      default :8080
 CONSUMER_*                       stream.ConsumerSettings (ACK_WAIT, MAX_DELIVER, …)
 BOOTSTRAP_STREAMS                default false (dev sets true)
@@ -461,21 +456,23 @@ Fail fast on missing required vars and non-positive numeric knobs (history
 
 ## 11. Testing (TDD, 80%+ floor, 90%+ on service)
 
-- **Unit** (mocked repos via `internal/service/mocks`): `membership_test.go`,
-  `disband_test.go`, `process_test.go` (decompress fake + dispatch), table-
-  driven covering happy path, store errors, edge cases (user-not-found,
-  already-subscribed, covered-by-other-org, empty batch). Plus `config_test.go`
-  and `codec_test.go` (valid, empty, oversized/bomb). The event DTO round-trip
-  is covered by `pkg/model/model_test.go`.
+- **Unit** (mocked repos via `internal/service/mocks`): `membership_test.go`
+  (member_added/removed: user-not-found, already-subscribed, bot account,
+  covered-by-other-org keep), `disband_test.go` (org_disbanded drops only the org
+  row + reconciles, does NOT remove members), `process_test.go` (decompress fake,
+  `[]OrgMembershipBatch` parse, `(type,orgId,account)` dedup, empty/multi-batch
+  message, per-change-error continue). Plus `config_test.go` and `codec_test.go`
+  (valid, empty, oversized/bomb). The event DTO round-trip is covered by
+  `pkg/model/model_test.go`.
 - **Integration** (`//go:build integration`): `mongorepo/main_test.go` →
   `testutil.RunTests(m)`, `setup_test.go` → `testutil.MongoDB(t,
   "org_sync_test")`; split per collection: `subscription_integration_test.go`,
   `room_member_integration_test.go`, `room_integration_test.go`,
   `user_integration_test.go`. An end-to-end JetStream flow test (publish a
-  zstd batch → assert subscription/count) under `internal/consumer` or
-  `internal/service` using `testutil.NATS(t)`. Count-reconciliation and
-  redelivery-idempotency (re-deliver the same batch, assert `userCount`
-  unchanged) get explicit integration cases.
+  zstd-compressed `[]OrgMembershipBatch` message → assert subscription/count)
+  under `internal/consumer` or `internal/service` using `testutil.NATS(t)`.
+  Count-reconciliation and redelivery-idempotency (re-deliver the same message,
+  assert `userCount` unchanged) get explicit integration cases.
 - `make generate` regenerates `internal/service/mocks/mock_repository.go` before
   testing. All tests run with `-race` (`make test` / `make test-integration`
   pass the flag).
@@ -487,51 +484,53 @@ Fail fast on missing required vars and non-positive numeric knobs (history
   `go.sum`, `pkg/`, `org-sync-worker/`), `go build -o /org-sync-worker
   ./org-sync-worker`, non-root user.
 - **docker-compose.yml**: NATS (`--jetstream --http_port 8222`), MongoDB,
-  worker; env includes `BOOTSTRAP_STREAMS=true`, `SITE_ID=site-local`,
-  `CENTRAL_SITE_ID=site-local`.
+  worker; env includes `BOOTSTRAP_STREAMS=true`, `SITE_ID=site-local`.
 - **azure-pipelines.yml**: path-filtered to `org-sync-worker/` + `pkg/`;
   validate (vet/test/build) + Docker build on main.
 
 ## 13. Locked decisions
 
 1. Flat-root `main.go` (no `cmd/`); `internal/` layout per history-service.
-2. HR is broadcast-only. Consumer uses the SINGLE filter `chat.hr.{central}.>`
-   (matches the real `hr-syncer` subject `chat.hr.{siteID}.org.membership.changed`).
-   The source spec's `.to.{site}` filter is unused for HR and is dropped. Stream
-   `HR_{siteID}` is sourced from hr-syncer's owned config, not redesigned here.
-3. One `mongoutil.Collection[T]` per collection file; no composing repository
+2. Subject/stream keyed on the worker's own `SITE_ID`: subject
+   `chat.hr.{siteID}.org.membership.changed`, single consumer filter
+   `chat.hr.{siteID}.>`. No `CENTRAL_SITE_ID`, no `.to.{site}` routing. Stream
+   `HR_{siteID}` sourced from the HR producer's owned config, not redesigned.
+3. Decompressed payload is `[]OrgMembershipBatch`; the worker flattens + dedups
+   changes by `(type, orgId, account)` and processes them order-independently.
+4. `org_disbanded` only drops the org membership-source row + reconciles; the
+   producer emits a separate `member_removed` per former member (handled by the
+   normal member_removed path). No `AccountsViaOrg` enumeration.
+5. One `mongoutil.Collection[T]` per collection file; no composing repository
    struct; interfaces defined in `service.go` with compile-time checks.
-4. zstd decompression isolated in `internal/codec` (`Decoder` struct +
-   `Decompressor` interface), with both the 64KB compressed and 16MB
-   decompressed caps enforced; orchestration stays in `service/process.go`.
-5. Event DTOs appended to root `pkg/model/event.go` (shared by multiple services;
-   round-trip tested by `pkg/model/model_test.go`).
-6. Sequential consume (ordering safety); `MAX_WORKERS` retained but unused by
+6. zstd decompression isolated in `internal/codec` (`Decoder` struct +
+   `Decompressor` interface), 64KB compressed + 16MB decompressed caps enforced;
+   orchestration stays in `service/process.go`.
+7. Event DTOs appended to root `pkg/model/event.go` (round-trip tested by
+   `pkg/model/model_test.go`).
+8. Sequential consume per the contract; `MAX_WORKERS` retained but unused by
    default.
-7. `$setOnInsert` upserts via `mongoutil.UpsertModel` + `BulkWrite` (not the
-   `$set` `BulkUpsert` shortcut).
-8. org-sync-worker reuses existing collections/indexes; owns no schema.
-9. Member counts use recompute-and-`$set` (`ReconcileUserCount`, mirroring
-   room-worker), NEVER `$inc` — idempotent under redelivery; eventually
-   consistent under concurrent room-worker writes (same residual count-then-set
-   window room-worker already has; self-heals on next reconcile). Bots flagged
-   via `model.IsBotAccount`.
-10. Poison messages use `msg.Term()` (not Ack-drop) to preserve the source
-    spec's reject semantics; `Nats-Msg-Id` honored for JetStream dedup.
-11. Per-space rate limiting from the source spec is deliberately omitted (YAGNI
-    at daily-batch volume); revisit only if batch sizes/cadence grow.
-12. Consumer package is `internal/consumer` (not `internal/nats`, which would
-    shadow the `nats.go` import).
+9. `$setOnInsert` upserts via `mongoutil.UpsertModel` + `BulkWrite` (not the
+   `$set` `BulkUpsert` shortcut); reuses existing collections/indexes, owns no
+   schema.
+10. Member counts use recompute-and-`$set` (`ReconcileUserCount`, mirroring
+    room-worker), NEVER `$inc` — idempotent under redelivery; eventually
+    consistent under concurrent room-worker writes (same residual count-then-set
+    window room-worker already has; self-heals on next reconcile). Bots flagged
+    via `model.IsBotAccount`.
+11. Poison messages use `msg.Term()`; the `Nats-Encoding: zstd` header is
+    verified before decompression.
+12. `member_removed` keeps a user covered by an individual record OR by a
+    different member-org (`HasOrgRecordExcept`), per the original spec's
+    other-org check (user-confirmed 2026-06-24).
+13. Per-space rate limiting is deliberately omitted (YAGNI at daily-batch
+    volume). Consumer package is `internal/consumer` (not `internal/nats`, which
+    would shadow the `nats.go` import).
 
 ## 14. Package-reuse audit
 
 Full sweep of `pkg/` for reusable logic beyond the obvious infra packages.
 
 **Reused:**
-- `pkg/pipelines` — **partial.** `member.go` encodes the shared sect/dept org
-  match shape (`sectId|deptId ∈ orgIDs`), reused for `AccountsViaOrg` and the
-  org_disbanded enumeration to stay consistent with room-worker. Does NOT cover
-  the worker's primary orgId→rooms query (`RoomsWithOrg` is net-new).
 - `pkg/model.IsBotAccount` — the canonical bot/pseudo-account test, used to stamp
   `sub.u.isBot` at subscription creation so `ReconcileUserCount` counts non-bots
   into `userCount` exactly as room-worker does. (Avoids duplicating
@@ -541,6 +540,11 @@ Full sweep of `pkg/` for reusable logic beyond the obvious infra packages.
   `jobguard`, `testutil`.
 
 **Deliberately NOT reused:**
+- `pkg/pipelines` — its sect/dept org-match shape was only needed for the
+  `AccountsViaOrg` enumeration, which the Final contract removed (the producer
+  emits per-member `member_removed` for disbands). The remaining queries
+  (`RoomsWithOrg`, `HasOrgRecordExcept`) hit `room_members` directly, so
+  `pipelines` is no longer pulled in.
 - `pkg/userstore` — its `FindUserByAccount` projection (`userstore.go:26`) omits
   `sectId`/`deptId`, which the member_removed / org_disbanded org-coverage check
   requires. A service-local `UserRepo` with the correct projection is used
@@ -573,25 +577,25 @@ at the service root. Sequence (fail-fast on every error → `os.Exit(1)`):
 3. `nc := natsutil.Connect(cfg.NATS.URL, cfg.NATS.CredsFile)`; `js := oteljetstream.New(nc)`.
 4. `mongoClient := mongoutil.Connect(ctx, cfg.Mongo.URI, …)`; `db := mongoClient.Database(cfg.Mongo.DB)`.
 5. Construct repos: `mongorepo.NewSubscriptionRepo(db)`, `NewRoomMemberRepo(db)`, `NewRoomRepo(db)`, `NewUserRepo(db)`.
-6. `dec := codec.New(cfg.MaxCompressed)`; `svc := service.New(subs, members, rooms, users, cfg.SiteID)` (decoder injected into the `service.ProcessBatch` path).
-7. `bootstrapStreams(ctx, js, cfg.SiteID, cfg.CentralSiteID, cfg.Bootstrap.Enabled)` (dev sets `Name`+`Subjects` only).
-8. `cons := consumer.New(js, stream.HR(cfg.SiteID, cfg.CentralSiteID).Name, subject.HRConsumerFilters(cfg.CentralSiteID), svc.ProcessBatch)`; `cons.Run(ctx)` (sequential `Consume`).
+6. `dec := codec.New(cfg.MaxCompressed)`; `svc := service.New(dec, subs, members, rooms, users, cfg.SiteID)` (decoder injected into the `service.ProcessMessage` path).
+7. `bootstrapStreams(ctx, js, cfg.SiteID, cfg.Bootstrap.Enabled)` (dev sets `Name`+`Subjects` only).
+8. `cons := consumer.New(js, stream.HR(cfg.SiteID).Name, subject.HRConsumerFilters(cfg.SiteID), svc.ProcessMessage)`; `cons.Run(ctx)` (sequential `Consume`).
 9. `healthStop := health.Serve(cfg.HealthAddr, 5*time.Second, natsutil.HealthCheck(nc))`.
 10. `shutdown.Wait(ctx, 25*time.Second, …)` in CLAUDE.md worker order: `cons.Stop()` (iterator) → drain in-flight (wg, timeout) → `nc.Drain()` → `tracerShutdown` → `mongoutil.Disconnect` → `healthStop`.
 
 ## 17. Observability
 
-- **Logging:** `log/slog` JSON (via `logctx`). Per-batch lifecycle lines —
-  `processing batch` (`changes`, `request_id`), per-change errors (`type`,
-  `orgId`, `error`, `request_id`), `batch complete` (`processed`, `failed`,
-  `duration_ms`, `request_id`). Never log full batch bodies or accounts beyond
+- **Logging:** `log/slog` JSON (via `logctx`). Per-message lifecycle lines —
+  `processing message` (`changes`, `request_id`), per-change errors (`type`,
+  `orgId`, `error`, `request_id`), `message complete` (`processed`, `failed`,
+  `duration_ms`, `request_id`). Never log full message bodies or accounts beyond
   the `account` identifier. Request-id via `natsutil.StampRequestID(ctx,
   msg.Headers(), msg.Subject())` on every message, propagated through `ctx`.
 - **Tracing:** OTel spans on the consume path via `oteljetstream` (consumer) +
   `otelutil.InitTracer`.
-- **Metrics:** the source spec's §Alerting (error-rate, processing-time, lag)
-  is served for the MVP by structured-log aggregation; native Prometheus
+- **Metrics:** the contract's alerting expectations (error-rate, processing-time,
+  lag) are served for the MVP by structured-log aggregation; native Prometheus
   counters/histograms (batch latency, ack/nak/term counts, per-type change
   failures, reconcile latency) are a documented **post-launch** follow-up — not
   a launch blocker at daily-batch volume, but the hooks live on the
-  `ProcessBatch` boundary when added.
+  `ProcessMessage` boundary when added.
