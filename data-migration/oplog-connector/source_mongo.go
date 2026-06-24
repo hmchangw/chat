@@ -29,8 +29,9 @@ type mongoChangeSource struct {
 	cs *mongo.ChangeStream
 }
 
-// openMongoChangeSource opens a change stream at sp with NO lookups/pre-images — native oplog only (fullDocument, updateDescription, documentKey); enrichment is the transformer's job.
-func openMongoChangeSource(ctx context.Context, coll *mongo.Collection, sp startPoint) (*mongoChangeSource, error) {
+// openMongoChangeSource opens a change stream at sp with no lookups/pre-images — native oplog only.
+// federationFilter adds a $match dropping foreign-origin insert/replace (caller scopes it to the message collection).
+func openMongoChangeSource(ctx context.Context, coll *mongo.Collection, sp startPoint, federationFilter bool) (*mongoChangeSource, error) {
 	opts := options.ChangeStream()
 	switch sp.Kind {
 	case startAfterToken:
@@ -46,11 +47,24 @@ func openMongoChangeSource(ctx context.Context, coll *mongo.Collection, sp start
 		// default — stream from the current point.
 	}
 
-	cs, err := coll.Watch(ctx, mongo.Pipeline{}, opts)
+	pipeline := mongo.Pipeline{}
+	if federationFilter {
+		pipeline = federationFilterPipeline
+	}
+	cs, err := coll.Watch(ctx, pipeline, opts)
 	if err != nil {
 		return nil, fmt.Errorf("open change stream on %q: %w", coll.Name(), err)
 	}
 	return &mongoChangeSource{cs: cs}, nil
+}
+
+// federationFilterPipeline drops insert/replace events with federation.origin set — foreign copies
+// arrive via the new app's own federation. The $or keeps non-insert/replace events (filtered downstream) and locally-authored ones.
+var federationFilterPipeline = mongo.Pipeline{
+	bson.D{{Key: "$match", Value: bson.D{{Key: "$or", Value: bson.A{
+		bson.D{{Key: "operationType", Value: bson.D{{Key: "$nin", Value: bson.A{"insert", "replace"}}}}},
+		bson.D{{Key: "fullDocument.federation.origin", Value: bson.D{{Key: "$in", Value: bson.A{nil, ""}}}}},
+	}}}}},
 }
 
 func (m *mongoChangeSource) Next(ctx context.Context) (changeEvent, error) {

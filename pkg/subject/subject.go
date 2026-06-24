@@ -198,6 +198,17 @@ func MsgCanonicalDeleted(siteID string) string {
 	return fmt.Sprintf("chat.msg.canonical.%s.deleted", siteID)
 }
 
+// MigrationInternalMsgEdit is the server-only request subject for applying a migrated
+// message edit. MUST be locked to server identities in NATS permissions (no client access).
+func MigrationInternalMsgEdit(siteID string) string {
+	return fmt.Sprintf("chat.migration.internal.%s.msg.edit", siteID)
+}
+
+// MigrationInternalMsgDelete is the server-only request subject for a migrated soft-delete.
+func MigrationInternalMsgDelete(siteID string) string {
+	return fmt.Sprintf("chat.migration.internal.%s.msg.delete", siteID)
+}
+
 func MsgCanonicalPinned(siteID string) string {
 	return fmt.Sprintf("chat.msg.canonical.%s.pinned", siteID)
 }

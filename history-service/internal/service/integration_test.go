@@ -121,6 +121,12 @@ func (p *recordingPublisher) Publish(_ context.Context, subj string, data []byte
 	return nil
 }
 
+// PublishMigration records like Publish (the X-Migration header is a wire concern the
+// real publisher stamps; the fake only needs to satisfy EventPublisher and capture sends).
+func (p *recordingPublisher) PublishMigration(ctx context.Context, subj string, data []byte, msgID string) error {
+	return p.Publish(ctx, subj, data, msgID)
+}
+
 // alwaysSubscribedRepo stubs SubscriptionRepository so the subscription gate passes.
 type alwaysSubscribedRepo struct{}
 

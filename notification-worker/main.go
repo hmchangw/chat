@@ -291,7 +291,16 @@ func main() {
 				// natsrouter's Recovery middleware, so an unrecovered panic would
 				// crash the worker and crash-loop on JetStream redelivery.
 				jobguard.Run(msg, func() {
-					handlerCtx, _ := natsutil.StampRequestID(msgCtx, msg.Headers(), msg.Subject())
+					handlerCtx, reqID := natsutil.StampRequestID(msgCtx, msg.Headers(), msg.Subject())
+					// Migrated events carry X-Migration: live — the source already delivered them, so
+					// this live-delivery worker must not re-notify. Ack and drop without invoking the handler.
+					if natsutil.IsMigrationLiveHeader(msg.Headers()) {
+						slog.Info("skipping migrated event (no re-notify)", "subject", msg.Subject(), "request_id", reqID)
+						if err := msg.Ack(); err != nil {
+							slog.Error("failed to ack migrated message", "error", err, "request_id", reqID)
+						}
+						return
+					}
 					if err := handler.HandleMessage(handlerCtx, msg.Data()); err != nil {
 						slog.Error("handle message failed", "error", err, "request_id", natsutil.RequestIDFromContext(handlerCtx))
 						if err := msg.Nak(); err != nil {

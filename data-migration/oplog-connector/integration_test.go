@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,7 +135,8 @@ func TestOplogConnector_ChangeStreamEndToEnd(t *testing.T) {
 	defer cancel()
 
 	// Open the change stream BEFORE mutating so "from now" captures everything.
-	src, err := openMongoChangeSource(ctx, source, startPoint{Kind: startFromNow})
+	// No federation filter here — this test exercises the dumb-pump pass-through of all ops.
+	src, err := openMongoChangeSource(ctx, source, startPoint{Kind: startFromNow}, false)
 	require.NoError(t, err)
 
 	pub := &fakePublisher{}
@@ -201,6 +203,54 @@ func TestOplogConnector_ChangeStreamEndToEnd(t *testing.T) {
 
 	// A checkpoint was persisted (post-ack) for the published events.
 	assert.NotEmpty(t, saved.ids())
+}
+
+func TestOplogConnector_FederationFilterDropsForeignInserts(t *testing.T) {
+	const coll = "rocketchat_message"
+	client, _ := startReplicaSet(t)
+	source := createSourceCollection(t, client.Database("rocketchat"), coll)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// Federation filter ON (this collection is the message collection in the test).
+	src, err := openMongoChangeSource(ctx, source, startPoint{Kind: startFromNow}, true)
+	require.NoError(t, err)
+
+	pub := &fakePublisher{}
+	store, _ := captureStore(t)
+	w := newWatcher("site1", coll, src, pub, store, 1, time.Hour)
+	w.initialBackoff = time.Millisecond
+
+	runCtx, runCancel := context.WithCancel(ctx)
+	runErr := make(chan error, 1)
+	go func() { runErr <- w.run(runCtx) }()
+
+	// A foreign-origin insert (must be dropped by the $match) BEFORE a local insert (must pass).
+	// Ordering matters: if the foreign event were going to publish, it would precede local1.
+	_, err = source.InsertOne(ctx, bson.M{"_id": "foreign1", "msg": "from site-a",
+		"federation": bson.M{"origin": "site-a.example.internal"}})
+	require.NoError(t, err)
+	_, err = source.InsertOne(ctx, bson.M{"_id": "local1", "msg": "from here"})
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		for _, m := range pub.snapshot() {
+			if strings.Contains(string(m.Data), "local1") {
+				return true
+			}
+		}
+		return false
+	}, 30*time.Second, 50*time.Millisecond, "local-origin insert should be published")
+
+	runCancel()
+	require.NoError(t, <-runErr, "watcher exits cleanly on ctx cancel")
+
+	for _, m := range pub.snapshot() {
+		assert.NotContains(t, string(m.Data), "foreign1",
+			"foreign-origin insert must be dropped by the federation $match")
+		assert.NotContains(t, string(m.Data), "site-a.example.internal")
+	}
 }
 
 func TestMongoCheckpointStore_Integration(t *testing.T) {

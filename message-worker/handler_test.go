@@ -164,6 +164,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 	tests := []struct {
 		name       string
 		data       []byte
+		migration  bool
 		setupMocks func(store *MockStore, userStore *MockUserStore, threadStore *MockThreadStore)
 		wantErr    bool
 	}{
@@ -421,6 +422,55 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			// Migrated first reply: persists + creates thread_room, but writes no thread_subscriptions
+			// (collections owns them; a raw insert would dup-key the (threadRoomId,userAccount) index).
+			name:      "migrated first thread reply — persists + creates room, skips subscription writes",
+			data:      threadData,
+			migration: true,
+			setupMocks: func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(nil)
+				store.EXPECT().GetMessageSender(gomock.Any(), "msg-1").
+					Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
+				// No InsertThreadSubscription / owner-site lookup / MarkThreadSubscriptionMention — all suppressed for migrated events.
+				store.EXPECT().SaveThreadMessage(gomock.Any(), &threadMsg, &expectedSender, "site-a", gomock.Any()).
+					Return((*int)(nil), nil)
+			},
+		},
+		{
+			name:      "migrated subsequent thread reply — persists + bumps room, skips subscription writes",
+			data:      threadData,
+			migration: true,
+			setupMocks: func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {
+				us.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(errThreadRoomExists)
+				ts.EXPECT().GetThreadRoomByParentMessageID(gomock.Any(), "msg-1").
+					Return(&model.ThreadRoom{ID: "tr-1"}, nil)
+				store.EXPECT().GetMessageSender(gomock.Any(), "msg-1").
+					Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
+				// No UpsertThreadSubscription/owner-site lookup; replyAccounts + lastMsg pointer still written (thread_rooms, not subs).
+				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-1", "msg-2", []string{"alice", "parent-user"}, now).Return(nil)
+				store.EXPECT().SaveThreadMessage(gomock.Any(), &threadMsg, &expectedSender, "site-a", "tr-1").
+					Return((*int)(nil), nil)
+			},
+		},
+		{
+			name:      "migrated thread reply mentioning @bob — skips mention-mark, keeps reply-accounts",
+			data:      threadMentionData,
+			migration: true,
+			setupMocks: func(store *MockStore, us *MockUserStore, ts *MockThreadStore) {
+				us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"bob"}).
+					Return([]model.User{*bobUser}, nil)
+				us.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
+				ts.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(nil)
+				store.EXPECT().GetMessageSender(gomock.Any(), "msg-1").
+					Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
+				// MarkThreadSubscriptionMention + InsertThreadSubscription must NOT be called.
+				store.EXPECT().SaveThreadMessage(gomock.Any(), gomock.Any(), gomock.Any(), "site-a", gomock.Any()).
+					Return((*int)(nil), nil)
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -435,7 +485,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			h := NewHandler(mockStore, mockUserStore, mockThreadStore, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
 				return nil
 			})
-			err := h.processMessage(context.Background(), tt.data)
+			err := h.processMessage(context.Background(), tt.data, tt.migration)
 			if tt.wantErr {
 				require.Error(t, err)
 			} else {
@@ -494,7 +544,7 @@ func TestHandler_ProcessMessage_ThreadReply_PublishesBadgeEvent(t *testing.T) {
 			return nil
 		},
 	)
-	require.NoError(t, h.processMessage(context.Background(), data))
+	require.NoError(t, h.processMessage(context.Background(), data, false))
 
 	assert.Equal(t, subject.ServerBroadcastThreadTCount("site-a"), capturedSubj,
 		"badge event must be published via core NATS server-broadcast, not MESSAGES_CANONICAL")
@@ -507,6 +557,56 @@ func TestHandler_ProcessMessage_ThreadReply_PublishesBadgeEvent(t *testing.T) {
 	// NewThreadLastMsgAt must be set to the reply's CreatedAt.
 	require.NotNil(t, badgeEvt.NewThreadLastMsgAt, "NewThreadLastMsgAt must be set on the badge event")
 	assert.True(t, badgeEvt.NewThreadLastMsgAt.Equal(now), "NewThreadLastMsgAt must equal reply CreatedAt")
+}
+
+// TestHandler_ProcessMessage_MigratedThreadReply_SuppressesBadgeAndOutbox verifies a migrated thread
+// reply persists + bumps the room but publishes nothing — no tcount badge, no cross-site sub inbox.
+func TestHandler_ProcessMessage_MigratedThreadReply_SuppressesBadgeAndOutbox(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	user := &model.User{ID: "u-1", Account: "alice", SiteID: "site-a", EngName: "Alice Wang", ChineseName: "愛麗絲"}
+	threadMsg := model.Message{
+		ID:                    "msg-reply",
+		RoomID:                "r1",
+		UserID:                "u-1",
+		UserAccount:           "alice",
+		Content:               "reply",
+		CreatedAt:             now,
+		ThreadParentMessageID: "msg-parent",
+	}
+	threadEvt := model.MessageEvent{Message: threadMsg, SiteID: "site-a", Timestamp: now.UnixMilli()}
+	data, _ := json.Marshal(threadEvt)
+	expectedSender := cassParticipant{ID: "u-1", EngName: "Alice Wang", CompanyName: "愛麗絲", Account: "alice"}
+	expectedTcount := 3
+
+	ctrl := gomock.NewController(t)
+	mockStore := NewMockStore(ctrl)
+	mockUserStore := NewMockUserStore(ctrl)
+	mockThreadStore := NewMockThreadStore(ctrl)
+	mockThreadStore.EXPECT().AddReplyAccounts(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+	mockUserStore.EXPECT().FindUserByID(gomock.Any(), "u-1").Return(user, nil)
+	mockThreadStore.EXPECT().CreateThreadRoom(gomock.Any(), gomock.Any()).Return(errThreadRoomExists)
+	mockThreadStore.EXPECT().GetThreadRoomByParentMessageID(gomock.Any(), "msg-parent").
+		Return(&model.ThreadRoom{ID: "tr-99"}, nil)
+	mockStore.EXPECT().GetMessageSender(gomock.Any(), "msg-parent").
+		Return(&cassParticipant{ID: "u-parent", Account: "parent-user"}, nil)
+	// No UpsertThreadSubscription, no owner-site lookup. lastMsg pointer kept.
+	mockThreadStore.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-99", "msg-reply", gomock.Any(), now).Return(nil)
+	// SaveThreadMessage returns a non-nil tcount — in the live path this would trigger the badge.
+	mockStore.EXPECT().SaveThreadMessage(gomock.Any(), &threadMsg, &expectedSender, "site-a", "tr-99").
+		Return(&expectedTcount, nil)
+
+	var publishCalled bool
+	h := NewHandler(mockStore, mockUserStore, mockThreadStore, "site-a",
+		func(_ context.Context, _ string, _ []byte, _ string) error {
+			publishCalled = true
+			return nil
+		},
+	)
+	require.NoError(t, h.processMessage(context.Background(), data, true))
+
+	assert.False(t, publishCalled,
+		"migrated thread reply must not publish the tcount badge or any cross-site subscription outbox")
 }
 
 func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
@@ -1097,7 +1197,7 @@ func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {
 				return nil
 			})
 			replier := &model.User{ID: tt.msg.UserID, Account: tt.msg.UserAccount, SiteID: "site-a"}
-			_, err := h.handleThreadRoomAndSubscriptions(context.Background(), tt.msg, tt.siteID, replier)
+			_, err := h.handleThreadRoomAndSubscriptions(context.Background(), tt.msg, tt.siteID, replier, false)
 			if tt.wantErr {
 				require.Error(t, err)
 			} else {
@@ -1302,7 +1402,7 @@ func TestHandler_FirstReply_InboxPublishes(t *testing.T) {
 				ThreadParentMessageID: "msg-parent",
 			}
 
-			err := h.handleFirstThreadReply(context.Background(), msg, "site-a", "tr-1", replier, now)
+			err := h.handleFirstThreadReply(context.Background(), msg, "site-a", "tr-1", replier, now, false)
 			require.NoError(t, err)
 
 			gotByDest := map[string]int{}
@@ -1342,7 +1442,7 @@ func TestHandler_FirstReply_InboxPublishError_NAKs(t *testing.T) {
 		CreatedAt: now, ThreadParentMessageID: "msg-parent",
 	}
 	err := h.handleFirstThreadReply(context.Background(), msg, "site-a",
-		"tr-1", &model.User{ID: "u-replier", SiteID: "site-b"}, now)
+		"tr-1", &model.User{ID: "u-replier", SiteID: "site-b"}, now, false)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, boom)
 }
@@ -1374,7 +1474,7 @@ func TestHandler_FirstReply_ReplierInboxPublishError_NAKs(t *testing.T) {
 		CreatedAt: now, ThreadParentMessageID: "msg-parent",
 	}
 	err := h.handleFirstThreadReply(context.Background(), msg, "site-a",
-		"tr-1", &model.User{ID: "u-replier", Account: "replier", SiteID: "site-b"}, now)
+		"tr-1", &model.User{ID: "u-replier", Account: "replier", SiteID: "site-b"}, now, false)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, boom)
 }
@@ -1460,7 +1560,7 @@ func TestHandler_SubsequentReply_InboxPublishes(t *testing.T) {
 				ThreadParentMessageID: "msg-parent",
 			}
 
-			roomID, err := h.handleSubsequentThreadReply(context.Background(), msg, "site-a", replier, now)
+			roomID, err := h.handleSubsequentThreadReply(context.Background(), msg, "site-a", replier, now, false)
 			require.NoError(t, err)
 			assert.Equal(t, "tr-existing", roomID)
 
@@ -1499,7 +1599,7 @@ func TestHandler_SubsequentReply_InboxPublishError_NAKs(t *testing.T) {
 		CreatedAt: now, ThreadParentMessageID: "msg-parent",
 	}
 	_, err := h.handleSubsequentThreadReply(context.Background(), msg, "site-a",
-		&model.User{ID: "u-replier", SiteID: "site-b"}, now)
+		&model.User{ID: "u-replier", SiteID: "site-b"}, now, false)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, boom)
 }
@@ -1594,7 +1694,7 @@ func TestHandler_MarkThreadMentions_InboxPublishes(t *testing.T) {
 				ThreadParentMessageID: "msg-parent",
 				Mentions:              tt.mentionees,
 			}
-			err := h.markThreadMentions(context.Background(), msg, "tr-1", "site-a")
+			err := h.markThreadMentions(context.Background(), msg, "tr-1", "site-a", false)
 			require.NoError(t, err)
 
 			gotByDest := map[string]int{}
@@ -1622,7 +1722,7 @@ func TestHandler_MarkThreadMentions_InboxPublishError_NAKs(t *testing.T) {
 		CreatedAt: now, ThreadParentMessageID: "msg-parent",
 		Mentions: []model.Participant{{UserID: "u-bob", Account: "bob", SiteID: "site-b"}},
 	}
-	err := h.markThreadMentions(context.Background(), msg, "tr-1", "site-a")
+	err := h.markThreadMentions(context.Background(), msg, "tr-1", "site-a", false)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, boom)
 }
@@ -1646,7 +1746,7 @@ func TestHandler_MarkThreadMentions_HasMentionInPayload(t *testing.T) {
 		CreatedAt: now, ThreadParentMessageID: "msg-parent",
 		Mentions: []model.Participant{{UserID: "u-bob", Account: "bob", SiteID: "site-b"}},
 	}
-	require.NoError(t, h.markThreadMentions(context.Background(), msg, "tr-1", "site-a"))
+	require.NoError(t, h.markThreadMentions(context.Background(), msg, "tr-1", "site-a", false))
 
 	var outer model.InboxEvent
 	require.NoError(t, json.Unmarshal(captured, &outer))
@@ -1802,7 +1902,7 @@ func TestHandler_ProcessMessage_Quote(t *testing.T) {
 		h := NewHandler(store, userStore, threadStore, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error {
 			return nil
 		})
-		err := h.processMessage(context.Background(), quotedData)
+		err := h.processMessage(context.Background(), quotedData, false)
 		require.NoError(t, err)
 	})
 }
@@ -1878,7 +1978,7 @@ func TestHandler_ProcessMessage_ThreadReplyPublish(t *testing.T) {
 			return nil
 		})
 
-		require.NoError(t, h.processMessage(context.Background(), threadData))
+		require.NoError(t, h.processMessage(context.Background(), threadData, false))
 
 		require.Equal(t, 1, publishCount, "exactly one publish call for thread reply event")
 		assert.Equal(t, subject.ServerBroadcastThreadTCount("site-a"), capturedSubj)
@@ -1914,7 +2014,7 @@ func TestHandler_ProcessMessage_ThreadReplyPublish(t *testing.T) {
 		// Publish failure propagates so the caller can log it; badge events are
 		// best-effort via core NATS so a transient error is expected to be swallowed
 		// by the caller rather than retried via JetStream.
-		require.Error(t, h.processMessage(context.Background(), threadData))
+		require.Error(t, h.processMessage(context.Background(), threadData, false))
 	})
 
 	t.Run("no publish when SaveThreadMessage returns nil tcount (CAS skipped)", func(t *testing.T) {
@@ -1933,7 +2033,7 @@ func TestHandler_ProcessMessage_ThreadReplyPublish(t *testing.T) {
 			return nil
 		})
 
-		require.NoError(t, h.processMessage(context.Background(), threadData))
+		require.NoError(t, h.processMessage(context.Background(), threadData, false))
 		assert.Equal(t, 0, publishCount, "must not publish when CAS was skipped")
 	})
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/caarlos0/env/v11"
@@ -23,6 +24,10 @@ type config struct {
 
 	WatchCollections []string `env:"WATCH_COLLECTIONS,required"`
 
+	// MessageCollection is the one watched collection the federation-origin $match is scoped to.
+	// Other collections (rooms/users) are forwarded unfiltered so we don't silently drop foreign ones.
+	MessageCollection string `env:"MESSAGE_COLLECTION" envDefault:"rocketchat_message"`
+
 	ReadPreference string `env:"READ_PREFERENCE" envDefault:"secondary"`
 
 	// CheckpointEvery: save the resume token once every N acked events (and on shutdown); larger = more replay on crash (deduped).
@@ -31,7 +36,7 @@ type config struct {
 	// CheckpointMaxAgeSeconds bounds replay by wall-clock: flush the latest frontier at least this often even below CheckpointEvery.
 	CheckpointMaxAgeSeconds int `env:"CHECKPOINT_MAX_AGE" envDefault:"30"`
 
-	// Start-point resolution (see resolveStartPoint / spec §4.2).
+	// Start-point resolution (see resolveStartPoint).
 	StartMode        string `env:"START_MODE"         envDefault:"now"` // now | time
 	StartAtTime      string `env:"START_AT_TIME"      envDefault:""`    // RFC3339 or unix-ms
 	StartResumeToken string `env:"START_RESUME_TOKEN" envDefault:""`    // _data hex, one-off seed override
@@ -77,6 +82,16 @@ func parseConfig() (config, error) {
 	}
 	if dup := firstDuplicate(cfg.WatchCollections); dup != "" {
 		return config{}, fmt.Errorf("WATCH_COLLECTIONS has duplicate entry %q (each collection maps to one watcher and one checkpoint)", dup)
+	}
+	// Fail-open guard: if MESSAGE_COLLECTION is empty or isn't actually watched, the
+	// federation-origin $match never runs and ALL foreign messages migrate silently
+	// (double-deliver). Fail fast instead.
+	cfg.MessageCollection = strings.TrimSpace(cfg.MessageCollection)
+	if cfg.MessageCollection == "" {
+		return config{}, fmt.Errorf("MESSAGE_COLLECTION must be non-empty (the federation-origin $match would never run)")
+	}
+	if !slices.Contains(cfg.WatchCollections, cfg.MessageCollection) {
+		return config{}, fmt.Errorf("MESSAGE_COLLECTION %q is not present in WATCH_COLLECTIONS — the federation-origin $match would never run", cfg.MessageCollection)
 	}
 	return cfg, nil
 }
