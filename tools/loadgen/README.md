@@ -285,6 +285,75 @@ most reads.
   `no-thread-parents` counter is informational (thread requests that
   landed on a room with no seeded parents and fell back to history).
 
+## Thread-reply workload (thread-send benchmark)
+
+Finds the maximum sustainable RPS for sending **thread replies**, directly
+comparable to the `messages` workload on the same box. A thread reply costs
+more than a plain message send because `message-gatekeeper` issues a
+synchronous `GetMessageByID` RPC to `history-service` to resolve the parent
+(extra E1 latency), and `message-worker` writes `thread_messages_by_thread`
+plus thread-metadata fan-out (extra E2 latency).
+
+**Frontdoor only.** The unique thread cost is on the gatekeeper path, so the
+`thread` workload always uses frontdoor injection and ignores `--inject`.
+
+**Parents must be pre-seeded.** The gatekeeper fetches the parent message, so
+each reply must reference a real message. `seed --workload=thread` writes
+`--parents-per-room` (default 8) parent messages per room into Cassandra
+(`messages_by_room` + `messages_by_id`). Requires `CASSANDRA_HOSTS` and the
+same `MESSAGE_BUCKET_HOURS` as the running services.
+
+### Quick start
+
+```bash
+# 1. Seed rooms/subs/keys (Mongo) + parents (Cassandra). Use the same --seed
+#    and --parents-per-room you will run with (defaults: seed 42, 8 parents).
+loadgen seed --workload=thread --preset=medium --seed=42
+
+# 2. Ramp the thread-reply send path.
+loadgen max-rps --workload=thread --preset=medium --seed=42
+
+# 3. (optional) Compare against plain sends on the same box.
+loadgen max-rps --workload=messages --preset=medium --inject=frontdoor
+
+# 4. Clean up (TRUNCATEs message tables + clears Mongo fixtures + room keys).
+loadgen teardown --workload=thread --preset=medium --seed=42
+```
+
+Via the deploy Makefile:
+
+```bash
+make -C tools/loadgen/deploy run-max-rps WORKLOAD=thread PRESET=medium
+```
+
+### Presets
+
+Reuses the messages presets (`small`/`medium`/`large`/`realistic`).
+
+### Subcommands
+
+- `loadgen seed --workload=thread --preset=<name> [--seed=42] [--parents-per-room=N]` —
+  populate Mongo (users/rooms/subscriptions/room keys) and Cassandra
+  (parent messages for each room). N defaults to 8 (the `0 → 8` fallback in `BuildThreadFixtures`).
+- `loadgen max-rps --workload=thread --preset=<name> [--seed=42] [--parents-per-room=N] [flags]` —
+  ramp thread-reply sends. `--parents-per-room` (default 8) must equal the value
+  used at seed time. Shared ramp flags (`--steps`, `--warmup`, `--hold`,
+  `--cooldown`, `--slo-*`, `--csv`) behave identically to the `messages`
+  workload.
+- `loadgen teardown --workload=thread --preset=<name> --seed=42` — drop the
+  seeded Mongo fixtures and TRUNCATE Cassandra message tables. `--seed` is
+  required because teardown rebuilds the room list to remove per-room keys.
+
+### Seed-matching caveat
+
+`--seed` and `--parents-per-room` **must match** between `seed` and `max-rps`.
+The ramp rebuilds parent IDs from the seed to reference them; a mismatch
+makes every reply target a non-existent parent and the gatekeeper rejects
+the run. Both default to seed `42` / 8 parents — `max-rps --workload=thread`
+now accepts `--parents-per-room` (default 8) so a non-default seed-time value
+can be passed through. Leave both at the defaults for a straightforward
+comparison against the `messages` workload.
+
 ## max-rps — auto-find Max RPS under SLO
 
 Automatically finds the maximum RPS each workload can sustain while all

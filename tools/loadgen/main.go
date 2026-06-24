@@ -130,7 +130,7 @@ func dispatch(ctx context.Context, cfg *config) int {
 
 func runSeed(ctx context.Context, cfg *config, args []string) int {
 	fs := flag.NewFlagSet("seed", flag.ExitOnError)
-	workload := fs.String("workload", "messages", "messages|members|history|read-receipt|room-read|botroom")
+	workload := fs.String("workload", "messages", "messages|thread|members|history|read-receipt|room-read|botroom")
 	preset := fs.String("preset", "", "preset name")
 	seed := fs.Int64("seed", 42, "RNG seed")
 	readRatio := fs.Float64("read-ratio", 0.7, "read-receipt only: fraction of each room's subscribers to mark as readers")
@@ -140,6 +140,7 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 	// the generated room/subscription IDs differ and the gatekeeper rejects
 	// every send. Zero (default) means use the preset's built-in count.
 	users := fs.Int("users", 0, "override preset.Users for the messages workload (0 = use preset default; must match `loadgen daily --users` if you use both)")
+	parentsPerRoom := fs.Int("parents-per-room", 0, "thread workload: parent messages seeded per room (0 = default 8; must match the runtime default used by `loadgen max-rps`)")
 	_ = fs.Parse(args)
 	if *preset == "" {
 		fmt.Fprintln(os.Stderr, "--preset required")
@@ -148,6 +149,8 @@ func runSeed(ctx context.Context, cfg *config, args []string) int {
 	switch *workload {
 	case "messages":
 		return runSeedMessages(ctx, cfg, *preset, *seed, *users)
+	case "thread":
+		return runSeedThread(ctx, cfg, *preset, *seed, *users, *parentsPerRoom)
 	case "members":
 		return runSeedMembers(ctx, cfg, *preset, *seed)
 	case "history":
@@ -283,7 +286,7 @@ func runTeardownBotRoom(ctx context.Context, cfg *config, preset string, seed in
 
 func runTeardown(ctx context.Context, cfg *config, args []string) int {
 	fs := flag.NewFlagSet("teardown", flag.ExitOnError)
-	workload := fs.String("workload", "messages", "messages|members|history|room-read|botroom")
+	workload := fs.String("workload", "messages", "messages|thread|members|history|room-read|botroom")
 	preset := fs.String("preset", "", "preset name (required to identify which room keys to delete)")
 	seed := fs.Int64("seed", 42, "RNG seed (must match the seed used at seed time)")
 	_ = fs.Parse(args)
@@ -294,6 +297,8 @@ func runTeardown(ctx context.Context, cfg *config, args []string) int {
 	switch *workload {
 	case "messages":
 		return runTeardownMessages(ctx, cfg, *preset, *seed)
+	case "thread":
+		return runTeardownThread(ctx, cfg, *preset, *seed)
 	case "members":
 		return runTeardownMembers(ctx, cfg, *preset, *seed)
 	case "history":

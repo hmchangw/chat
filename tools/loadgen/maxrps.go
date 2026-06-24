@@ -26,7 +26,7 @@ func buildThresholds(p95, p99 time.Duration, errRate float64, pendingGrowth uint
 // the report. Returns the process exit code.
 func runMaxRPS(ctx context.Context, cfg *config, args []string) int {
 	fs := flag.NewFlagSet("max-rps", flag.ExitOnError)
-	workload := fs.String("workload", "messages", "messages|history|read-receipt|room-read")
+	workload := fs.String("workload", "messages", "messages|thread|history|read-receipt|room-read")
 	preset := fs.String("preset", "", "preset name")
 	seed := fs.Int64("seed", 42, "RNG seed")
 	stepsFlag := fs.String("steps", "", "ascending RPS list, e.g. 500,1k,2k,5k,10k (default depends on workload)")
@@ -40,6 +40,8 @@ func runMaxRPS(ctx context.Context, cfg *config, args []string) int {
 	rateTol := fs.Float64("rate-tolerance", 0.05, "achieved-vs-target shortfall band for INCONCLUSIVE")
 	stopOnTrip := fs.Bool("stop-on-trip", true, "stop the ramp at the first TRIP")
 	inject := fs.String("inject", "frontdoor", "messages only: frontdoor|canonical")
+	// thread-only tunable:
+	parentsPerRoom := fs.Int("parents-per-room", 0, "thread workload: parents per room — MUST match seed-time --parents-per-room (0 = default 8)")
 	// history-only tunables (ignored for messages):
 	mixFlag := fs.String("mix", "history:80,thread:20", "history only: endpoint mix")
 	beforeModeFlag := fs.String("before-mode", "open:70,scrollback:30", "history only: before-cursor mix")
@@ -87,6 +89,23 @@ func runMaxRPS(ctx context.Context, cfg *config, args []string) int {
 			return 1
 		}
 		w, cleanup, presetID = mw, clean, p.Name
+	case "thread":
+		p, ok := BuiltinPreset(*preset)
+		if !ok {
+			fmt.Fprintf(os.Stderr, "unknown preset: %s\n", *preset)
+			return 2
+		}
+		if cfg.CassandraHosts == "" {
+			fmt.Fprintln(os.Stderr, "thread workload requires CASSANDRA_HOSTS (parents must be seeded in Cassandra)")
+			return 2
+		}
+		tf := BuildThreadFixtures(&p, *seed, *parentsPerRoom, cfg.SiteID)
+		tw, clean, err := newThreadWorkload(ctx, cfg, &p, &tf, *seed)
+		if err != nil {
+			slog.Error("init thread workload", "error", err)
+			return 1
+		}
+		w, cleanup, presetID = tw, clean, p.Name
 	case "history":
 		p, ok := BuiltinHistoryPreset(*preset)
 		if !ok {
