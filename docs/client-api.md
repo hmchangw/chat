@@ -3815,21 +3815,25 @@ Returns the user's sidebar subscriptions, optionally filtered by type, age, and 
 | `type`              | string  | yes      | One of `"current"` (active rooms), `"rooms"` (DM and channel subscriptions), `"apps"` (botDM rooms). |
 | `favorite`          | boolean | no       | When `true`, filters to favorited subscriptions only **and** moves the self-DM to the front of the list. |
 | `updatedWithinDays` | number  | no       | When set, filters **`rooms`-type** results to rooms **whose last message (`room.lastMsgAt`) is within the last N days** — room activity, not the subscription's update time. Cross-site rooms (no local `lastMsgAt`) fall outside the window. **Ignored for `current`** (always returns the full active set) and for `apps`. Omit for no age filter — the server applies no default; the client supplies any default it wants. Must be non-negative; a negative value is rejected with `bad_request`. |
+| `offset`            | integer | no       | Zero-based index of the first record to return. Negative ⇒ `0`. Default `0`. |
+| `limit`             | integer | no       | Page size. Omitted or ≤ 0 ⇒ the server default `SUBSCRIPTION_DEFAULT_LIMIT` (default `40`); values above `MAX_SUBSCRIPTION_LIMIT` (default `1000`) are capped to it. |
 
 ```json
-{ "type": "current", "favorite": true }
+{ "type": "current", "favorite": true, "offset": 0, "limit": 40 }
 ```
 
 ##### Success response
 
 | Field           | Type              | Notes |
 |-----------------|-------------------|-------|
-| `subscriptions` | array<[Subscription](#subscription)> | Room-info-enriched subscription records. |
-| `total`         | number            | The number of records **actually returned** in `subscriptions` (i.e. `subscriptions.length`) — **not** the user's total subscription count. Use `subscription.count` for the true active total. |
+| `subscriptions` | array<[Subscription](#subscription)> | One page of room-info-enriched subscription records. |
+| `total`         | number            | The **full** count of subscriptions matching `type` and the filters, across all pages — use it with `limit` to compute the number of pages. **Not** the number of records in this page (`subscriptions.length`). |
+| `offset`        | number            | The zero-based offset actually applied (after defaulting/clamping). |
+| `limit`         | number            | The page size actually applied (after defaulting/capping). |
 
-`subscriptions` is an array of [Subscription](#subscription) records (full schema in §3.0), room-info-enriched per the behavior below. Ordered by the room's `lastMsgAt` descending (rooms with no messages fall back to the room's `createdAt`); favorites are **not** pinned by this ordering.
+`subscriptions` is one page of [Subscription](#subscription) records (full schema in §3.0), room-info-enriched per the behavior below. Ordered by the room's `lastMsgAt` descending (rooms with no messages fall back to the room's `createdAt`). In the `favorite` view the caller's self-DM is pinned first; otherwise favorites are **not** pinned by this ordering.
 
-The result set is capped at `MAX_SUBSCRIPTION_LIMIT` (default `1000`) server-side; a user with more matching subscriptions than the cap receives the top N by the ordering above, and `total` reflects that capped count rather than the full match count.
+Results are **paginated** by `offset`/`limit`: the server returns the requested window and `total` carries the full matching count so the client can compute the page count. `limit` defaults to `SUBSCRIPTION_DEFAULT_LIMIT` (default `40`) when omitted and is capped at `MAX_SUBSCRIPTION_LIMIT` (default `1000`); omitting `offset`/`limit` yields the first page.
 
 <a id="enrichment"></a>
 **Enrichment behavior** (shared by `subscription.list`, `subscription.getChannels`, `subscription.getDM`, `subscription.getByRoomID`):
@@ -3939,7 +3943,9 @@ The example below shows one record of each type in order (`channel`, `dm`, `botD
       }
     }
   ],
-  "total": 3
+  "total": 3,
+  "offset": 0,
+  "limit": 40
 }
 ```
 
@@ -3968,14 +3974,16 @@ Exactly one of the two fields must be set. The requester's own account is implic
 |------------------|----------|----------|-------|
 | `membersContain` | string   | one-of   | Return channels that contain this single account as a member. |
 | `accountNames`   | string[] | one-of   | Return channels where ALL of the given accounts (plus the requester) are members. Accounts ending in `.bot` are ignored in the match even if listed. |
+| `offset`         | integer  | no       | Zero-based index of the first record. Negative ⇒ `0`. Default `0`. |
+| `limit`          | integer  | no       | Page size. Omitted or ≤ 0 ⇒ `SUBSCRIPTION_DEFAULT_LIMIT` (default `40`); capped at `MAX_SUBSCRIPTION_LIMIT` (default `1000`). |
 
 ```json
-{ "membersContain": "bob" }
+{ "membersContain": "bob", "offset": 0, "limit": 40 }
 ```
 
 ##### Success response
 
-Same shape as `subscription.list` — `{ "subscriptions": [...], "total": N }` with [enrichment](#enrichment) applied.
+Same paginated shape as `subscription.list` — `{ "subscriptions": [...], "total": N, "offset": N, "limit": N }`, where `total` is the **full** match count (not the page size) and `offset`/`limit` echo the applied window — with [enrichment](#enrichment) applied.
 
 ```json
 {
@@ -4008,7 +4016,9 @@ Same shape as `subscription.list` — `{ "subscriptions": [...], "total": N }` w
       }
     }
   ],
-  "total": 1
+  "total": 1,
+  "offset": 0,
+  "limit": 40
 }
 ```
 

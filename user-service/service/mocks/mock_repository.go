@@ -44,18 +44,18 @@ func (m *MockSubscriptionRepository) EXPECT() *MockSubscriptionRepositoryMockRec
 }
 
 // AggregateSubscriptions mocks base method.
-func (m *MockSubscriptionRepository) AggregateSubscriptions(ctx context.Context, account, listType string, withinDays *int, limit int) ([]model.Subscription, error) {
+func (m *MockSubscriptionRepository) AggregateSubscriptions(ctx context.Context, account, listType string, favorite bool, withinDays *int, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.Subscription], error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "AggregateSubscriptions", ctx, account, listType, withinDays, limit)
-	ret0, _ := ret[0].([]model.Subscription)
+	ret := m.ctrl.Call(m, "AggregateSubscriptions", ctx, account, listType, favorite, withinDays, page)
+	ret0, _ := ret[0].(mongoutil.OffsetPage[model.Subscription])
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // AggregateSubscriptions indicates an expected call of AggregateSubscriptions.
-func (mr *MockSubscriptionRepositoryMockRecorder) AggregateSubscriptions(ctx, account, listType, withinDays, limit any) *gomock.Call {
+func (mr *MockSubscriptionRepositoryMockRecorder) AggregateSubscriptions(ctx, account, listType, favorite, withinDays, page any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AggregateSubscriptions", reflect.TypeOf((*MockSubscriptionRepository)(nil).AggregateSubscriptions), ctx, account, listType, withinDays, limit)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AggregateSubscriptions", reflect.TypeOf((*MockSubscriptionRepository)(nil).AggregateSubscriptions), ctx, account, listType, favorite, withinDays, page)
 }
 
 // CountActiveSubscriptions mocks base method.
@@ -74,18 +74,18 @@ func (mr *MockSubscriptionRepositoryMockRecorder) CountActiveSubscriptions(ctx, 
 }
 
 // FindChannelsByMembers mocks base method.
-func (m *MockSubscriptionRepository) FindChannelsByMembers(ctx context.Context, account string, members []string, limit int) ([]model.Subscription, error) {
+func (m *MockSubscriptionRepository) FindChannelsByMembers(ctx context.Context, account string, members []string, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.Subscription], error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "FindChannelsByMembers", ctx, account, members, limit)
-	ret0, _ := ret[0].([]model.Subscription)
+	ret := m.ctrl.Call(m, "FindChannelsByMembers", ctx, account, members, page)
+	ret0, _ := ret[0].(mongoutil.OffsetPage[model.Subscription])
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // FindChannelsByMembers indicates an expected call of FindChannelsByMembers.
-func (mr *MockSubscriptionRepositoryMockRecorder) FindChannelsByMembers(ctx, account, members, limit any) *gomock.Call {
+func (mr *MockSubscriptionRepositoryMockRecorder) FindChannelsByMembers(ctx, account, members, page any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindChannelsByMembers", reflect.TypeOf((*MockSubscriptionRepository)(nil).FindChannelsByMembers), ctx, account, members, limit)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "FindChannelsByMembers", reflect.TypeOf((*MockSubscriptionRepository)(nil).FindChannelsByMembers), ctx, account, members, page)
 }
 
 // GetActiveSubscriptions mocks base method.

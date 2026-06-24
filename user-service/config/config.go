@@ -24,13 +24,14 @@ type NATSConfig struct {
 // Config is the top-level configuration for user-service.
 type Config struct {
 	// SiteID is required: baked into subscription subjects and inbox routing; missing it would silently federate under a wrong ID.
-	SiteID               string        `env:"SITE_ID,notEmpty"`
-	AllSiteIDs           []string      `env:"ALL_SITE_IDS"           envDefault:"" envSeparator:","`
-	MaxSubscriptionLimit int           `env:"MAX_SUBSCRIPTION_LIMIT" envDefault:"1000"`
-	MaxAccountNames      int           `env:"MAX_ACCOUNT_NAMES"      envDefault:"100"`
-	HandlerTimeout       time.Duration `env:"HANDLER_TIMEOUT"        envDefault:"15s"`
-	Mongo                MongoConfig   `envPrefix:"MONGO_"`
-	NATS                 NATSConfig    `envPrefix:"NATS_"`
+	SiteID                   string        `env:"SITE_ID,notEmpty"`
+	AllSiteIDs               []string      `env:"ALL_SITE_IDS"           envDefault:"" envSeparator:","`
+	MaxSubscriptionLimit     int           `env:"MAX_SUBSCRIPTION_LIMIT" envDefault:"1000"`
+	DefaultSubscriptionLimit int           `env:"SUBSCRIPTION_DEFAULT_LIMIT" envDefault:"40"`
+	MaxAccountNames          int           `env:"MAX_ACCOUNT_NAMES"      envDefault:"100"`
+	HandlerTimeout           time.Duration `env:"HANDLER_TIMEOUT"        envDefault:"15s"`
+	Mongo                    MongoConfig   `envPrefix:"MONGO_"`
+	NATS                     NATSConfig    `envPrefix:"NATS_"`
 }
 
 // Load parses environment variables into Config; rejects MAX_SUBSCRIPTION_LIMIT < 1 because $limit:0 errors at query time.
@@ -41,6 +42,12 @@ func Load() (Config, error) {
 	}
 	if cfg.MaxSubscriptionLimit < 1 {
 		return Config{}, fmt.Errorf("MAX_SUBSCRIPTION_LIMIT must be >= 1, got %d", cfg.MaxSubscriptionLimit)
+	}
+	if cfg.DefaultSubscriptionLimit < 1 {
+		return Config{}, fmt.Errorf("SUBSCRIPTION_DEFAULT_LIMIT must be >= 1, got %d", cfg.DefaultSubscriptionLimit)
+	}
+	if cfg.DefaultSubscriptionLimit > cfg.MaxSubscriptionLimit {
+		return Config{}, fmt.Errorf("SUBSCRIPTION_DEFAULT_LIMIT (%d) must be <= MAX_SUBSCRIPTION_LIMIT (%d)", cfg.DefaultSubscriptionLimit, cfg.MaxSubscriptionLimit)
 	}
 	return cfg, nil
 }

@@ -13,7 +13,7 @@ import (
 func TestSubscriptionListRequest_RoundTrip(t *testing.T) {
 	fav := true
 	days := 7
-	in := SubscriptionListRequest{Type: "rooms", Favorite: &fav, UpdatedWithinDays: &days}
+	in := SubscriptionListRequest{Type: "rooms", Favorite: &fav, UpdatedWithinDays: &days, Offset: 80, Limit: 20}
 	b, err := json.Marshal(in)
 	require.NoError(t, err)
 	var out SubscriptionListRequest
@@ -49,6 +49,34 @@ func TestSubscriptionListResponse_Marshal(t *testing.T) {
 	_, hasHR := out.Subscriptions[0]["hrInfo"]
 	require.False(t, hasHR, "channel row carries no hrInfo")
 	require.Equal(t, 1, out.Total)
+}
+
+func TestPagedSubscriptionListResponse_Marshal(t *testing.T) {
+	joined := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	in := PagedSubscriptionListResponse{
+		Subscriptions: []model.SubscriptionItem{
+			&model.ChannelSubscription{Subscription: &model.Subscription{
+				ID: "s1", RoomID: "r1", SiteID: "site-a", Name: "General", JoinedAt: joined, RoomType: model.RoomTypeChannel,
+			}},
+		},
+		Total:  2500,
+		Offset: 40,
+		Limit:  40,
+	}
+	b, err := json.Marshal(in)
+	require.NoError(t, err)
+	var out struct {
+		Subscriptions []map[string]any `json:"subscriptions"`
+		Total         int              `json:"total"`
+		Offset        int              `json:"offset"`
+		Limit         int              `json:"limit"`
+	}
+	require.NoError(t, json.Unmarshal(b, &out))
+	require.Len(t, out.Subscriptions, 1)
+	require.Equal(t, "s1", out.Subscriptions[0]["id"])
+	require.Equal(t, 2500, out.Total, "total is the full matching count, not the page size")
+	require.Equal(t, 40, out.Offset)
+	require.Equal(t, 40, out.Limit)
 }
 
 // TestSubscriptionItem_HeterogeneousRows pins the wire shape per room type:

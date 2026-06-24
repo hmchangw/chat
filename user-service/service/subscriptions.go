@@ -11,6 +11,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
 	"github.com/hmchangw/chat/pkg/timeutil"
@@ -34,7 +35,7 @@ const (
 // "Del-"+name); such rooms are surfaced on the subscription with no room object.
 const deletedRoomNamePrefix = "Del-"
 
-func (s *UserService) ListSubscriptions(c *natsrouter.Context, req models.SubscriptionListRequest) (*models.SubscriptionListResponse, error) {
+func (s *UserService) ListSubscriptions(c *natsrouter.Context, req models.SubscriptionListRequest) (*models.PagedSubscriptionListResponse, error) {
 	if !validListTypes[req.Type] {
 		return nil, errcode.BadRequest("unknown subscription type")
 	}
@@ -44,17 +45,39 @@ func (s *UserService) ListSubscriptions(c *natsrouter.Context, req models.Subscr
 	}
 	account := c.Param("account")
 	c.WithLogValues("account", account)
-	subs, err := s.subs.AggregateSubscriptions(c, account, req.Type, req.UpdatedWithinDays, s.maxSubs)
+	page := s.normalizePage(req.Offset, req.Limit)
+	favorite := req.Favorite != nil && *req.Favorite
+	// Favorite filtering and the self-DM pin are applied in the query so Total and
+	// the page slice stay consistent (filtering after slicing would undercount).
+	res, err := s.subs.AggregateSubscriptions(c, account, req.Type, favorite, req.UpdatedWithinDays, page)
 	if err != nil {
 		return nil, fmt.Errorf("list subscriptions: %w", err)
 	}
-	if req.Favorite != nil && *req.Favorite {
-		subs = filterFavorites(subs)
-		subs = moveSelfDMFront(subs, account)
+	s.enrichWithRoomInfo(c, res.Data)
+	items := s.buildListItems(c, res.Data)
+	return &models.PagedSubscriptionListResponse{
+		Subscriptions: items,
+		Total:         int(res.Total),
+		Offset:        int(page.Offset),
+		Limit:         int(page.Limit),
+	}, nil
+}
+
+// normalizePage clamps the client's offset/limit into a valid page request:
+// negative offset ⇒ 0; missing/non-positive limit ⇒ the configured default page
+// size. The resulting limit is then capped at the hard max (MaxSubscriptionLimit),
+// so even a default page size misconfigured above the cap cannot exceed it.
+func (s *UserService) normalizePage(offset, limit int) mongoutil.OffsetPageRequest {
+	if offset < 0 {
+		offset = 0
 	}
-	s.enrichWithRoomInfo(c, subs)
-	items := s.buildListItems(c, subs)
-	return &models.SubscriptionListResponse{Subscriptions: items, Total: len(items)}, nil
+	if limit <= 0 {
+		limit = s.defaultLimit
+	}
+	if limit > s.maxSubs {
+		limit = s.maxSubs
+	}
+	return mongoutil.OffsetPageRequest{Offset: int64(offset), Limit: int64(limit)}
 }
 
 // buildListItems wraps each enriched subscription into a heterogeneous list row:
@@ -329,30 +352,7 @@ func unread(lastSeen *time.Time, ms *int64) bool {
 	return lastSeen.UTC().UnixMilli() < *ms
 }
 
-func filterFavorites(subs []model.Subscription) []model.Subscription {
-	// [:0:0] — cap 0 forces a fresh backing array so append never aliases/mutates the input
-	out := subs[:0:0]
-	for i := range subs {
-		if subs[i].Favorite {
-			out = append(out, subs[i])
-		}
-	}
-	return out
-}
-
-func moveSelfDMFront(subs []model.Subscription, account string) []model.Subscription {
-	for i := range subs {
-		if subs[i].RoomType == model.RoomTypeDM && subs[i].Name == account {
-			out := make([]model.Subscription, 0, len(subs))
-			out = append(out, subs[i])
-			out = append(out, subs[:i]...)
-			return append(out, subs[i+1:]...)
-		}
-	}
-	return subs
-}
-
-func (s *UserService) GetChannels(c *natsrouter.Context, req models.GetChannelsRequest) (*models.SubscriptionListResponse, error) {
+func (s *UserService) GetChannels(c *natsrouter.Context, req models.GetChannelsRequest) (*models.PagedSubscriptionListResponse, error) {
 	account := c.Param("account")
 	c.WithLogValues("account", account)
 	hasContain, hasNames := req.MembersContain != "", len(req.AccountNames) > 0
@@ -367,13 +367,19 @@ func (s *UserService) GetChannels(c *natsrouter.Context, req models.GetChannelsR
 	if hasContain {
 		members = []string{req.MembersContain}
 	}
-	subs, err := s.subs.FindChannelsByMembers(c, account, members, s.maxSubs)
+	page := s.normalizePage(req.Offset, req.Limit)
+	res, err := s.subs.FindChannelsByMembers(c, account, members, page)
 	if err != nil {
 		return nil, fmt.Errorf("get channels: %w", err)
 	}
-	s.enrichWithRoomInfo(c, subs)
-	items := s.buildListItems(c, subs)
-	return &models.SubscriptionListResponse{Subscriptions: items, Total: len(items)}, nil
+	s.enrichWithRoomInfo(c, res.Data)
+	items := s.buildListItems(c, res.Data)
+	return &models.PagedSubscriptionListResponse{
+		Subscriptions: items,
+		Total:         int(res.Total),
+		Offset:        int(page.Offset),
+		Limit:         int(page.Limit),
+	}, nil
 }
 
 func (s *UserService) GetDM(c *natsrouter.Context, req models.GetDMRequest) (*models.DMResponse, error) {

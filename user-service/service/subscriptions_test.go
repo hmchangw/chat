@@ -12,6 +12,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/model"
+	"github.com/hmchangw/chat/pkg/mongoutil"
 	"github.com/hmchangw/chat/user-service/models"
 )
 
@@ -19,8 +20,8 @@ func TestListSubscriptions_Types(t *testing.T) {
 	for _, typ := range []string{"current", "rooms", "apps"} {
 		t.Run(typ, func(t *testing.T) {
 			svc, subs, _, _, rooms, _ := newSvc(t)
-			subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", typ, gomock.Any(), 1000).
-				Return([]model.Subscription{{ID: "s1"}}, nil)
+			subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", typ, false, gomock.Any(), gomock.Any()).
+				Return(mongoutil.OffsetPage[model.Subscription]{Data: []model.Subscription{{ID: "s1"}}, Total: 1}, nil)
 			rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 			resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: typ})
 			require.NoError(t, err)
@@ -45,55 +46,6 @@ func TestListSubscriptions_NegativeWithinDays(t *testing.T) {
 	_, err := svc.ListSubscriptions(ctx("alice", "site-a"),
 		models.SubscriptionListRequest{Type: "rooms", UpdatedWithinDays: &neg})
 	requireCode(t, err, errcode.CodeBadRequest)
-}
-
-func TestFilterFavorites(t *testing.T) {
-	subs := []model.Subscription{
-		{ID: "a", Favorite: true},
-		{ID: "b", Favorite: false},
-		{ID: "c", Favorite: true},
-	}
-	got := filterFavorites(subs)
-	require.Len(t, got, 2)
-	assert.Equal(t, "a", got[0].ID)
-	assert.Equal(t, "c", got[1].ID)
-}
-
-func TestMoveSelfDMFront(t *testing.T) {
-	subs := []model.Subscription{
-		{ID: "a", RoomType: model.RoomTypeChannel, Name: "Eng"},
-		{ID: "self", RoomType: model.RoomTypeDM, Name: "alice"},
-		{ID: "b", RoomType: model.RoomTypeDM, Name: "bob"},
-	}
-	got := moveSelfDMFront(subs, "alice")
-	require.Len(t, got, 3)
-	assert.Equal(t, "self", got[0].ID)
-	assert.Equal(t, "a", got[1].ID)
-	assert.Equal(t, "b", got[2].ID)
-}
-
-func TestMoveSelfDMFront_NoSelf(t *testing.T) {
-	subs := []model.Subscription{{ID: "a", RoomType: model.RoomTypeChannel}}
-	got := moveSelfDMFront(subs, "alice")
-	require.Equal(t, "a", got[0].ID)
-}
-
-func TestMoveSelfDMFront_Nil(t *testing.T) {
-	got := moveSelfDMFront(nil, "alice")
-	assert.Empty(t, got)
-}
-
-func TestMoveSelfDMFront_AlreadyFirst(t *testing.T) {
-	subs := []model.Subscription{
-		{ID: "self", RoomType: model.RoomTypeDM, Name: "alice"},
-		{ID: "a", RoomType: model.RoomTypeChannel, Name: "Eng"},
-		{ID: "b", RoomType: model.RoomTypeDM, Name: "bob"},
-	}
-	got := moveSelfDMFront(subs, "alice")
-	require.Len(t, got, 3)
-	assert.Equal(t, "self", got[0].ID)
-	assert.Equal(t, "a", got[1].ID)
-	assert.Equal(t, "b", got[2].ID)
 }
 
 func TestApplyRoomInfo_NestedRoom(t *testing.T) {
@@ -147,7 +99,7 @@ func TestListSubscriptions_LocalBaselineRoom_NoKey(t *testing.T) {
 		ID: "s1", RoomID: "r1", SiteID: "site-a", Name: "general",
 		RoomType: model.RoomTypeChannel, RoomName: "General", UserCount: 9, LastMsgAt: &lastMsg, LastMsgID: "m1",
 	}}
-	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", gomock.Any(), 1000).Return(storeSubs, nil)
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", false, gomock.Any(), gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
 	require.NoError(t, err)
 	require.Len(t, resp.Subscriptions, 1)
@@ -178,7 +130,7 @@ func TestListSubscriptions_BotDM_AppDisplayNameAndMeta(t *testing.T) {
 		{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot", RoomName: "bot-room-canonical"},
 		{ID: "c1", RoomID: "rc1", SiteID: "site-a", RoomType: model.RoomTypeChannel, Name: "general", RoomName: "general"},
 	}
-	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", gomock.Any(), 1000).Return(storeSubs, nil)
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", false, gomock.Any(), gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
 	apps.EXPECT().GetAppsByAssistants(gomock.Any(), []string{"helper.bot"}).
 		Return(map[string]*model.App{"helper.bot": appHelper()}, nil)
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
@@ -209,7 +161,7 @@ func TestListSubscriptions_DM_CarriesHRInfo(t *testing.T) {
 		{ID: "d1", RoomID: "rd1", SiteID: "site-a", RoomType: model.RoomTypeDM, Name: "bob"},
 		{ID: "c1", RoomID: "rc1", SiteID: "site-a", RoomType: model.RoomTypeChannel, Name: "general"},
 	}
-	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", gomock.Any(), 1000).Return(storeSubs, nil)
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", false, gomock.Any(), gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
 	users.EXPECT().GetHRInfoByAccounts(gomock.Any(), []string{"bob"}).
 		Return(map[string]*model.SubscriptionHRInfo{"bob": {Account: "bob", Name: "鮑勃", EngName: "Bob Chen"}}, nil)
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
@@ -229,7 +181,7 @@ func TestListSubscriptions_DM_HRLookupDegrades(t *testing.T) {
 	storeSubs := []model.Subscription{
 		{ID: "d1", RoomID: "rd1", SiteID: "site-a", RoomType: model.RoomTypeDM, Name: "bob"},
 	}
-	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", gomock.Any(), 1000).Return(storeSubs, nil)
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", false, gomock.Any(), gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
 	users.EXPECT().GetHRInfoByAccounts(gomock.Any(), []string{"bob"}).Return(nil, errors.New("db down"))
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
 	require.NoError(t, err, "hr lookup failure must degrade, not fail the request")
@@ -248,7 +200,7 @@ func TestListSubscriptions_BotDM_DedupsBotAccount(t *testing.T) {
 		{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"},
 		{ID: "a2", RoomID: "rb2", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"},
 	}
-	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "apps", gomock.Any(), 1000).Return(storeSubs, nil)
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "apps", false, gomock.Any(), gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
 	// Exactly ["helper.bot"], not duplicated — gomock fails the call on arg mismatch.
 	apps.EXPECT().GetAppsByAssistants(gomock.Any(), []string{"helper.bot"}).
 		Return(map[string]*model.App{"helper.bot": appHelper()}, nil)
@@ -270,7 +222,7 @@ func TestListSubscriptions_BotDM_AppLookupDegrades(t *testing.T) {
 	storeSubs := []model.Subscription{
 		{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"},
 	}
-	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "apps", gomock.Any(), 1000).Return(storeSubs, nil)
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "apps", false, gomock.Any(), gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
 	apps.EXPECT().GetAppsByAssistants(gomock.Any(), []string{"helper.bot"}).
 		Return(nil, errors.New("db down"))
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "apps"})
@@ -287,7 +239,7 @@ func TestListSubscriptions_BotDM_NoAppMatch(t *testing.T) {
 	storeSubs := []model.Subscription{
 		{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "orphan.bot"},
 	}
-	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "apps", gomock.Any(), 1000).Return(storeSubs, nil)
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "apps", false, gomock.Any(), gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
 	apps.EXPECT().GetAppsByAssistants(gomock.Any(), []string{"orphan.bot"}).
 		Return(map[string]*model.App{}, nil)
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "apps"})
@@ -300,22 +252,23 @@ func TestListSubscriptions_BotDM_NoAppMatch(t *testing.T) {
 
 func TestListSubscriptions_StoreError(t *testing.T) {
 	svc, subs, _, _, _, _ := newSvc(t)
-	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", gomock.Any(), 1000).
-		Return(nil, errors.New("db down"))
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", false, gomock.Any(), gomock.Any()).
+		Return(mongoutil.OffsetPage[model.Subscription]{}, errors.New("db down"))
 	_, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
 	requireCode(t, err, errcode.CodeInternal)
 }
 
 func TestListSubscriptions_Favorite(t *testing.T) {
 	svc, subs, users, _, rooms, _ := newSvc(t)
+	// Favorite filtering + self-DM ordering now happen in the query, so the repo
+	// returns the already-filtered, self-first set; the service passes it through.
+	// The handler must forward favorite=true to the store.
 	storeSubs := []model.Subscription{
-		{ID: "ch1", RoomType: model.RoomTypeChannel, Name: "general", Favorite: false},
 		{ID: "self", RoomType: model.RoomTypeDM, Name: "alice", Favorite: true},
 		{ID: "ch2", RoomType: model.RoomTypeChannel, Name: "random", Favorite: true},
 	}
-	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", gomock.Any(), 1000).
-		Return(storeSubs, nil)
-	// The favorite self-DM survives the filter, so buildListItems resolves its hrInfo.
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", true, gomock.Any(), gomock.Any()).
+		Return(mongoutil.OffsetPage[model.Subscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
 	users.EXPECT().GetHRInfoByAccounts(gomock.Any(), []string{"alice"}).
 		Return(map[string]*model.SubscriptionHRInfo{"alice": {Account: "alice", Name: "Alice"}}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
@@ -325,8 +278,85 @@ func TestListSubscriptions_Favorite(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, resp.Subscriptions, 2)
-	assert.Equal(t, "self", resp.Subscriptions[0].Base().ID, "self-DM favorite must be first")
+	assert.Equal(t, "self", resp.Subscriptions[0].Base().ID, "favorite query returns the self-DM first")
 	assert.Equal(t, "ch2", resp.Subscriptions[1].Base().ID)
+}
+
+func TestListSubscriptions_Pagination(t *testing.T) {
+	// capturePage records the OffsetPageRequest the handler forwards and returns a
+	// page carrying the given full total.
+	capturePage := func(into *mongoutil.OffsetPageRequest, total int64) func(context.Context, string, string, bool, *int, mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.Subscription], error) {
+		return func(_ context.Context, _, _ string, _ bool, _ *int, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.Subscription], error) {
+			*into = page
+			return mongoutil.OffsetPage[model.Subscription]{Data: []model.Subscription{}, Total: total}, nil
+		}
+	}
+
+	t.Run("omitted params default to offset 0 / configured page size", func(t *testing.T) {
+		svc, subs, _, _, rooms, _ := newSvc(t)
+		var got mongoutil.OffsetPageRequest
+		subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", false, gomock.Any(), gomock.Any()).
+			DoAndReturn(capturePage(&got, 250))
+		rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+		resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), got.Offset)
+		assert.Equal(t, int64(40), got.Limit, "omitted limit ⇒ default page size 40")
+		assert.Equal(t, 250, resp.Total, "total is the full matching count, not the page size")
+		assert.Equal(t, 0, resp.Offset)
+		assert.Equal(t, 40, resp.Limit)
+	})
+
+	t.Run("negative offset clamps to 0 and limit caps at MaxSubscriptionLimit", func(t *testing.T) {
+		svc, subs, _, _, rooms, _ := newSvc(t)
+		var got mongoutil.OffsetPageRequest
+		subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "rooms", false, gomock.Any(), gomock.Any()).
+			DoAndReturn(capturePage(&got, 0))
+		rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+		_, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "rooms", Offset: -5, Limit: 9999})
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), got.Offset)
+		assert.Equal(t, int64(1000), got.Limit)
+	})
+
+	t.Run("explicit in-range offset and limit are echoed back", func(t *testing.T) {
+		svc, subs, _, _, rooms, _ := newSvc(t)
+		var got mongoutil.OffsetPageRequest
+		subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "apps", false, gomock.Any(), gomock.Any()).
+			DoAndReturn(capturePage(&got, 7))
+		rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+		resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "apps", Offset: 80, Limit: 20})
+		require.NoError(t, err)
+		assert.Equal(t, int64(80), got.Offset)
+		assert.Equal(t, int64(20), got.Limit)
+		assert.Equal(t, 80, resp.Offset)
+		assert.Equal(t, 20, resp.Limit)
+		assert.Equal(t, 7, resp.Total)
+	})
+}
+
+func TestNormalizePage(t *testing.T) {
+	cases := []struct {
+		name                  string
+		defaultLimit, maxSubs int
+		offset, limit         int
+		wantOffset            int64
+		wantLimit             int64
+	}{
+		{"omitted limit uses the default limit", 40, 1000, 0, 0, 0, 40},
+		{"omitted limit is capped when the default exceeds the max", 2000, 1000, 0, 0, 0, 1000},
+		{"limit at the exact cap is kept", 40, 1000, 0, 1000, 0, 1000},
+		{"limit over the cap is clamped", 40, 1000, 0, 9999, 0, 1000},
+		{"negative offset clamps to 0", 40, 1000, -5, 20, 0, 20},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &UserService{defaultLimit: tc.defaultLimit, maxSubs: tc.maxSubs}
+			got := s.normalizePage(tc.offset, tc.limit)
+			assert.Equal(t, tc.wantOffset, got.Offset)
+			assert.Equal(t, tc.wantLimit, got.Limit)
+		})
+	}
 }
 
 func ptrBool(b bool) *bool { return &b }
@@ -361,7 +391,7 @@ func TestGetChannels_AccountNamesAtCap(t *testing.T) {
 	for i := range names {
 		names[i] = "u"
 	}
-	subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", names, 1000).Return([]model.Subscription{{ID: "c1"}}, nil)
+	subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", names, gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{Data: []model.Subscription{{ID: "c1"}}, Total: 1}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 	resp, err := svc.GetChannels(ctx("alice", "site-a"), models.GetChannelsRequest{AccountNames: names})
 	require.NoError(t, err)
@@ -370,7 +400,7 @@ func TestGetChannels_AccountNamesAtCap(t *testing.T) {
 
 func TestGetChannels_ByMembersContain(t *testing.T) {
 	svc, subs, _, _, rooms, _ := newSvc(t)
-	subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", []string{"carol"}, 1000).Return([]model.Subscription{{ID: "c1"}}, nil)
+	subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", []string{"carol"}, gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{Data: []model.Subscription{{ID: "c1"}}, Total: 1}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 	resp, err := svc.GetChannels(ctx("alice", "site-a"), models.GetChannelsRequest{MembersContain: "carol"})
 	require.NoError(t, err)
@@ -379,7 +409,7 @@ func TestGetChannels_ByMembersContain(t *testing.T) {
 
 func TestGetChannels_ByAccountNames(t *testing.T) {
 	svc, subs, _, _, rooms, _ := newSvc(t)
-	subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", []string{"carol", "dave"}, 1000).Return([]model.Subscription{{ID: "c1"}}, nil)
+	subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", []string{"carol", "dave"}, gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{Data: []model.Subscription{{ID: "c1"}}, Total: 1}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 	resp, err := svc.GetChannels(ctx("alice", "site-a"), models.GetChannelsRequest{AccountNames: []string{"carol", "dave"}})
 	require.NoError(t, err)
@@ -388,9 +418,27 @@ func TestGetChannels_ByAccountNames(t *testing.T) {
 
 func TestGetChannels_StoreError(t *testing.T) {
 	svc, subs, _, _, _, _ := newSvc(t)
-	subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", []string{"carol"}, 1000).Return(nil, errors.New("db down"))
+	subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", []string{"carol"}, gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{}, errors.New("db down"))
 	_, err := svc.GetChannels(ctx("alice", "site-a"), models.GetChannelsRequest{MembersContain: "carol"})
 	requireCode(t, err, errcode.CodeInternal)
+}
+
+func TestGetChannels_Pagination(t *testing.T) {
+	svc, subs, _, _, rooms, _ := newSvc(t)
+	var got mongoutil.OffsetPageRequest
+	subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", []string{"carol"}, gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, _ []string, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.Subscription], error) {
+			got = page
+			return mongoutil.OffsetPage[model.Subscription]{Data: []model.Subscription{}, Total: 12}, nil
+		})
+	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+	resp, err := svc.GetChannels(ctx("alice", "site-a"), models.GetChannelsRequest{MembersContain: "carol", Offset: 10, Limit: 5})
+	require.NoError(t, err)
+	assert.Equal(t, int64(10), got.Offset)
+	assert.Equal(t, int64(5), got.Limit)
+	assert.Equal(t, 12, resp.Total, "total is the full match count, not the page size")
+	assert.Equal(t, 10, resp.Offset)
+	assert.Equal(t, 5, resp.Limit)
 }
 
 func TestGetDM_Empty(t *testing.T) {
@@ -512,7 +560,7 @@ func TestGetChannels_Empty(t *testing.T) {
 			if name == "empty_slice" {
 				returned = []model.Subscription{}
 			}
-			subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", []string{"carol"}, 1000).Return(returned, nil)
+			subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", []string{"carol"}, gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{Data: returned, Total: int64(len(returned))}, nil)
 			resp, err := svc.GetChannels(ctx("alice", "site-a"), models.GetChannelsRequest{MembersContain: "carol"})
 			require.NoError(t, err)
 			assert.Equal(t, 0, resp.Total)

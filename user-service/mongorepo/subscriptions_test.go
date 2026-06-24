@@ -5,12 +5,15 @@ package mongorepo
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"
+
+	"github.com/hmchangw/chat/pkg/mongoutil"
 )
 
 func TestAggregateSubscriptions_Integration(t *testing.T) {
@@ -26,8 +29,8 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 		bson.M{"_id": "r-eng", "name": "Eng", "siteId": "site-a", "userCount": 5, "appCount": 2,
 			"lastMsgId": "m-eng", "lastMsgAt": now, "lastMentionAllAt": now,
 			"encKey": bson.M{"priv": engKey, "ver": 3}},
-		// distinct room for the stale sub-old row (a user can't sub the same room twice)
-		bson.M{"_id": "r-eng-old", "name": "EngOld", "siteId": "site-a", "userCount": 1, "lastMsgAt": now},
+		// stale room for the sub-old window row: its lastMsgAt is 100d old.
+		bson.M{"_id": "r-eng-old", "name": "EngOld", "siteId": "site-a", "userCount": 1, "lastMsgAt": old},
 		bson.M{"_id": "r-dm", "name": "DM-bob", "siteId": "site-a", "userCount": 2,
 			"lastMsgId": "m-dm", "lastMsgAt": now},
 		// botDM rooms — production always pairs a room with a botDM; missing rooms cause the deleted-filter to drop those subs.
@@ -61,18 +64,19 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 		// cross-site channel (KEPT even though no local room doc)
 		bson.M{"_id": "sub-xsite", "u": bson.M{"_id": "u-alice", "account": "alice"}, "roomId": "r-xsite",
 			"name": "Remote", "roomType": "channel", "siteId": "site-b", "_updatedAt": now},
-		// stale-SUB row: its _updatedAt is 100d old while room r-eng-old is fresh, to
-		// prove the window keys on the subscription's _updatedAt, NOT on room.lastMsgAt.
+		// window row: its room r-eng-old is stale (lastMsgAt 100d) while the sub's own
+		// _updatedAt is fresh, to prove the window keys on room.lastMsgAt, NOT _updatedAt.
 		bson.M{"_id": "sub-old", "u": bson.M{"_id": "u-alice", "account": "alice"}, "roomId": "r-eng-old",
-			"name": "EngOld", "roomType": "channel", "siteId": "site-a", "_updatedAt": old},
+			"name": "EngOld", "roomType": "channel", "siteId": "site-a", "_updatedAt": now},
 		// muted local channel — mute suppresses notifications only, not list visibility (KEPT)
 		bson.M{"_id": "sub-muted", "u": bson.M{"_id": "u-alice", "account": "alice"}, "roomId": "r-muted",
 			"name": "Muted", "roomType": "channel", "siteId": "site-a", "muted": true, "_updatedAt": now, "createdAt": now},
 	)
 
 	t.Run("rooms returns dm+channel, drops Del-, keeps missing+cross-site", func(t *testing.T) {
-		subs, err := r.AggregateSubscriptions(ctx, "alice", "rooms", nil, 100)
+		page, err := r.AggregateSubscriptions(ctx, "alice", "rooms", false, nil, mongoutil.OffsetPageRequest{Offset: 0, Limit: 100})
 		require.NoError(t, err)
+		subs := page.Data
 		got := map[string]bool{}
 		for _, sub := range subs {
 			got[sub.ID] = true
@@ -81,14 +85,15 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 		assert.True(t, got["sub-dm"], "local dm kept")
 		assert.True(t, got["sub-xsite"], "cross-site channel kept")
 		assert.True(t, got["sub-muted"], "muted channel kept — mute suppresses notifications only, not list visibility")
-		assert.True(t, got["sub-del"], "Del- local room now KEPT (the service nulls the room object)")
-		assert.True(t, got["sub-missing"], "missing local room now kept (empty enrichment) — siteID filter removed, deleted-filter is room.name-based")
+		assert.False(t, got["sub-del"], "Del- local room filtered out of the list")
+		assert.True(t, got["sub-missing"], "missing local room kept (empty enrichment) — no local room.name to match ^Del-")
 		assert.False(t, got["sub-bot"], "botDM excluded from rooms")
 	})
 
 	t.Run("local row enriched, cross-site empty", func(t *testing.T) {
-		subs, err := r.AggregateSubscriptions(ctx, "alice", "rooms", nil, 100)
+		page, err := r.AggregateSubscriptions(ctx, "alice", "rooms", false, nil, mongoutil.OffsetPageRequest{Offset: 0, Limit: 100})
 		require.NoError(t, err)
+		subs := page.Data
 		byID := map[string]int{}
 		for i, sub := range subs {
 			byID[sub.ID] = i
@@ -109,8 +114,9 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 	})
 
 	t.Run("apps returns only subscribed botDMs", func(t *testing.T) {
-		subs, err := r.AggregateSubscriptions(ctx, "alice", "apps", nil, 100)
+		page, err := r.AggregateSubscriptions(ctx, "alice", "apps", false, nil, mongoutil.OffsetPageRequest{Offset: 0, Limit: 100})
 		require.NoError(t, err)
+		subs := page.Data
 		got := map[string]bool{}
 		for _, sub := range subs {
 			got[sub.ID] = true
@@ -121,8 +127,9 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 	})
 
 	t.Run("current merges rooms+subscribed botDMs", func(t *testing.T) {
-		subs, err := r.AggregateSubscriptions(ctx, "alice", "current", nil, 100)
+		page, err := r.AggregateSubscriptions(ctx, "alice", "current", false, nil, mongoutil.OffsetPageRequest{Offset: 0, Limit: 100})
 		require.NoError(t, err)
+		subs := page.Data
 		got := map[string]bool{}
 		for _, sub := range subs {
 			got[sub.ID] = true
@@ -132,27 +139,29 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 		assert.True(t, got["sub-bot"], "subscribed botDM in current")
 		assert.True(t, got["sub-muted"], "muted channel in current — mute suppresses notifications only, not list visibility")
 		assert.False(t, got["sub-bot-off"], "unsubscribed botDM excluded from current")
-		assert.True(t, got["sub-del"], "Del- now KEPT in current (the service nulls the room object)")
-		assert.True(t, got["sub-missing"], "missing local room now kept (empty enrichment) — siteID filter removed, deleted-filter is room.name-based")
+		assert.False(t, got["sub-del"], "Del- local room filtered out of current")
+		assert.True(t, got["sub-missing"], "missing local room kept (empty enrichment) — no local room.name to match ^Del-")
 	})
 
-	t.Run("rooms window drops subs stale by _updatedAt, keeps fresh", func(t *testing.T) {
+	t.Run("rooms window drops rooms stale by lastMsgAt, keeps fresh", func(t *testing.T) {
 		within := 30
-		subs, err := r.AggregateSubscriptions(ctx, "alice", "rooms", &within, 100)
+		page, err := r.AggregateSubscriptions(ctx, "alice", "rooms", false, &within, mongoutil.OffsetPageRequest{Offset: 0, Limit: 100})
 		require.NoError(t, err)
+		subs := page.Data
 		got := map[string]bool{}
 		for _, sub := range subs {
 			got[sub.ID] = true
 		}
-		assert.False(t, got["sub-old"], "sub stale by _updatedAt (100d ago) excluded by 30-day window even though its room is fresh")
-		assert.True(t, got["sub-eng"], "fresh sub (_updatedAt now) kept")
-		assert.True(t, got["sub-xsite"], "cross-site sub with fresh _updatedAt kept")
+		assert.False(t, got["sub-old"], "room stale by lastMsgAt (100d) excluded by the 30-day window even though the sub's _updatedAt is fresh")
+		assert.True(t, got["sub-eng"], "room with fresh lastMsgAt kept")
+		assert.False(t, got["sub-xsite"], "cross-site room has no local lastMsgAt ⇒ outside the window")
 	})
 
 	t.Run("current ignores withinDays — keeps stale rows", func(t *testing.T) {
 		within := 30
-		subs, err := r.AggregateSubscriptions(ctx, "alice", "current", &within, 100)
+		page, err := r.AggregateSubscriptions(ctx, "alice", "current", false, &within, mongoutil.OffsetPageRequest{Offset: 0, Limit: 100})
 		require.NoError(t, err)
+		subs := page.Data
 		got := map[string]bool{}
 		for _, sub := range subs {
 			got[sub.ID] = true
@@ -161,9 +170,10 @@ func TestAggregateSubscriptions_Integration(t *testing.T) {
 	})
 
 	t.Run("limit caps results", func(t *testing.T) {
-		subs, err := r.AggregateSubscriptions(ctx, "alice", "rooms", nil, 1)
+		page, err := r.AggregateSubscriptions(ctx, "alice", "rooms", false, nil, mongoutil.OffsetPageRequest{Offset: 0, Limit: 1})
 		require.NoError(t, err)
-		assert.Len(t, subs, 1)
+		assert.Len(t, page.Data, 1)
+		assert.Greater(t, page.Total, int64(1), "Total reflects the full match count, not the page size")
 	})
 }
 
@@ -185,11 +195,80 @@ func TestAggregateSubscriptions_SortsByLastMsgAtDesc_Integration(t *testing.T) {
 			"name": "New", "roomType": "channel", "siteId": "site-a", "_updatedAt": t0},
 	)
 
-	subs, err := r.AggregateSubscriptions(ctx, "zoe", "rooms", nil, 100)
+	page, err := r.AggregateSubscriptions(ctx, "zoe", "rooms", false, nil, mongoutil.OffsetPageRequest{Offset: 0, Limit: 100})
 	require.NoError(t, err)
+	subs := page.Data
 	require.Len(t, subs, 2)
 	assert.Equal(t, "s-new", subs[0].ID, "newer lastMsgAt sorts first")
-	assert.Equal(t, "s-old-fav", subs[1].ID, "favorite is NOT pinned in the main list query")
+	assert.Equal(t, "s-old-fav", subs[1].ID, "favorite is NOT pinned in the non-favorite list query")
+}
+
+func TestAggregateSubscriptions_FavoriteFilterAndSelfDMPin_Integration(t *testing.T) {
+	r, db := newTestSubscriptionRepo(t)
+	ctx := context.Background()
+	t0 := time.Now().UTC()
+
+	seed(t, db, "rooms",
+		// self-DM room is the OLDEST, to prove the pin beats recency.
+		bson.M{"_id": "r-self", "name": "Me", "siteId": "site-a", "userCount": 1, "lastMsgAt": t0.Add(-time.Hour)},
+		bson.M{"_id": "r-fav", "name": "FavCh", "siteId": "site-a", "userCount": 2, "lastMsgAt": t0},
+		bson.M{"_id": "r-plain", "name": "Plain", "siteId": "site-a", "userCount": 2, "lastMsgAt": t0},
+	)
+	seed(t, db, "subscriptions",
+		bson.M{"_id": "s-self", "u": bson.M{"_id": "u-amy", "account": "amy"}, "roomId": "r-self",
+			"name": "amy", "roomType": "dm", "siteId": "site-a", "favorite": true, "_updatedAt": t0},
+		bson.M{"_id": "s-fav", "u": bson.M{"_id": "u-amy", "account": "amy"}, "roomId": "r-fav",
+			"name": "FavCh", "roomType": "channel", "siteId": "site-a", "favorite": true, "_updatedAt": t0},
+		// non-favorited — excluded by favorite=true.
+		bson.M{"_id": "s-plain", "u": bson.M{"_id": "u-amy", "account": "amy"}, "roomId": "r-plain",
+			"name": "Plain", "roomType": "channel", "siteId": "site-a", "favorite": false, "_updatedAt": t0},
+	)
+
+	page, err := r.AggregateSubscriptions(ctx, "amy", "current", true, nil, mongoutil.OffsetPageRequest{Offset: 0, Limit: 100})
+	require.NoError(t, err)
+	require.Len(t, page.Data, 2, "favorite=true returns only favorited subs")
+	assert.Equal(t, int64(2), page.Total)
+	assert.Equal(t, "s-self", page.Data[0].ID, "self-DM pinned first despite its older room")
+	assert.Equal(t, "s-fav", page.Data[1].ID)
+}
+
+func TestAggregateSubscriptions_Pagination_Integration(t *testing.T) {
+	r, db := newTestSubscriptionRepo(t)
+	ctx := context.Background()
+	t0 := time.Now().UTC()
+
+	// Five channels with strictly decreasing lastMsgAt ⇒ deterministic order c0..c4.
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("c%d", i)
+		seed(t, db, "rooms",
+			bson.M{"_id": "room-" + id, "name": "Ch" + id, "siteId": "site-a", "userCount": 1,
+				"lastMsgAt": t0.Add(-time.Duration(i) * time.Minute)},
+		)
+		seed(t, db, "subscriptions",
+			bson.M{"_id": id, "u": bson.M{"_id": "u-pat", "account": "pat"}, "roomId": "room-" + id,
+				"name": "Ch" + id, "roomType": "channel", "siteId": "site-a", "_updatedAt": t0},
+		)
+	}
+
+	first, err := r.AggregateSubscriptions(ctx, "pat", "rooms", false, nil, mongoutil.OffsetPageRequest{Offset: 0, Limit: 2})
+	require.NoError(t, err)
+	require.Len(t, first.Data, 2)
+	assert.Equal(t, int64(5), first.Total, "Total is the full match count across all pages")
+	assert.Equal(t, "c0", first.Data[0].ID)
+	assert.Equal(t, "c1", first.Data[1].ID)
+
+	second, err := r.AggregateSubscriptions(ctx, "pat", "rooms", false, nil, mongoutil.OffsetPageRequest{Offset: 2, Limit: 2})
+	require.NoError(t, err)
+	require.Len(t, second.Data, 2)
+	assert.Equal(t, int64(5), second.Total)
+	assert.Equal(t, "c2", second.Data[0].ID)
+	assert.Equal(t, "c3", second.Data[1].ID)
+
+	last, err := r.AggregateSubscriptions(ctx, "pat", "rooms", false, nil, mongoutil.OffsetPageRequest{Offset: 4, Limit: 2})
+	require.NoError(t, err)
+	require.Len(t, last.Data, 1, "final partial page")
+	assert.Equal(t, int64(5), last.Total)
+	assert.Equal(t, "c4", last.Data[0].ID)
 }
 
 func TestFindChannelsByMembers_Integration(t *testing.T) {
@@ -217,8 +296,9 @@ func TestFindChannelsByMembers_Integration(t *testing.T) {
 	)
 
 	t.Run("single member matches both rooms", func(t *testing.T) {
-		subs, err := r.FindChannelsByMembers(ctx, "alice", []string{"carol"}, 100)
+		page, err := r.FindChannelsByMembers(ctx, "alice", []string{"carol"}, mongoutil.OffsetPageRequest{Offset: 0, Limit: 100})
 		require.NoError(t, err)
+		subs := page.Data
 		got := map[string]bool{}
 		for _, sub := range subs {
 			got[sub.RoomID] = true
@@ -228,35 +308,46 @@ func TestFindChannelsByMembers_Integration(t *testing.T) {
 	})
 
 	t.Run("two members match only the room containing both", func(t *testing.T) {
-		subs, err := r.FindChannelsByMembers(ctx, "alice", []string{"carol", "dave"}, 100)
+		page, err := r.FindChannelsByMembers(ctx, "alice", []string{"carol", "dave"}, mongoutil.OffsetPageRequest{Offset: 0, Limit: 100})
 		require.NoError(t, err)
+		subs := page.Data
 		require.Len(t, subs, 1)
 		assert.Equal(t, "r-1", subs[0].RoomID)
 	})
 
 	t.Run("sorted by room createdAt DESC", func(t *testing.T) {
-		subs, err := r.FindChannelsByMembers(ctx, "alice", []string{"carol"}, 100)
+		page, err := r.FindChannelsByMembers(ctx, "alice", []string{"carol"}, mongoutil.OffsetPageRequest{Offset: 0, Limit: 100})
 		require.NoError(t, err)
+		subs := page.Data
 		require.Len(t, subs, 2)
 		// r-1's room.createdAt == now, r-2's room.createdAt == now-1h → r-1 first.
 		assert.Equal(t, "r-1", subs[0].RoomID, "room with newer createdAt sorts first")
 		assert.Equal(t, "r-2", subs[1].RoomID)
 	})
 
-	t.Run("limit caps results", func(t *testing.T) {
-		// alice matches 2 rooms (r-1, r-2); a limit of 1 must cap to the first
-		// (r-1, the room with the newer createdAt under the DESC sort).
-		subs, err := r.FindChannelsByMembers(ctx, "alice", []string{"carol"}, 1)
+	t.Run("limit caps the page; total is the full count", func(t *testing.T) {
+		// alice matches 2 rooms (r-1, r-2); a limit of 1 caps the page to the first
+		// (r-1, the room with the newer createdAt under the DESC sort), but Total is 2.
+		page, err := r.FindChannelsByMembers(ctx, "alice", []string{"carol"}, mongoutil.OffsetPageRequest{Offset: 0, Limit: 1})
 		require.NoError(t, err)
-		require.Len(t, subs, 1)
-		assert.Equal(t, "r-1", subs[0].RoomID)
+		require.Len(t, page.Data, 1)
+		assert.Equal(t, int64(2), page.Total, "Total is the full match count, not the page size")
+		assert.Equal(t, "r-1", page.Data[0].RoomID)
+	})
+
+	t.Run("offset pages through the sorted result", func(t *testing.T) {
+		second, err := r.FindChannelsByMembers(ctx, "alice", []string{"carol"}, mongoutil.OffsetPageRequest{Offset: 1, Limit: 1})
+		require.NoError(t, err)
+		require.Len(t, second.Data, 1)
+		assert.Equal(t, int64(2), second.Total, "Total stays the full count across pages")
+		assert.Equal(t, "r-2", second.Data[0].RoomID, "offset 1 returns the second room (older createdAt)")
 	})
 
 	t.Run("field-path-shaped member is treated as a literal, not a path", func(t *testing.T) {
 		// "$u.account" must be a literal (no match), not a field path that makes the $all match trivially true.
-		subs, err := r.FindChannelsByMembers(ctx, "alice", []string{"$u.account"}, 100)
+		page, err := r.FindChannelsByMembers(ctx, "alice", []string{"$u.account"}, mongoutil.OffsetPageRequest{Offset: 0, Limit: 100})
 		require.NoError(t, err)
-		assert.Empty(t, subs, "$-prefixed member must not bypass the member filter")
+		assert.Empty(t, page.Data, "$-prefixed member must not bypass the member filter")
 	})
 
 	t.Run("soft-deleted and missing-room channels are dropped", func(t *testing.T) {
@@ -275,8 +366,9 @@ func TestFindChannelsByMembers_Integration(t *testing.T) {
 			bson.M{"_id": "c-miss", "u": bson.M{"_id": "u-carol", "account": "carol"}, "roomId": "r-missing",
 				"name": "Gone", "roomType": "channel", "siteId": "site-a", "createdAt": now},
 		)
-		subs, err := r.FindChannelsByMembers(ctx, "alice", []string{"carol"}, 100)
+		page, err := r.FindChannelsByMembers(ctx, "alice", []string{"carol"}, mongoutil.OffsetPageRequest{Offset: 0, Limit: 100})
 		require.NoError(t, err)
+		subs := page.Data
 		for _, sub := range subs {
 			assert.NotEqual(t, "r-del", sub.RoomID, "Del- room channel must be dropped")
 			assert.NotEqual(t, "r-missing", sub.RoomID, "missing-room channel must be dropped")
@@ -299,15 +391,15 @@ func TestFindChannelsByMembers_Integration(t *testing.T) {
 				"name": "Team3", "roomType": "channel", "siteId": "site-a", "createdAt": now},
 		)
 		// Requesting the bot as a member must NOT match — bots aren't members.
-		botSubs, err := r.FindChannelsByMembers(ctx, "alice", []string{"helper.bot"}, 100)
+		botPage, err := r.FindChannelsByMembers(ctx, "alice", []string{"helper.bot"}, mongoutil.OffsetPageRequest{Offset: 0, Limit: 100})
 		require.NoError(t, err)
-		assert.Empty(t, botSubs, "a .bot account must not be a matchable member")
+		assert.Empty(t, botPage.Data, "a .bot account must not be a matchable member")
 
 		// The room still matches on its human members (bot ignored, requester counted).
-		humanSubs, err := r.FindChannelsByMembers(ctx, "alice", []string{"carol"}, 100)
+		humanPage, err := r.FindChannelsByMembers(ctx, "alice", []string{"carol"}, mongoutil.OffsetPageRequest{Offset: 0, Limit: 100})
 		require.NoError(t, err)
 		got := map[string]bool{}
-		for _, sub := range humanSubs {
+		for _, sub := range humanPage.Data {
 			got[sub.RoomID] = true
 		}
 		assert.True(t, got["r-3"], "room with a bot co-member still matches on human members")
