@@ -167,8 +167,8 @@ func TestTeamsRoomCall_Success_ExcludesSelf(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 
-	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
-		Return(&model.Subscription{RoomID: "r1"}, nil)
+	store.EXPECT().CheckMembership(gomock.Any(), "alice", "r1").
+		Return(nil)
 	store.EXPECT().GetRoom(gomock.Any(), "r1").
 		Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().ListRoomMembers(gomock.Any(), "r1", nil, nil, false).
@@ -200,8 +200,8 @@ func TestTeamsRoomCall_RoomIDMissing(t *testing.T) {
 func TestTeamsRoomCall_NotMember(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").
-		Return(nil, model.ErrSubscriptionNotFound)
+	store.EXPECT().CheckMembership(gomock.Any(), "alice", "r1").
+		Return(model.ErrSubscriptionNotFound)
 	store.EXPECT().GetRoom(gomock.Any(), "r1").
 		Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 
@@ -213,7 +213,7 @@ func TestTeamsRoomCall_NotMember(t *testing.T) {
 func TestTeamsRoomCall_NoOtherMembers(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{RoomID: "r1"}, nil)
+	store.EXPECT().CheckMembership(gomock.Any(), "alice", "r1").Return(nil)
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().ListRoomMembers(gomock.Any(), "r1", nil, nil, false).
 		Return([]model.RoomMember{indMember("alice")}, nil)
@@ -227,7 +227,7 @@ func TestTeamsRoomCall_NoOtherMembers(t *testing.T) {
 func TestTeamsRoomCall_TooManyMembers(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{RoomID: "r1"}, nil)
+	store.EXPECT().CheckMembership(gomock.Any(), "alice", "r1").Return(nil)
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 
 	members := []model.RoomMember{indMember("alice")}
@@ -271,7 +271,7 @@ func TestTeamsMeeting_CreatesAndPublishes(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 
-	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{RoomID: "r1"}, nil)
+	store.EXPECT().CheckMembership(gomock.Any(), "alice", "r1").Return(nil)
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Name: "general", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().ListRoomMembers(gomock.Any(), "r1", nil, nil, false).
 		Return([]model.RoomMember{indMember("alice"), indMember("bob")}, nil)
@@ -335,7 +335,7 @@ func TestTeamsMeeting_Idempotent_FastPathReadHit(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 
-	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{RoomID: "r1"}, nil)
+	store.EXPECT().CheckMembership(gomock.Any(), "alice", "r1").Return(nil)
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 	// ListRoomMembers must NOT be called when a record already exists.
 
@@ -374,7 +374,7 @@ func TestTeamsMeeting_DuplicateKey_ReturnsExisting(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 
-	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{RoomID: "r1"}, nil)
+	store.EXPECT().CheckMembership(gomock.Any(), "alice", "r1").Return(nil)
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().ListRoomMembers(gomock.Any(), "r1", nil, nil, false).
 		Return([]model.RoomMember{indMember("alice")}, nil)
@@ -429,7 +429,7 @@ func TestTeamsMeeting_Concurrent_SingleCreateSingleMessage(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
 	// Both goroutines run the membership/room/member reads; allow any count.
-	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{RoomID: "r1"}, nil).AnyTimes()
+	store.EXPECT().CheckMembership(gomock.Any(), "alice", "r1").Return(nil).AnyTimes()
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil).AnyTimes()
 	store.EXPECT().ListRoomMembers(gomock.Any(), "r1", nil, nil, false).
 		Return([]model.RoomMember{indMember("alice")}, nil).AnyTimes()
@@ -507,7 +507,7 @@ func TestTeamsMeeting_RoomIDMissing(t *testing.T) {
 func TestTeamsMeeting_NotMember(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(nil, model.ErrSubscriptionNotFound)
+	store.EXPECT().CheckMembership(gomock.Any(), "alice", "r1").Return(model.ErrSubscriptionNotFound)
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 
 	graph := &fakeGraphClient{}
@@ -521,7 +521,7 @@ func TestTeamsMeeting_NotMember(t *testing.T) {
 func TestTeamsMeeting_TooManyMembers(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{RoomID: "r1"}, nil)
+	store.EXPECT().CheckMembership(gomock.Any(), "alice", "r1").Return(nil)
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().ListRoomMembers(gomock.Any(), "r1", nil, nil, false).
 		Return([]model.RoomMember{indMember("alice"), indMember("bob"), indMember("carol")}, nil)
@@ -538,7 +538,7 @@ func TestTeamsMeeting_TooManyMembers(t *testing.T) {
 func TestTeamsMeeting_GraphCreateFails(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{RoomID: "r1"}, nil)
+	store.EXPECT().CheckMembership(gomock.Any(), "alice", "r1").Return(nil)
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 	store.EXPECT().ListRoomMembers(gomock.Any(), "r1", nil, nil, false).
 		Return([]model.RoomMember{indMember("alice")}, nil)
@@ -557,7 +557,7 @@ func TestTeamsMeeting_GraphCreateFails(t *testing.T) {
 func TestTeamsMeeting_RecordReadFails(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockRoomStore(ctrl)
-	store.EXPECT().GetSubscription(gomock.Any(), "alice", "r1").Return(&model.Subscription{RoomID: "r1"}, nil)
+	store.EXPECT().CheckMembership(gomock.Any(), "alice", "r1").Return(nil)
 	store.EXPECT().GetRoom(gomock.Any(), "r1").Return(&model.Room{ID: "r1", Type: model.RoomTypeChannel}, nil)
 
 	graph := &fakeGraphClient{}

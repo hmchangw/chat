@@ -369,7 +369,7 @@ func (h *Handler) listMembers(c *natsrouter.Context) (*model.ListRoomMembersResp
 	requesterAccount := c.Param("account")
 	roomID := c.Param("roomID")
 
-	_, err := h.store.GetSubscription(ctx, requesterAccount, roomID)
+	err := h.store.CheckMembership(ctx, requesterAccount, roomID)
 	switch {
 	case errors.Is(err, model.ErrSubscriptionNotFound):
 		return nil, errNotRoomMember
@@ -405,7 +405,7 @@ func (h *Handler) getRoomKey(c *natsrouter.Context) (*model.RoomKeyGetResponse, 
 	requesterAccount := c.Param("account")
 	roomID := c.Param("roomID")
 
-	_, err := h.store.GetSubscription(ctx, requesterAccount, roomID)
+	err := h.store.CheckMembership(ctx, requesterAccount, roomID)
 	switch {
 	case errors.Is(err, model.ErrSubscriptionNotFound):
 		return nil, errNotRoomMember
@@ -475,7 +475,7 @@ func (h *Handler) requireMembershipAndGetRoom(ctx context.Context, account, room
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, subErr = h.store.GetSubscription(ctx, account, roomID)
+		subErr = h.store.CheckMembership(ctx, account, roomID)
 	}()
 	go func() {
 		defer wg.Done()
@@ -995,7 +995,7 @@ func (h *Handler) expandChannelRefs(ctx context.Context, requester string, refs 
 		refCtx, cancel := h.contextWithMemberListTimeout(ctx)
 
 		if ref.SiteID == h.siteID {
-			if _, subErr := h.store.GetSubscription(refCtx, requester, ref.RoomID); subErr != nil {
+			if subErr := h.store.CheckMembership(refCtx, requester, ref.RoomID); subErr != nil {
 				cancel()
 				if errors.Is(subErr, context.DeadlineExceeded) {
 					return nil, nil, errcode.Unavailable(fmt.Sprintf("timeout listing members of channel %s@%s", ref.RoomID, ref.SiteID))
@@ -1423,8 +1423,7 @@ func (h *Handler) messageReadReceipt(c *natsrouter.Context, req model.ReadReceip
 	)
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
-		_, err := h.store.GetSubscription(gctx, requesterAccount, roomID)
-		subErr = err
+		subErr = h.store.CheckMembership(gctx, requesterAccount, roomID)
 		return nil
 	})
 	g.Go(func() error {
@@ -1491,7 +1490,7 @@ func (h *Handler) messageThreadRead(c *natsrouter.Context, req model.MessageThre
 	)
 	var g errgroup.Group
 	g.Go(func() error {
-		_, err := h.store.GetSubscription(ctx, account, roomID)
+		err := h.store.CheckMembership(ctx, account, roomID)
 		subErr = err
 		return err
 	})
@@ -1766,11 +1765,11 @@ func (h *Handler) roomRestricted(c *natsrouter.Context, req model.RoomRestricted
 	isTransition := req.Restricted && !room.Restricted
 
 	if req.Restricted && req.OwnerAccount != "" {
-		if _, subErr := h.store.GetSubscription(ctx, req.OwnerAccount, req.RoomID); subErr != nil {
-			if errors.Is(subErr, mongo.ErrNoDocuments) || errors.Is(subErr, model.ErrSubscriptionNotFound) {
+		if subErr := h.store.CheckMembership(ctx, req.OwnerAccount, req.RoomID); subErr != nil {
+			if errors.Is(subErr, model.ErrSubscriptionNotFound) {
 				return nil, errOwnerNotMember
 			}
-			return nil, fmt.Errorf("get owner subscription: %w", subErr)
+			return nil, fmt.Errorf("check owner membership: %w", subErr)
 		}
 	}
 	if isTransition {

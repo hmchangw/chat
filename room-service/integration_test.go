@@ -128,6 +128,94 @@ func TestMongoStore_Integration(t *testing.T) {
 	assert.Error(t, err, "expected error for missing subscription")
 }
 
+// TestMongoStore_CheckMembership_Integration verifies the projected existence
+// check: nil when subscribed, model.ErrSubscriptionNotFound when not.
+func TestMongoStore_CheckMembership_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	mustInsertSub(t, db, &model.Subscription{
+		ID:     "s1",
+		User:   model.SubscriptionUser{ID: "u1", Account: "alice"},
+		RoomID: "r1",
+		Roles:  []model.Role{model.RoleMember},
+	})
+
+	assert.NoError(t, store.CheckMembership(ctx, "alice", "r1"))
+
+	err := store.CheckMembership(ctx, "bob", "r1")
+	assert.ErrorIs(t, err, model.ErrSubscriptionNotFound)
+
+	err = store.CheckMembership(ctx, "alice", "r2")
+	assert.ErrorIs(t, err, model.ErrSubscriptionNotFound)
+}
+
+// TestMongoStore_GetRoom_ProjectionFields_Integration pins the field set that
+// GetRoom's projection must return: every Room field read by any handler call
+// site. Dropping one from the projection would silently zero it here, so this
+// test is the guard for the projected read path.
+func TestMongoStore_GetRoom_ProjectionFields_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	lastMsg := time.Now().UTC().Add(-time.Hour).Truncate(time.Millisecond)
+	minSeen := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Millisecond)
+	mustInsertRoom(t, db, &model.Room{
+		ID: "rproj", Name: "proj-room", Type: model.RoomTypeChannel, SiteID: "site-a",
+		UserCount: 7, AppCount: 3, Restricted: true, ExternalAccess: true,
+		LastMsgAt: &lastMsg, MinUserLastSeenAt: &minSeen, LastMsgID: "m123",
+	})
+
+	got, err := store.GetRoom(ctx, "rproj")
+	require.NoError(t, err)
+	assert.Equal(t, "rproj", got.ID)
+	assert.Equal(t, "proj-room", got.Name)
+	assert.Equal(t, model.RoomTypeChannel, got.Type)
+	assert.Equal(t, 7, got.UserCount)
+	assert.Equal(t, 3, got.AppCount)
+	assert.True(t, got.Restricted)
+	assert.True(t, got.ExternalAccess)
+	require.NotNil(t, got.LastMsgAt)
+	assert.WithinDuration(t, lastMsg, *got.LastMsgAt, time.Second)
+	require.NotNil(t, got.MinUserLastSeenAt)
+	assert.WithinDuration(t, minSeen, *got.MinUserLastSeenAt, time.Second)
+}
+
+// TestMongoStore_GetSubscription_ProjectionFields_Integration pins the field
+// set that GetSubscription's projection must return: every Subscription field
+// read by any handler call site. Same guard rationale as the GetRoom variant.
+func TestMongoStore_GetSubscription_ProjectionFields_Integration(t *testing.T) {
+	ctx := context.Background()
+	db := setupMongo(t)
+	store := NewMongoStore(db)
+
+	lastSeen := time.Now().UTC().Add(-30 * time.Minute).Truncate(time.Millisecond)
+	mustInsertSub(t, db, &model.Subscription{
+		ID:           "sproj",
+		User:         model.SubscriptionUser{ID: "u9", Account: "carol", IsBot: true},
+		RoomID:       "rproj",
+		SiteID:       "site-a",
+		Roles:        []model.Role{model.RoleOwner, model.RoleMember},
+		Alert:        true,
+		ThreadUnread: []string{"t1", "t2"},
+		LastSeenAt:   &lastSeen,
+	})
+
+	got, err := store.GetSubscription(ctx, "carol", "rproj")
+	require.NoError(t, err)
+	assert.Equal(t, "u9", got.User.ID)
+	assert.Equal(t, "carol", got.User.Account)
+	assert.Equal(t, "rproj", got.RoomID)
+	assert.Equal(t, "site-a", got.SiteID)
+	assert.Equal(t, []model.Role{model.RoleOwner, model.RoleMember}, got.Roles)
+	assert.True(t, got.Alert)
+	assert.Equal(t, []string{"t1", "t2"}, got.ThreadUnread)
+	require.NotNil(t, got.LastSeenAt)
+	assert.WithinDuration(t, lastSeen, *got.LastSeenAt, time.Second)
+}
+
 func TestMongoStore_GetSubscriptionWithMembership_Integration(t *testing.T) {
 	db := setupMongo(t)
 	store := NewMongoStore(db)
@@ -2336,9 +2424,9 @@ func TestMongoStore_ToggleSubscriptionMute(t *testing.T) {
 	assert.Equal(t, "alice", got.User.Account)
 	assert.Equal(t, "r1", got.RoomID)
 
-	persisted, err := store.GetSubscription(ctx, "alice", "r1")
-	require.NoError(t, err)
-	assert.True(t, persisted.Muted)
+	// muted is not projected by GetSubscription (no handler reads it from a read
+	// result), so verify persistence with a direct field read.
+	assert.True(t, subBoolField(t, db, "r1", "alice", "muted"))
 	// muteUpdatedAt is stamped at the supplied instant (BSON ms precision) so the
 	// origin doc shares the federated event's high-water mark.
 	assert.Equal(t, ts1.UnixMilli(), subTimeField(t, db, "r1", "alice", "muteUpdatedAt").UnixMilli())
@@ -2371,6 +2459,22 @@ func subTimeField(t *testing.T, db *mongo.Database, roomID, account, field strin
 	return dt.Time().UTC()
 }
 
+// subBoolField reads a boolean field straight from the stored subscription
+// document. Used to assert persistence of fields (muted, favorite) that
+// GetSubscription deliberately does not project, so the read-back cannot rely
+// on the projected struct.
+func subBoolField(t *testing.T, db *mongo.Database, roomID, account, field string) bool {
+	t.Helper()
+	var doc bson.M
+	require.NoError(t, db.Collection("subscriptions").
+		FindOne(context.Background(), bson.M{"roomId": roomID, "u.account": account}).Decode(&doc))
+	v, ok := doc[field]
+	require.True(t, ok, "field %q missing on subscription", field)
+	b, ok := v.(bool)
+	require.True(t, ok, "field %q is %T, want bool", field, v)
+	return b
+}
+
 func TestMongoStore_ToggleSubscriptionFavorite(t *testing.T) {
 	db := testutil.MongoDB(t, "room-svc-fav")
 	store := NewMongoStore(db)
@@ -2400,9 +2504,9 @@ func TestMongoStore_ToggleSubscriptionFavorite(t *testing.T) {
 	assert.Equal(t, "alice", got.User.Account)
 	assert.Equal(t, "r1", got.RoomID)
 
-	persisted, err := store.GetSubscription(ctx, "alice", "r1")
-	require.NoError(t, err)
-	assert.True(t, persisted.Favorite)
+	// favorite is not projected by GetSubscription (no handler reads it from a
+	// read result), so verify persistence with a direct field read.
+	assert.True(t, subBoolField(t, db, "r1", "alice", "favorite"))
 	// favoriteUpdatedAt is stamped at the supplied instant so the origin doc
 	// shares the federated event's high-water mark.
 	assert.Equal(t, ts1.UnixMilli(), subTimeField(t, db, "r1", "alice", "favoriteUpdatedAt").UnixMilli())

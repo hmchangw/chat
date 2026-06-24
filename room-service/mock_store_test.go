@@ -57,6 +57,20 @@ func (mr *MockRoomStoreMockRecorder) ApplySubscriptionVisibility(ctx, roomID, re
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ApplySubscriptionVisibility", reflect.TypeOf((*MockRoomStore)(nil).ApplySubscriptionVisibility), ctx, roomID, restricted, externalAccess, ownerAccount, visibilityUpdatedAt)
 }
 
+// CheckMembership mocks base method.
+func (m *MockRoomStore) CheckMembership(ctx context.Context, account, roomID string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CheckMembership", ctx, account, roomID)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// CheckMembership indicates an expected call of CheckMembership.
+func (mr *MockRoomStoreMockRecorder) CheckMembership(ctx, account, roomID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CheckMembership", reflect.TypeOf((*MockRoomStore)(nil).CheckMembership), ctx, account, roomID)
+}
+
 // CountMembersAndOwners mocks base method.
 func (m *MockRoomStore) CountMembersAndOwners(ctx context.Context, roomID string) (*RoomCounts, error) {
 	m.ctrl.T.Helper()
