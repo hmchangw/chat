@@ -63,7 +63,7 @@ Expected: FAIL — `undefined: standardEmoji`.
 
 - [ ] **Step 3: Write the generator module** — `pkg/emoji/gen/go.mod`
 
-```
+```gomod
 module github.com/hmchangw/chat/pkg/emoji/gen
 
 go 1.25
