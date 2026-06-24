@@ -33,6 +33,8 @@ example, the success response schema and example, the error response, and
 the server-pushed events the client will receive on the success and error
 paths.
 
+> Frontend-oriented split views: [request-reply](client-api/request-reply.md) · [events](client-api/events.md). This document remains canonical.
+
 ## Table of contents
 
 1. [Overview](#1-overview)
@@ -2734,7 +2736,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 ##### Triggered events — success path
 
 **Channel rooms:** `chat.room.{roomID}.event` — `PinStateRoomEvent`. Recipients: every client subscribed to the room.
-**DM / BotDM rooms:** `chat.user.{account}.room.event` — `PinStateRoomEvent`. Recipients: each non-bot DM participant.
+**DM / BotDM rooms:** `chat.user.{account}.event.room` — `PinStateRoomEvent`. Recipients: each non-bot DM participant.
 
 Not published when the request hits an already-pinned message (idempotent short-circuit).
 
@@ -2842,7 +2844,7 @@ See [Error envelope](#6-error-envelope-reference). Common errors:
 ##### Triggered events — success path
 
 **Channel rooms:** `chat.room.{roomID}.event` — `PinStateRoomEvent`. Recipients: every client subscribed to the room.
-**DM / BotDM rooms:** `chat.user.{account}.room.event` — `PinStateRoomEvent`. Recipients: each non-bot DM participant.
+**DM / BotDM rooms:** `chat.user.{account}.event.room` — `PinStateRoomEvent`. Recipients: each non-bot DM participant.
 
 Not published when the request hits an already-unpinned message (idempotent short-circuit).
 
