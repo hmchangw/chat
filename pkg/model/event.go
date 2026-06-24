@@ -148,6 +148,7 @@ const (
 	InboxRoomRenamed                 InboxEventType = "room_renamed"
 	InboxRoomRestricted              InboxEventType = "room_restricted"
 	InboxUserStatusUpdated           InboxEventType = "user_status_updated"
+	InboxSubscriptionDeleted         InboxEventType = "subscription_deleted"
 )
 
 // SubscriptionReadEvent is the InboxEvent.Payload for type
@@ -194,7 +195,10 @@ type MemberAddEvent struct {
 	RequesterAccount   string   `json:"requesterAccount,omitempty" bson:"requesterAccount,omitempty"`
 	JoinedAt           int64    `json:"joinedAt"           bson:"joinedAt"`
 	HistorySharedSince *int64   `json:"historySharedSince,omitempty" bson:"historySharedSince,omitempty"`
-	Timestamp          int64    `json:"timestamp"          bson:"timestamp"`
+	// SubID is the source subscription _id, set only by the migration on a single-account
+	// member_added so the destination adopts it as its _id (empty for live federation → UUIDv7).
+	SubID     string `json:"subId,omitempty" bson:"subId,omitempty"`
+	Timestamp int64  `json:"timestamp"          bson:"timestamp"`
 }
 
 // Participant represents a user with display name info for client rendering.
@@ -488,6 +492,14 @@ type MemberRemoveEvent struct {
 	SiteID    string   `json:"siteId"          bson:"siteId"`
 	OrgID     string   `json:"orgId,omitempty" bson:"orgId,omitempty"`
 	Timestamp int64    `json:"timestamp"       bson:"timestamp"`
+}
+
+// SubscriptionDeletedEvent is the "subscription_deleted" payload: a source subscription was hard-deleted
+// (vs the open:false hide → member_removed). The destination deletes by _id; SiteID is informational.
+type SubscriptionDeletedEvent struct {
+	SubID     string `json:"subId"     bson:"subId"`
+	SiteID    string `json:"siteId"    bson:"siteId"`
+	Timestamp int64  `json:"timestamp" bson:"timestamp"`
 }
 
 // AsyncJobResult signals to the requester's client that an async room-worker job has completed.

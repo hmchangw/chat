@@ -89,12 +89,15 @@ type stubInboxStore struct {
 	applyThreadReadErr error
 	userStatusUpdates  []userStatusUpdate
 	userStatusErr      error
+	deletedSubIDs      []string
+	deleteByIDErr      error
 }
 
 type userStatusUpdate struct {
 	account    string
 	statusText string
 	isShow     *bool
+	updatedAt  time.Time
 }
 
 func (s *stubInboxStore) CreateSubscription(ctx context.Context, sub *model.Subscription) error {
@@ -135,6 +138,32 @@ func (s *stubInboxStore) DeleteSubscriptionsByAccounts(_ context.Context, roomID
 	}
 	s.subscriptions = filtered
 	return nil
+}
+
+func (s *stubInboxStore) DeleteSubscriptionByID(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.deleteByIDErr != nil {
+		return s.deleteByIDErr
+	}
+	s.deletedSubIDs = append(s.deletedSubIDs, id)
+	filtered := s.subscriptions[:0]
+	for i := range s.subscriptions {
+		if s.subscriptions[i].ID == id {
+			continue
+		}
+		filtered = append(filtered, s.subscriptions[i])
+	}
+	s.subscriptions = filtered
+	return nil
+}
+
+func (s *stubInboxStore) getDeletedSubIDs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := make([]string, len(s.deletedSubIDs))
+	copy(cp, s.deletedSubIDs)
+	return cp
 }
 
 func (s *stubInboxStore) getSubscriptions() []model.Subscription {
@@ -336,14 +365,14 @@ func (s *stubInboxStore) getThreadSubs() []model.ThreadSubscription {
 	return cp
 }
 
-func (s *stubInboxStore) UpdateUserStatus(_ context.Context, account, statusText string, statusIsShow *bool) error {
+func (s *stubInboxStore) UpdateUserStatus(_ context.Context, account, statusText string, statusIsShow *bool, statusUpdatedAt time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.userStatusErr != nil {
 		return s.userStatusErr
 	}
 	s.userStatusUpdates = append(s.userStatusUpdates, userStatusUpdate{
-		account: account, statusText: statusText, isShow: statusIsShow,
+		account: account, statusText: statusText, isShow: statusIsShow, updatedAt: statusUpdatedAt,
 	})
 	return nil
 }
@@ -957,6 +986,120 @@ func TestHandleEvent_MemberRemoved(t *testing.T) {
 	assert.Empty(t, subs)
 }
 
+func TestHandleEvent_MemberAdded_AdoptsSubID(t *testing.T) {
+	store := &stubInboxStore{
+		users: []model.User{{ID: "uid-bob", Account: "bob", SiteID: "site-a"}},
+	}
+	h := NewHandler(store)
+
+	change := model.MemberAddEvent{
+		Type:     "member_added",
+		RoomID:   "room-1",
+		Accounts: []string{"bob"},
+		SiteID:   "site-b",
+		SubID:    "src-sub-id-1",
+		JoinedAt: time.Now().UnixMilli(),
+	}
+	changeData, _ := json.Marshal(change)
+	evt := model.InboxEvent{Type: "member_added", SiteID: "site-b", DestSiteID: "site-a", Payload: changeData}
+	data, _ := json.Marshal(evt)
+
+	require.NoError(t, h.HandleEvent(context.Background(), data))
+
+	subs := store.getSubscriptions()
+	require.Len(t, subs, 1)
+	assert.Equal(t, "src-sub-id-1", subs[0].ID, "single-account member_added must adopt the source subscription _id")
+}
+
+func TestHandleEvent_MemberAdded_SubID_MultipleAccountsKeepsGeneratedID(t *testing.T) {
+	store := &stubInboxStore{
+		users: []model.User{
+			{ID: "uid-a", Account: "alice", SiteID: "site-a"},
+			{ID: "uid-b", Account: "bob", SiteID: "site-a"},
+		},
+	}
+	h := NewHandler(store)
+
+	// SubID is single-valued; a multi-account event can't map it unambiguously, so each
+	// sub keeps a generated id rather than colliding on the one SubID.
+	change := model.MemberAddEvent{
+		Type:     "member_added",
+		RoomID:   "room-1",
+		Accounts: []string{"alice", "bob"},
+		SiteID:   "site-b",
+		SubID:    "src-sub-id-1",
+		JoinedAt: time.Now().UnixMilli(),
+	}
+	changeData, _ := json.Marshal(change)
+	evt := model.InboxEvent{Type: "member_added", SiteID: "site-b", DestSiteID: "site-a", Payload: changeData}
+	data, _ := json.Marshal(evt)
+
+	require.NoError(t, h.HandleEvent(context.Background(), data))
+
+	subs := store.getSubscriptions()
+	require.Len(t, subs, 2)
+	for _, sub := range subs {
+		assert.NotEqual(t, "src-sub-id-1", sub.ID)
+		assert.NotEmpty(t, sub.ID)
+	}
+}
+
+func TestHandleEvent_SubscriptionDeleted(t *testing.T) {
+	store := &stubInboxStore{}
+	h := NewHandler(store)
+
+	store.mu.Lock()
+	store.subscriptions = append(store.subscriptions,
+		model.Subscription{ID: "src-sub-id-1", User: model.SubscriptionUser{Account: "alice"}, RoomID: "r1"},
+		model.Subscription{ID: "other-sub", User: model.SubscriptionUser{Account: "bob"}, RoomID: "r1"},
+	)
+	store.mu.Unlock()
+
+	payload, _ := json.Marshal(model.SubscriptionDeletedEvent{SubID: "src-sub-id-1", SiteID: "site-a", Timestamp: time.Now().UnixMilli()})
+	evt := model.InboxEvent{Type: "subscription_deleted", SiteID: "site-a", DestSiteID: "site-a", Payload: payload}
+	data, _ := json.Marshal(evt)
+
+	require.NoError(t, h.HandleEvent(context.Background(), data))
+
+	assert.Equal(t, []string{"src-sub-id-1"}, store.getDeletedSubIDs())
+	subs := store.getSubscriptions()
+	require.Len(t, subs, 1)
+	assert.Equal(t, "other-sub", subs[0].ID)
+}
+
+func TestHandleEvent_SubscriptionDeleted_EmptySubID_NoOp(t *testing.T) {
+	store := &stubInboxStore{}
+	h := NewHandler(store)
+
+	payload, _ := json.Marshal(model.SubscriptionDeletedEvent{SubID: "", SiteID: "site-a"})
+	evt := model.InboxEvent{Type: "subscription_deleted", SiteID: "site-a", DestSiteID: "site-a", Payload: payload}
+	data, _ := json.Marshal(evt)
+
+	require.NoError(t, h.HandleEvent(context.Background(), data))
+	assert.Empty(t, store.getDeletedSubIDs())
+}
+
+func TestHandleEvent_SubscriptionDeleted_InvalidPayload(t *testing.T) {
+	store := &stubInboxStore{}
+	h := NewHandler(store)
+
+	evt := model.InboxEvent{Type: "subscription_deleted", SiteID: "site-a", DestSiteID: "site-a", Payload: []byte(`{invalid`)}
+	data, _ := json.Marshal(evt)
+
+	require.Error(t, h.HandleEvent(context.Background(), data))
+}
+
+func TestHandleEvent_SubscriptionDeleted_DeleteError(t *testing.T) {
+	store := &stubInboxStore{deleteByIDErr: errors.New("boom")}
+	h := NewHandler(store)
+
+	payload, _ := json.Marshal(model.SubscriptionDeletedEvent{SubID: "src-sub-id-1", SiteID: "site-a"})
+	evt := model.InboxEvent{Type: "subscription_deleted", SiteID: "site-a", DestSiteID: "site-a", Payload: payload}
+	data, _ := json.Marshal(evt)
+
+	require.Error(t, h.HandleEvent(context.Background(), data))
+}
+
 func TestHandleEvent_MemberRemoved_InvalidPayload(t *testing.T) {
 	store := &stubInboxStore{}
 	h := NewHandler(store)
@@ -1189,6 +1332,68 @@ type errorThreadSubStore struct {
 
 func (s *errorThreadSubStore) UpsertThreadSubscription(_ context.Context, _ *model.ThreadSubscription) error {
 	return fmt.Errorf("boom")
+}
+
+func TestHandleEvent_MemberAdded_UnknownUser_ReturnsError(t *testing.T) {
+	// Store has NO users, so the referenced account cannot resolve.
+	store := &stubInboxStore{}
+	h := NewHandler(store)
+
+	change := model.MemberAddEvent{
+		Type:     "member_added",
+		RoomID:   "room-1",
+		Accounts: []string{"ghost"},
+		SiteID:   "site-b",
+		JoinedAt: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
+	}
+	changeData, err := json.Marshal(change)
+	require.NoError(t, err)
+
+	evt := model.InboxEvent{Type: "member_added", SiteID: "site-b", DestSiteID: "site-a", Payload: changeData}
+	evtData, err := json.Marshal(evt)
+	require.NoError(t, err)
+
+	err = h.HandleEvent(context.Background(), evtData)
+
+	// Returns an error (→ Nak/redeliver) naming the missing account.
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ghost")
+	// A plain fmt.Errorf can never be permanent (IsPermanent requires *errcode.Error wrapping),
+	// but assert explicitly so a future refactor that adds wrapping trips this guard.
+	_, isPermanent := errcode.IsPermanent(err)
+	assert.False(t, isPermanent, "missing-user error must be transient so the event redelivers")
+	// No subscription was created.
+	assert.Empty(t, store.getSubscriptions())
+}
+
+func TestHandleEvent_MemberAdded_PartialUsers_CreatesPresentAndErrors(t *testing.T) {
+	// "bob" resolves; "ghost" does not.
+	store := &stubInboxStore{users: []model.User{{ID: "uid-bob", Account: "bob", SiteID: "site-a"}}}
+	h := NewHandler(store)
+
+	change := model.MemberAddEvent{
+		Type:     "member_added",
+		RoomID:   "room-1",
+		Accounts: []string{"bob", "ghost"},
+		SiteID:   "site-b",
+		JoinedAt: time.Date(2026, 4, 1, 12, 0, 0, 0, time.UTC).UnixMilli(),
+	}
+	changeData, err := json.Marshal(change)
+	require.NoError(t, err)
+
+	evt := model.InboxEvent{Type: "member_added", SiteID: "site-b", DestSiteID: "site-a", Payload: changeData}
+	evtData, err := json.Marshal(evt)
+	require.NoError(t, err)
+
+	err = h.HandleEvent(context.Background(), evtData)
+
+	// Errors so the whole event redelivers...
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ghost")
+	// ...but the resolvable subscription was still created (progress; redelivery re-upserts idempotently).
+	subs := store.getSubscriptions()
+	require.Len(t, subs, 1)
+	assert.Equal(t, "bob", subs[0].User.Account)
 }
 
 func TestRolesForType(t *testing.T) {
@@ -1645,6 +1850,8 @@ func TestHandler_UserStatusUpdated(t *testing.T) {
 	assert.Equal(t, "out to lunch", updates[0].statusText)
 	require.NotNil(t, updates[0].isShow)
 	assert.True(t, *updates[0].isShow)
+	// The handler threads the event Timestamp through as the order-guard high-water mark.
+	assert.Equal(t, time.UnixMilli(12345).UTC(), updates[0].updatedAt)
 }
 
 func TestHandler_UserStatusUpdated_IsShowOmittedStaysNil(t *testing.T) {
