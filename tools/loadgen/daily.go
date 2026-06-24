@@ -442,15 +442,18 @@ func activateUsers(ctx context.Context, env *stepEnv, from, to int) {
 			env.skippedCount.Add(1)
 			continue
 		}
+		// Emit the presence hello BEFORE launching the emitter goroutine so the
+		// `go` statement orders the hello's writes to u.presence.status/away
+		// ahead of the goroutine's ping/setAway reads (happens-before edge).
+		if env.presencePool != nil && u.presence != nil {
+			emitPresence(env, u.presence, u.presence.hello(nowMillis()))
+		}
 		// Per-user emitter runs through warmup + hold + cooldown, reading
 		// the current envelope anchor from env on each tick so step
 		// transitions take effect within ~1s. Pass the per-user index so
 		// the RNG seed is deterministic given env.runSeed.
 		if poolAdded && env.publish != nil {
 			startEmitter(ctx, env, u, i)
-		}
-		if env.presencePool != nil && u.presence != nil {
-			emitPresence(env, u.presence, u.presence.hello(nowMillis()))
 		}
 		env.activatedCount.Add(1)
 	}
@@ -585,9 +588,11 @@ func emitPresence(env *stepEnv, u *presenceUser, tr presenceTransition) {
 }
 
 // snapshotPresenceStats fills r.Presence from the presence collector (after
-// counting unresolved expectations as failures). No-op when presence is off.
+// counting unresolved expectations as failures). No-op when presence is off or
+// the presence pool failed to initialize (presencePool nil) — otherwise a
+// failed init would emit a misleading all-zeros, 0%-error presence block.
 func snapshotPresenceStats(env *stepEnv, r *StepResult) {
-	if env.presenceCollector == nil {
+	if env.presencePool == nil || env.presenceCollector == nil {
 		return
 	}
 	env.presenceCollector.ReapMissing()

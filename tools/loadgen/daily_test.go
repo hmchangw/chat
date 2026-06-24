@@ -269,13 +269,23 @@ func TestSnapshotPresenceStats_PopulatesFromCollector(t *testing.T) {
 	c.Observe("user-1", model.StatusOnline, now.Add(10*time.Millisecond))
 	c.Expect("user-2", model.StatusAway, now)
 	c.Observe("user-2", model.StatusAway, now.Add(20*time.Millisecond))
-	env := &stepEnv{presenceCollector: c}
+	env := &stepEnv{presencePool: &presencePool{collector: c}, presenceCollector: c}
 	r := StepResult{}
 	snapshotPresenceStats(env, &r)
 	require.NotNil(t, r.Presence)
 	assert.Equal(t, int64(2), r.Presence.Attempted)
 	assert.Equal(t, int64(0), r.Presence.Failed)
 	assert.InDelta(t, 20, r.Presence.P99Ms, 5)
+}
+
+func TestSnapshotPresenceStats_NilWhenPoolInitFailed(t *testing.T) {
+	// --presence requested but newPresencePool failed: collector is non-nil but
+	// pool is nil. The snapshot must stay nil so the report doesn't print a
+	// misleading all-zeros, 0%-error presence block for a run that never emitted.
+	env := &stepEnv{presenceCollector: newPresenceCollector()} // presencePool nil
+	r := StepResult{}
+	snapshotPresenceStats(env, &r)
+	assert.Nil(t, r.Presence)
 }
 
 func TestProdEnvFactory_PresenceDisabledLeavesNil(t *testing.T) {
