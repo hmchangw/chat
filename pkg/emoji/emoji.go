@@ -3,6 +3,8 @@
 // NFC-normalised; the canonical form is what callers bind into storage.
 package emoji
 
+//go:generate go run -C gen .
+
 import (
 	"context"
 	"errors"
