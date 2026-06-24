@@ -420,9 +420,77 @@ JWT grants:
 - Bots: **`chat.bot.{account}.>`** where `{account}` = `BotSubjectName(rawAccount)` — eliminates the ACL escape where human `xxx` would match bot `xxx.bot`'s subject space.
 - Admins: **`chat.>`** (god-mode, decided 2026-06-24, see auth.md Part II §3 Key Decisions / §5.2 `kind:"admin"`).
 
-The canonical-stream rename (row 3) is the load-bearing change in this table; rows 1–2 only matter at Phase 5+ when (and if) the user-scoped RPC subjects also get classed. Phase 1 ships rows 3–4 only.
+Phase 1 ships row 1 (publisher namespace split) + row 4 (rooms class-agnostic); row 3 is **deferred** (one shared canonical stream — see §4.4a); row 2 only matters at Phase 5+ when (and if) the user-scoped RPC subjects also get classed.
 
 ### 4.4 What gets a class token
+
+- **Canonical message stream subjects** — see §4.4a for the Phase 1 = shared-stream decision and the deferred trade-off.
+- **User-scoped client RPCs** — yes (so JWT scoping naturally enforces class).
+- **Room-scoped pub/sub** — open question (§11 Q3): is a room "of a class," or are bot and human messages in the same room? Most likely the latter, in which case room-scoped subjects stay unclassified and only canonical/RPC subjects get classed.
+- **Cross-site subjects** — yes (supercluster permissions are class-aware, §7).
+- **Internal-only subjects** (worker-to-worker, intra-service) — no, they're not class-aware.
+
+### 4.4a Shared vs split canonical streams — DECIDED 2026-06-24 (Phase 1 = SHARED; split deferred)
+
+The publisher namespace is split per class (`chat.user.{account}.>` / `chat.bot.{account}.>` / admin `chat.>`) — that's enforced by JWT grants and resolves the ACL-escape problem. The orthogonal question this subsection answers: **does the downstream CANONICAL stream (and the `ROOMS_{siteID}` stream) get split per class too?**
+
+**Phase 1 decision: keep the canonical streams SHARED across classes.** One `MESSAGES_CANONICAL_{siteID}` stream carries both bot- and user-canonical events; one `ROOMS_{siteID}` stream carries both bot- and user-originated room operations. The publisher's class is preserved in the event payload (via `principal.class` already on the canonical envelope), so consumers can label metrics and demux behavior by class without needing separate streams.
+
+**Future split is a non-breaking change** (escape hatch detailed below) — defer it until measured noisy-neighbor pressure justifies the operational overhead. Document the trade-off here so the team can revisit with data.
+
+#### Pros of SHARED (Phase 1 choice)
+
+| # | Property | Benefit |
+|---|---|---|
+| 1 | **Simpler infra** | Two streams to provision, monitor, mirror across sites, federate — not four. Smaller surface for ops to learn / back up / replicate. |
+| 2 | **Single dashboards & alerts** | One stream-depth gauge per canonical type. No per-class lag confusion ("which class is backed up?"); class-cardinality lives on metric labels, not on stream names. |
+| 3 | **Workers stay single-deployment** | `message-worker`, `broadcast-worker`, `notification-worker`, `search-sync-worker`, `outbox-worker` each remain ONE Deployment / one Helm chart / one HPA. Half the Kubernetes objects. |
+| 4 | **No bot/user worker-pool partitioning to deploy or operate** | No artificial split where the workload doesn't yet demand it. YAGNI. |
+| 5 | **Mixed-room handling stays trivial** | When a bot sends to a mixed room, broadcast-worker reads canonical, fans out by membership — no cross-stream coordination needed. |
+| 6 | **Federation simpler** | One outbox-worker reading one canonical stream. Split would mean either two outbox-workers OR one worker reading two streams (more glue code). |
+| 7 | **Easier to reason about ordering & idempotency** | Single stream sequence per site = single linear history per canonical type. No interleaving questions across class streams. |
+| 8 | **No canonical-subject rename needed** | The §2.3 canonical-subject rename (`chat.msg.canonical.…` → `chat.user.canonical.…`/`chat.bot.canonical.…`) is **deferred until split**. Phase 1 keeps the existing `chat.msg.canonical.…` subject as-is. |
+
+#### Cons of SHARED — what you give up (the watch-list)
+
+| # | Property | Cost |
+|---|---|---|
+| 1 | **No independent worker-pool scaling** | Cannot HPA bot-workers separately from user-workers — `message-worker` is one Deployment serving both. A 10× bot traffic spike forces user-handling capacity to grow with it (and vice versa). |
+| 2 | **No independent failure domain** | A poison-pill bot message that crashes `message-worker` also halts user-message processing on that pod. Split would contain blast radius to one class. (Mitigated somewhat by JetStream's at-least-once + DLQ semantics, but the worker is shared.) |
+| 3 | **Noisy-neighbor risk** | Chatty bot fleet → canonical queue depth grows → human messages wait behind bot backlog. Same lag for everyone. Mitigated upstream by gatekeeper-side rate limits, but the queueing happens downstream. |
+| 4 | **Metric/SLO granularity is label-based, not stream-based** | `messages_processed_total{class}` becomes a label, not a stream/consumer split. Per-class dashboards work, but per-class **alerts** on consumer lag are harder (alert calculated from label aggregation instead of directly from per-stream depth). |
+| 5 | **Cross-class rate limiting lives in app code** | "Throttle bots at 100 msg/sec without affecting humans" has to live in gatekeeper or worker logic, not at the JetStream consumer-config level. Slightly more code. |
+| 6 | **HPA precision is coarser** | Worker autoscaling triggers on combined depth, not per-class. May over- or under-provision per-class during traffic asymmetry. |
+
+#### What you keep regardless (the invariants sharing doesn't break)
+
+- ✅ **Publisher ACL isolation** — JWT grants remain per-class (`chat.user.{account}.>` / `chat.bot.{account}.>` / `chat.>` for admin). Bots can't impersonate users at the publish edge.
+- ✅ **Subject-collision safety** — separate top-level namespaces at publish; human `xxx` and bot `xxx.bot` never overlap.
+- ✅ **Per-class metric tagging** — via the `class` field on the canonical event payload.
+- ✅ **Mixed-room correctness** — workers don't care about publisher class for fan-out; they route by room membership.
+- ✅ **Federation correctness** — one outbox-worker reading one canonical stream is simpler and works for both classes.
+
+#### Split-later escape hatch — what triggers it, how to do it
+
+Triggers (any one suffices):
+- Measured noisy-neighbor incident: bot backlog causing human-message SLO breach (consumer-lag p99 above threshold for >X minutes).
+- A specific tenant requires guaranteed per-class SLO (compliance or billing tier).
+- Class-specific worker logic diverges enough that one Deployment serving both gets ugly (lots of `if class == bot {…}` branches).
+- Bot traffic exceeds the worker pool's ability to scale linearly with human traffic (e.g., 100× volume asymmetry).
+
+Mechanic when triggered:
+1. Add new streams `MESSAGES_CANONICAL_BOT_{siteID}` and (if needed) `ROOMS_BOT_{siteID}` with subjects `chat.bot.canonical.{siteID}.>` and `chat.room.bot.canonical.{siteID}.>`.
+2. Rename the existing streams' subject scope (the §2.3 canonical-subject rename pays off here): `chat.msg.canonical.…` → `chat.user.canonical.…`. Use JetStream `Mirror` to maintain both subject patterns during transition.
+3. Update gatekeeper to publish per class: bot-originated canonical events go to `chat.bot.canonical.…`; user-originated to `chat.user.canonical.…`. Workers re-subscribe accordingly.
+4. Split the worker Deployments per class (`message-worker-user` / `message-worker-bot`, etc.) once the streams are split. Independent HPA from this point.
+
+The publisher namespace already being class-split (chat.user vs chat.bot) is what makes this a **non-breaking** change — no JWT grant changes, no client-side changes, no API contract changes. Only the internal canonical-stream wiring shifts.
+
+#### When to revisit
+
+- After 30 days of production traffic (bot + human) at non-trivial volume on the shared stream — review consumer-lag percentiles by `{class}` label; if p99 lag per class diverges by >2× consistently, split.
+- If a specific operational pain point materializes (noisy-neighbor incident, per-tenant SLO escalation).
+- When adding a 6th+ canonical consumer (more consumers = more pressure on the shared stream; revisit the cost/benefit).
 
 - **Canonical message stream subjects** — yes (the loud trio routes off these).
 - **User-scoped client RPCs** — yes (so JWT scoping naturally enforces class).
