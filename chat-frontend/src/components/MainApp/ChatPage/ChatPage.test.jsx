@@ -193,6 +193,11 @@ describe('ChatPage — quote-reply E2E (real RoomMessageInput)', () => {
         content: 'a reply',
         requestId: 'req-1',
         quotedParentMessageId: 'orig',
+        quotedParentMessage: {
+          messageId: 'orig',
+          sender: { engName: 'alice', account: 'alice' },
+          msg: 'hello',
+        },
       }
     )
   })

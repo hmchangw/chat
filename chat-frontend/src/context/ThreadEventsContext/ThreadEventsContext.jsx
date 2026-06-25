@@ -106,7 +106,18 @@ export function ThreadEventsProvider({ children }) {
         threadParentMessageId: parent.messageId,
         threadParentMessageCreatedAt: parent.createdAtMs,
       }
-      if (opts?.quotedParentMessageId) payload.quotedParentMessageId = opts.quotedParentMessageId
+      if (opts?.quotedParentMessageId) {
+        payload.quotedParentMessageId = opts.quotedParentMessageId
+        // Carry the same snapshot the optimistic render builds, as a server-side
+        // fallback so a transient history outage degrades the quote instead of
+        // dropping the reply.
+        const sn = opts.quotedSnapshot?.senderName
+        payload.quotedParentMessage = {
+          messageId: opts.quotedParentMessageId,
+          sender: { engName: sn, account: sn },
+          msg: opts.quotedSnapshot?.content,
+        }
+      }
       sendMessage(nats, { roomId: parent.roomId, siteId: parent.siteId, payload })
     },
     [user, nats]
