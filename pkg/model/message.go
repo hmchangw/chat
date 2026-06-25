@@ -68,7 +68,29 @@ type SendMessageRequest struct {
 	Content               string `json:"content"`
 	RequestID             string `json:"requestId"`
 	ThreadParentMessageID string `json:"threadParentMessageId,omitempty"`
-	QuotedParentMessageID string `json:"quotedParentMessageId,omitempty"`
+	// ThreadParentMessageCreatedAt is the parent message's createdAt in epoch
+	// milliseconds, sent by the client for a thread reply. It rides the canonical
+	// event so the parallel consumers that don't re-read Cassandra
+	// (notification-worker's access-window suppression, search-sync-worker's
+	// index) have the value. message-worker re-resolves the authoritative value
+	// from messages_by_id for its partition-key-sensitive writes, so a wrong
+	// client value cannot corrupt the parent-row coordinates. Required when
+	// ThreadParentMessageID is set; ignored otherwise.
+	ThreadParentMessageCreatedAt *int64 `json:"threadParentMessageCreatedAt,omitempty"`
+	QuotedParentMessageID        string `json:"quotedParentMessageId,omitempty"`
+	// QuotedParentMessage is the client-supplied snapshot of the quoted parent,
+	// used ONLY as a degraded-mode fallback: message-gatekeeper resolves the
+	// authoritative snapshot from history-service and ignores this field on the
+	// happy path. When that synchronous fetch fails transiently (history-service
+	// briefly unavailable), the gatekeeper falls back to this snapshot so a
+	// Cassandra/history blip does not drop the user's whole message — it only
+	// degrades the quote. The fallback is UNTRUSTED (the client could fabricate
+	// sender/text): the gatekeeper marks the canonical event
+	// QuotedParentUnverified, and message-worker re-projects the authoritative
+	// snapshot from Cassandra (dropping the quote if the parent can't be
+	// confirmed) before the durable write, so a fabricated snapshot never
+	// persists. Ignored when QuotedParentMessageID is empty.
+	QuotedParentMessage *cassandra.QuotedParentMessage `json:"quotedParentMessage,omitempty"`
 	// TShow requests that a thread reply also appear in the parent room's
 	// channel timeline (the "Also send to channel" option). Only meaningful
 	// when ThreadParentMessageID is set — message-gatekeeper normalizes it to
