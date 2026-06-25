@@ -131,7 +131,7 @@ func (h *Handler) HandleUploadImages(c *gin.Context) {
 		return
 	}
 
-	results, fileHeaders := preprocessFiles(files, h.maxImageSize)
+	results, fileHeaders, origNames := preprocessFiles(files, h.maxImageSize, h.nowMilli())
 	defer func() {
 		for _, mf := range fileHeaders {
 			_ = mf.File.Close()
@@ -150,8 +150,12 @@ func (h *Handler) HandleUploadImages(c *gin.Context) {
 	}
 
 	driveHost := h.drive.GetBaseURLFromRoomOrigin(siteID)
-	for _, resp := range responses {
-		item := uploadResultItem{Name: resp.File.Filename, Status: resp.Status, Error: resp.Error}
+	for i, resp := range responses {
+		name := resp.File.Filename
+		if i < len(origNames) {
+			name = origNames[i]
+		}
+		item := uploadResultItem{Name: name, Status: resp.Status, Error: resp.Error}
 		if resp.Status == driveStatusSuccess {
 			item.RelativePath = fileURL(resp.File.GroupID, resp.File.FileID, driveHost)
 		}
@@ -327,8 +331,11 @@ func (h *Handler) requireMembership(ctx context.Context, c *gin.Context, roomID,
 
 // preprocessFiles runs the per-file size/extension/open checks. Rejected files
 // become failure result items; accepted files become MultipartFiles whose open
-// handles the caller is responsible for closing.
-func preprocessFiles(files []*multipart.FileHeader, maxSize int64) (results []uploadResultItem, fileHeaders []drive.MultipartFile) {
+// handles the caller is responsible for closing. Each accepted file is uploaded
+// under a timestamped name (so re-uploads don't collide in Drive); origNames
+// lists the caller-facing originals in send order so the response can show them
+// (Drive echoes the timestamped name, and an empty name on a per-file failure).
+func preprocessFiles(files []*multipart.FileHeader, maxSize, milli int64) (results []uploadResultItem, fileHeaders []drive.MultipartFile, origNames []string) {
 	for _, fh := range files {
 		if fh.Size > maxSize {
 			results = append(results, uploadResultItem{Name: fh.Filename, Status: statusFailure, Error: "file size exceeds limit"})
@@ -343,9 +350,10 @@ func preprocessFiles(files []*multipart.FileHeader, maxSize int64) (results []up
 			results = append(results, uploadResultItem{Name: fh.Filename, Status: statusFailure, Error: "failed to open file"})
 			continue
 		}
-		fileHeaders = append(fileHeaders, drive.MultipartFile{File: f, Filename: fh.Filename})
+		origNames = append(origNames, fh.Filename)
+		fileHeaders = append(fileHeaders, drive.MultipartFile{File: f, Filename: timestampedName(fh.Filename, milli)})
 	}
-	return results, fileHeaders
+	return results, fileHeaders, origNames
 }
 
 // readMultipartFile opens, reads, and closes a multipart file header's content.

@@ -307,6 +307,69 @@ func TestHandleHealth(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "ok")
 }
 
+func TestHandleUploadImages_SendsTimestampedNames_ReturnsOriginals(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	store.EXPECT().IsMember(gomock.Any(), "r1", "alice").Return(true, nil)
+	store.EXPECT().GetRoomSiteID(gomock.Any(), "r1").Return("site-x", nil)
+	fd := &fakeDrive{
+		baseURL: "https://drive.example.com",
+		uploadResp: []drive.UploadGroupImageResponse{
+			{Status: "success", File: drive.GroupImageObject{FileID: "img-1", GroupID: "r1", Filename: "a_1719312000000.png"}},
+		},
+	}
+	h := newHandler(store, fd)
+	h.nowMilli = func() int64 { return 1719312000000 }
+
+	body, ct := multipartBody(t, "images", map[string][]byte{"a.png": []byte("x")})
+	c, w := newUploadCtx(t, "r1", body, ct, okUser())
+	h.HandleUploadImages(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, []string{"a_1719312000000.png"}, fd.uploadGot.filenames, "drive receives the timestamped name")
+
+	var got struct {
+		Results []uploadResultItem `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	require.Len(t, got.Results, 1)
+	assert.Equal(t, "success", got.Results[0].Status)
+	assert.Equal(t, "a.png", got.Results[0].Name, "response shows the original name")
+	assert.Equal(t, "api/v1/rooms/r1/file/img-1?drive_host=https://drive.example.com", got.Results[0].RelativePath)
+}
+
+func TestHandleUploadImages_DriveErrorEmptyFilename_KeepsOriginalName(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	store.EXPECT().IsMember(gomock.Any(), "r1", "alice").Return(true, nil)
+	store.EXPECT().GetRoomSiteID(gomock.Any(), "r1").Return("site-x", nil)
+	// Drive reports a per-file failure: status "failure", empty File (so
+	// resp.File.Filename == "").
+	fd := &fakeDrive{
+		baseURL: "https://drive.example.com",
+		uploadResp: []drive.UploadGroupImageResponse{
+			{Status: "failure", Error: "drive exploded", File: drive.GroupImageObject{}},
+		},
+	}
+	h := newHandler(store, fd)
+	h.nowMilli = func() int64 { return 1719312000000 }
+
+	body, ct := multipartBody(t, "images", map[string][]byte{"a.png": []byte("x")})
+	c, w := newUploadCtx(t, "r1", body, ct, okUser())
+	h.HandleUploadImages(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var got struct {
+		Results []uploadResultItem `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	require.Len(t, got.Results, 1)
+	assert.Equal(t, "failure", got.Results[0].Status)
+	assert.Equal(t, "drive exploded", got.Results[0].Error)
+	assert.Equal(t, "a.png", got.Results[0].Name, "name falls back to original even when drive returns empty filename")
+	assert.Empty(t, got.Results[0].RelativePath)
+}
+
 func TestHandleUploadFile_SendsTimestampedName_ReturnsOriginal(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockStore(ctrl)
