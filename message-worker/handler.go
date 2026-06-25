@@ -110,7 +110,31 @@ func (h *Handler) processMessage(ctx context.Context, data []byte, isMigration b
 	slog.DebugContext(ctx, "message-worker sender resolved",
 		"request_id", natsutil.RequestIDFromContext(ctx), "has_sender", sender != nil)
 
+	// Correct an untrusted client-fallback quoted snapshot before any durable
+	// write, so a fabricated snapshot never persists or re-renders.
+	if err := h.reprojectUnverifiedQuote(ctx, &evt); err != nil {
+		return fmt.Errorf("re-project unverified quote: %w", err)
+	}
+
 	if evt.Message.ThreadParentMessageID != "" {
+		// Resolve the parent's authoritative createdAt from messages_by_id and
+		// overwrite the client-supplied value before any partition-key-sensitive
+		// write (the parent-row stamp and tcount update derive their bucket from
+		// it). The gatekeeper deliberately no longer resolves this against
+		// Cassandra — that put a synchronous history read on the send path, so a
+		// Cassandra outage blocked and silently dropped every thread reply.
+		// Resolving here, after the durable canonical log, turns a Cassandra outage
+		// into a NAK-replay (below) instead. On a parent miss — its own canonical
+		// write hasn't landed yet — keep the client value as a best-effort fallback,
+		// mirroring the parent-not-found handling in handleFirstThreadReply.
+		createdAt, found, err := h.store.GetMessageCreatedAt(ctx, evt.Message.ThreadParentMessageID)
+		if err != nil {
+			return fmt.Errorf("resolve thread parent createdAt: %w", err)
+		}
+		if found {
+			evt.Message.ThreadParentMessageCreatedAt = &createdAt
+		}
+
 		// Resolve (or create) the thread room first so we have the threadRoomID
 		// before persisting the message to Cassandra.
 		threadRoomID, err := h.handleThreadRoomAndSubscriptions(ctx, &evt.Message, evt.SiteID, user, isMigration)
@@ -139,6 +163,40 @@ func (h *Handler) processMessage(ctx context.Context, data []byte, isMigration b
 		debugFlowPersisted(ctx, evt.Message.ID, false)
 	}
 
+	return nil
+}
+
+// reprojectUnverifiedQuote corrects a client-supplied (untrusted) quoted-parent
+// snapshot before the durable write. The gatekeeper sets QuotedParentUnverified
+// when it fell back to the client snapshot after a transient history-fetch
+// failure. Here we re-read the authoritative snapshot from Cassandra and either
+// overwrite the sensitive fields (sender, msg, mentions, createdAt, room, thread
+// context) while preserving the gatekeeper-built MessageLink, or — when the
+// parent can't be confirmed (not yet persisted, or a fabricated ID) — drop the
+// quote entirely so a fabricated snapshot never persists. A no-op on the happy
+// path (flag unset) and for non-quote messages; a Cassandra failure here NAKs
+// and replays, matching the thread-parent-createdAt re-resolution above.
+func (h *Handler) reprojectUnverifiedQuote(ctx context.Context, evt *model.MessageEvent) error {
+	if !evt.QuotedParentUnverified || evt.Message.QuotedParentMessage == nil {
+		return nil
+	}
+	q := evt.Message.QuotedParentMessage
+	snap, found, err := h.store.GetQuotedParentSnapshot(ctx, q.MessageID)
+	if err != nil {
+		return fmt.Errorf("get authoritative quoted parent %s: %w", q.MessageID, err)
+	}
+	// The quote is resolved authoritatively from here on, so the marker is
+	// cleared regardless of whether the parent was found.
+	evt.QuotedParentUnverified = false
+	if !found {
+		slog.WarnContext(ctx, "unverified quoted parent not found in history — dropping quote",
+			"request_id", natsutil.RequestIDFromContext(ctx),
+			"quoted_id", q.MessageID, "message_id", evt.Message.ID)
+		evt.Message.QuotedParentMessage = nil
+		return nil
+	}
+	snap.MessageLink = q.MessageLink // preserve the gatekeeper-built (trusted) link
+	evt.Message.QuotedParentMessage = snap
 	return nil
 }
 
