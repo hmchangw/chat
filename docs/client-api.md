@@ -4329,8 +4329,10 @@ The same subject and request body cover three send variants: plain message, thre
 | `requestId` | string | yes | A 36-char hyphenated UUID (v4 or v7) the client generates. **Validated** — an empty or malformed `requestId` is rejected with no message published. The async reply is delivered to `chat.user.{account}.response.{requestId}`. |
 | `attachments` | string[] | no | Optional. Each entry is base64-encoded bytes — the JSON of one [Attachment](#attachment) from the upload endpoint ([§2.3](#23-http--protected-image-uploaddownload)). Max 1 entry, ≤ 8 KiB total. Stored opaquely and returned **decoded** (as `Attachment[]`) in message payloads. |
 | `threadParentMessageId` | string | no | Set when posting a thread reply. Must be a valid 20-char base62 message ID. |
+| `threadParentMessageCreatedAt` | integer | conditional | The thread parent's `createdAt` in epoch milliseconds. **Required when `threadParentMessageId` is set** (rejected otherwise); ignored on a non-thread send. The gatekeeper carries this onto the canonical event for the consumers that don't re-read message history; `message-worker` re-resolves the authoritative value from history before its history writes, so a wrong client value cannot corrupt the stored parent linkage. |
 | `tshow` | boolean | no | The "Also send to channel" option. Only meaningful on a thread reply (`threadParentMessageId` set): the reply is persisted into the parent room's channel timeline as well as the thread (dual-write into `messages_by_room` in addition to `thread_messages_by_thread` + `messages_by_id`), and is surfaced with `tshow: true` on the persisted message. On a non-thread send the flag is **ignored and normalized to `false`** — the request is not rejected. |
-| `quotedParentMessageId` | string | no | Set when posting a quoted message. The gatekeeper fetches the parent and embeds a snapshot in the persisted message; the client does not send the snapshot itself. |
+| `quotedParentMessageId` | string | no | Set when posting a quoted message. The gatekeeper fetches the authoritative parent snapshot from message history and embeds it in the persisted message. |
+| `quotedParentMessage` | [QuotedParentMessage](#quotedparentmessage) | no | Optional client-supplied **fallback** snapshot of the quoted parent (the client already has it for optimistic rendering). The server ignores it on the happy path — it always prefers its own authoritative fetch. It is used only when that fetch fails *transiently* (history briefly unavailable): rather than dropping the whole message, the gatekeeper degrades to this snapshot for live delivery and `message-worker` re-projects the authoritative snapshot from history before the durable write (dropping the quote if the parent can't be confirmed), so a fabricated fallback never persists. A genuinely missing/forbidden parent is still rejected. Sent alongside `quotedParentMessageId`; ignored without it. |
 
 ##### Plain message
 
@@ -4349,7 +4351,8 @@ The same subject and request body cover three send variants: plain message, thre
   "id": "01970a4f8c2d7c9aQUVW",
   "content": "good morning",
   "requestId": "01970a4f-8c2d-7c9a-abcd-e0123456789a",
-  "threadParentMessageId": "01970a4f8c2d7c9aQRST"
+  "threadParentMessageId": "01970a4f8c2d7c9aQRST",
+  "threadParentMessageCreatedAt": 1717000000000
 }
 ```
 
@@ -4360,9 +4363,16 @@ The same subject and request body cover three send variants: plain message, thre
   "id": "01970a4f8c2d7c9aQXYZ",
   "content": "agreed — adding context",
   "requestId": "01970a4f-8c2d-7c9a-abcd-e0123456789b",
-  "quotedParentMessageId": "01970a4f8c2d7c9aQRST"
+  "quotedParentMessageId": "01970a4f8c2d7c9aQRST",
+  "quotedParentMessage": {
+    "messageId": "01970a4f8c2d7c9aQRST",
+    "sender": { "engName": "Bob Chen", "account": "bob" },
+    "msg": "the original message"
+  }
 }
 ```
+
+The `quotedParentMessage` block is the optional fallback (see the request-body table). The server prefers its authoritative fetch and uses this only to keep the message flowing through a transient history outage.
 
 ##### Thread reply quoting the thread-starter
 
@@ -4374,6 +4384,7 @@ A thread reply may quote the thread's own parent message (the message that start
   "content": "to your original point…",
   "requestId": "01970a4f-8c2d-7c9a-abcd-e0123456789c",
   "threadParentMessageId": "01970a4f8c2d7c9aQRST",
+  "threadParentMessageCreatedAt": 1717000000000,
   "quotedParentMessageId": "01970a4f8c2d7c9aQRST"
 }
 ```
@@ -4419,6 +4430,7 @@ Delivered on `chat.user.{account}.response.{requestId}`. See [Error envelope](#6
 | `invalid requestId "…": must be a hyphenated UUID` | `bad_request` | — | Empty/malformed `requestId`. (Reachable only when `requestId` is non-empty but malformed; an empty `requestId` leaves no reply subject, so the client just times out.) |
 | `invalid message ID "…": must be a 20-char base62 string` | `bad_request` | — | `id` is not valid base62. |
 | `invalid thread parent message ID "…": …` | `bad_request` | — | `threadParentMessageId` is not a valid message ID. |
+| `threadParentMessageCreatedAt is required (positive epoch millis) when threadParentMessageId is set` | `bad_request` | — | A thread reply omitted `threadParentMessageCreatedAt` or sent a non-positive value. |
 | `content must not be empty` | `bad_request` | — | Empty `content`. |
 | `content exceeds maximum size of 20480 bytes` | `bad_request` | — | `content` > 20 KiB. |
 | `not subscribed` | `forbidden` | `not_subscribed` | Sender is not a member of the room. |
