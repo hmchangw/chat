@@ -314,14 +314,46 @@ func TestHandleUploadImages_SendsTimestampedNames_ReturnsOriginals(t *testing.T)
 	assert.Equal(t, "a.png", got.Results[0].Name, "response shows the original name")
 	assert.Equal(t, "api/v1/rooms/r1/file/img-1?drive_host=https://drive.example.com", got.Results[0].RelativePath)
 }
+
+func TestHandleUploadImages_DriveErrorEmptyFilename_KeepsOriginalName(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	store.EXPECT().IsMember(gomock.Any(), "r1", "alice").Return(true, nil)
+	store.EXPECT().GetRoomSiteID(gomock.Any(), "r1").Return("site-x", nil)
+	// Drive reports a per-file failure: status "failure", empty File (so
+	// resp.File.Filename == "").
+	fd := &fakeDrive{
+		baseURL: "https://drive.example.com",
+		uploadResp: []drive.UploadGroupImageResponse{
+			{Status: "failure", Error: "drive exploded", File: drive.GroupImageObject{}},
+		},
+	}
+	h := newHandler(store, fd)
+	h.nowMilli = func() int64 { return 1719312000000 }
+
+	body, ct := multipartBody(t, "images", map[string][]byte{"a.png": []byte("x")})
+	c, w := newUploadCtx(t, "r1", body, ct, okUser())
+	h.HandleUploadImages(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var got struct {
+		Results []uploadResultItem `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	require.Len(t, got.Results, 1)
+	assert.Equal(t, "failure", got.Results[0].Status)
+	assert.Equal(t, "drive exploded", got.Results[0].Error)
+	assert.Equal(t, "a.png", got.Results[0].Name, "name falls back to original even when drive returns empty filename")
+	assert.Empty(t, got.Results[0].RelativePath)
+}
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `make test SERVICE=upload-service -run TestHandleUploadImages_SendsTimestampedNames`
-Expected: FAIL — `fd.uploadGot.filenames` is `["a.png"]` (not timestamped); and once timestamping is added without strip-back, `Name` would be `"a_1719312000000.png"`.
+Run: `make test SERVICE=upload-service -run 'TestHandleUploadImages_SendsTimestampedNames|TestHandleUploadImages_DriveErrorEmptyFilename'`
+Expected: FAIL — `fd.uploadGot.filenames` is `["a.png"]` (not timestamped); once timestamping is added without strip-back, the success `Name` would be `"a_1719312000000.png"`; and the error case `Name` would be `""`.
 
-- [ ] **Step 3: Change `preprocessFiles` to apply the timestamp and return the mapping**
+- [ ] **Step 3: Change `preprocessFiles` to apply the timestamp and return the mappings**
 
 Replace `preprocessFiles` in `upload-service/handler.go` with:
 
@@ -329,9 +361,11 @@ Replace `preprocessFiles` in `upload-service/handler.go` with:
 // preprocessFiles runs the per-file size/extension/open checks. Rejected files
 // become failure result items; accepted files become MultipartFiles whose open
 // handles the caller is responsible for closing. Each accepted file is uploaded
-// under a timestamped name (so re-uploads don't collide in Drive); origBySent
-// maps that sent name back to the caller-facing original for the response.
-func preprocessFiles(files []*multipart.FileHeader, maxSize, milli int64) (results []uploadResultItem, fileHeaders []drive.MultipartFile, origBySent map[string]string) {
+// under a timestamped name (so re-uploads don't collide in Drive). origBySent
+// maps that sent name back to the caller-facing original (reorder-safe success
+// path); origNames lists the originals in send order as a fallback for when
+// Drive returns an empty filename on a per-file failure.
+func preprocessFiles(files []*multipart.FileHeader, maxSize, milli int64) (results []uploadResultItem, fileHeaders []drive.MultipartFile, origBySent map[string]string, origNames []string) {
 	origBySent = make(map[string]string)
 	for _, fh := range files {
 		if fh.Size > maxSize {
@@ -349,28 +383,31 @@ func preprocessFiles(files []*multipart.FileHeader, maxSize, milli int64) (resul
 		}
 		sent := timestampedName(fh.Filename, milli)
 		origBySent[sent] = fh.Filename
+		origNames = append(origNames, fh.Filename)
 		fileHeaders = append(fileHeaders, drive.MultipartFile{File: f, Filename: sent})
 	}
-	return results, fileHeaders, origBySent
+	return results, fileHeaders, origBySent, origNames
 }
 ```
 
 - [ ] **Step 4: Update the `HandleUploadImages` call site and response loop**
 
-In `HandleUploadImages`, change the `preprocessFiles` call (currently line 131) to pass the clock and receive the map:
+In `HandleUploadImages`, change the `preprocessFiles` call (currently line 131) to pass the clock and receive the mappings:
 
 ```go
-	results, fileHeaders, origBySent := preprocessFiles(files, h.maxImageSize, h.nowMilli())
+	results, fileHeaders, origBySent, origNames := preprocessFiles(files, h.maxImageSize, h.nowMilli())
 ```
 
-Then update the response loop (currently lines 150-156) to restore the original name:
+Then update the response loop (currently lines 150-156) to restore the original name, falling back to send order when Drive's echo is empty/unmatched (e.g. a per-file failure):
 
 ```go
 	driveHost := h.drive.GetBaseURLFromRoomOrigin(siteID)
-	for _, resp := range responses {
+	for i, resp := range responses {
 		name := resp.File.Filename
 		if orig, ok := origBySent[name]; ok {
 			name = orig
+		} else if i < len(origNames) {
+			name = origNames[i]
 		}
 		item := uploadResultItem{Name: name, Status: resp.Status, Error: resp.Error}
 		if resp.Status == driveStatusSuccess {
@@ -383,7 +420,7 @@ Then update the response loop (currently lines 150-156) to restore the original 
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `make test SERVICE=upload-service`
-Expected: PASS — the new test passes; `TestUpload_MixedSuccessAndFailure_Merges` still passes (its fake returns the original `"a.png"`, which misses the map and falls back to the echo).
+Expected: PASS — both new tests pass; `TestUpload_MixedSuccessAndFailure_Merges` still passes (its fake returns the original `"a.png"`, which misses the map but the success item is index 0, so the `origNames[0]` fallback also yields `"a.png"`).
 
 - [ ] **Step 6: Commit**
 
@@ -426,10 +463,11 @@ git push -u origin claude/amazing-albattani-pt99o4
 - Timestamp added to Drive filename → Tasks 1, 4, 5. ✅
 - Both handlers (`HandleUploadFile`, `HandleUploadImages`) → Tasks 4, 5. ✅
 - Response excludes the timestamp → Task 4 (uses original `fh.Filename`), Task 5 (`origBySent` strip-back). ✅
+- Response `Name` never empty on Drive per-file failure (empty echo) → Task 5 (`origNames[i]` fallback + `TestHandleUploadImages_DriveErrorEmptyFilename_KeepsOriginalName`). ✅
 - Testable clock → Task 2. ✅
 - Edge cases (no ext, multi-dot, dotfile) → Task 1 table test. ✅
 - No `docs/client-api.md` change required (per spec; response schema unchanged). ✅
 
-**Placeholder scan:** No TBD/TODO; all steps contain concrete code and commands. The only conditional note (Task 4 `model.Attachment.Name` field check) points to a real file to confirm against, with a fallback instruction — acceptable.
+**Placeholder scan:** No TBD/TODO; all steps contain concrete code and commands. Task 4 asserts on `Attachment.Title` (confirmed via `attachment.go`: `meta.name` → `att.Title`).
 
-**Type consistency:** `timestampedName(string, int64) string`, `nowMilli func() int64`, and `preprocessFiles(..., milli int64) (..., origBySent map[string]string)` are used consistently across Tasks 1-5. The `fakeDrive.uploadGot.filenames []string` field defined in Task 3 is read in Tasks 4-5.
+**Type consistency:** `timestampedName(string, int64) string`, `nowMilli func() int64`, and `preprocessFiles(..., milli int64) (results []uploadResultItem, fileHeaders []drive.MultipartFile, origBySent map[string]string, origNames []string)` are used consistently across Tasks 1-5 (the call site in Task 5 Step 4 destructures all four returns). The `fakeDrive.uploadGot.filenames []string` field defined in Task 3 is read in Tasks 4-5.

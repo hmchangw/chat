@@ -54,17 +54,28 @@ path changes:
 The response `Name` currently echoes Drive's `resp.File.Filename`, which would be
 the timestamped name. To return originals, track them:
 
-- `preprocessFiles` builds `MultipartFile`s with timestamped names **and**
-  returns a `map[string]string` mapping timestamped name → original name. It
-  takes the current `milli` (computed once per request by the caller) so all
-  files in a batch share a consistent timestamp source.
-- In the response loop, resolve the original via
-  `orig := origBySent[resp.File.Filename]`, falling back to `resp.File.Filename`
-  if the key is absent (defensive). Status / error / relativePath logic is
-  unchanged.
+- `preprocessFiles` builds `MultipartFile`s with timestamped names and returns
+  both a `map[string]string` (timestamped name → original) **and** an
+  `origNames []string` slice of originals in send order. It takes the current
+  `milli` (computed once per request by the caller) so all files in a batch
+  share a consistent timestamp source.
+- In the response loop (`for i, resp := range responses`), resolve the original:
+  1. If `resp.File.Filename` matches a map key, use that original (reorder-safe
+     success path).
+  2. Otherwise fall back to `origNames[i]` when `i < len(origNames)`
+     (order-based — the only correlation available when the echo is empty).
+  3. Status / error / relativePath logic is otherwise unchanged.
 
-Keying the map on the name we send (echoed back by Drive) makes the mapping
-robust to any reordering of Drive's response items.
+Keying the map on the name we send (echoed back by Drive) makes the success
+path robust to any reordering of Drive's response items.
+
+### Empty filename on Drive failure
+
+When Drive reports a per-file failure, `resp.File.Filename` is an empty string,
+so the map lookup misses. The `origNames[i]` fallback above guarantees the
+response `Name` is never empty — the client still sees which original file
+failed, alongside the `Error` text. (This concern is bulk-only: `HandleUploadFile`
+returns a 500 on Drive failure and builds no per-file item.)
 
 ## Edge cases
 
