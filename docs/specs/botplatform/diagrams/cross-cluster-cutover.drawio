@@ -114,7 +114,7 @@
           <mxGeometry x="460" y="530" width="420" height="80" as="geometry" />
         </mxCell>
 
-        <mxCell id="mongo" value="Mongo   (nextgen chat DB)&#xa;credentials + sessions + users&#xa;(provisioning gate reads users)" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#fff4d6;strokeColor=#b8860b;fontSize=11;align=center;" vertex="1" parent="wsp_ns">
+        <mxCell id="mongo" value="Mongo   (nextgen chat DB)&#xa;users (shared, password in-place) + sessions (new, one doc per session)&#xa;Provisioning gate = in-process field check on the user doc loaded for password verify (no extra Mongo round-trip)" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#fff4d6;strokeColor=#b8860b;fontSize=10;align=center;" vertex="1" parent="wsp_ns">
           <mxGeometry x="20" y="650" width="420" height="120" as="geometry" />
         </mxCell>
         <mxCell id="valkey" value="Valkey  (cluster mode)&#xa;hot cache for /v1/auth/validate&#xa;TTL 5m,  HMAC-keyed lookups" style="shape=cylinder3;whiteSpace=wrap;html=1;fillColor=#fff4d6;strokeColor=#b8860b;fontSize=11;align=center;" vertex="1" parent="wsp_ns">

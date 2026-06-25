@@ -72,39 +72,32 @@
           <mxGeometry x="60" y="85" width="810" height="50" as="geometry" />
         </mxCell>
 
-        <mxCell id="n_step2" value="Step 2   Validate format + verify password" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2E7D32;fontSize=12;fontStyle=1;align=left;verticalAlign=top;" vertex="1" parent="new">
-          <mxGeometry x="40" y="160" width="850" height="100" as="geometry" />
+        <mxCell id="n_step2" value="Step 2   Validate format + verify password + provisioning gate (one Mongo read)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2E7D32;fontSize=12;fontStyle=1;align=left;verticalAlign=top;" vertex="1" parent="new">
+          <mxGeometry x="40" y="160" width="850" height="140" as="geometry" />
         </mxCell>
-        <mxCell id="n_step2_body" value="IsValidBotAccount(&#x27;xxx.bot&#x27;)                ← reject malformed before DB hit&#xa;db.users.findOne({account}) — read services.password.bcrypt (in-place; SAME legacy schema path)&#xa;bcrypt.CompareHashAndPassword(...)             constant-time + dummy compare on miss" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontFamily=Courier New;" vertex="1" parent="new">
-          <mxGeometry x="60" y="185" width="810" height="70" as="geometry" />
-        </mxCell>
-
-        <mxCell id="n_step3" value="Step 3   PROVISIONING GATE   (NEW — mirrors PR #295)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF8E1;strokeColor=#F57F17;fontSize=12;fontStyle=1;align=left;verticalAlign=top;" vertex="1" parent="new">
-          <mxGeometry x="40" y="280" width="850" height="100" as="geometry" />
-        </mxCell>
-        <mxCell id="n_step3_body" value="db.users.findOne({ account, siteId: SITE_ID })&#xa;not found → 403 account_not_provisioned     (fail-closed on store error)&#xa;REQUIRE_PROVISIONED=true default; mis-pointed bot at wrong site cannot log in" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontFamily=Courier New;" vertex="1" parent="new">
-          <mxGeometry x="60" y="305" width="810" height="70" as="geometry" />
+        <mxCell id="n_step2_body" value="IsValidBotAccount(&#x27;xxx.bot&#x27;)                ← reject malformed before DB hit&#xa;u := db.users.findOne({account}) — read services.password.bcrypt (in-place; SAME legacy schema path)&#xa;bcrypt.CompareHashAndPassword(u.bcrypt, …)   constant-time + dummy compare on miss&#xa;if u.siteId != SITE_ID → 403 account_not_provisioned    ← PROVISIONING GATE (NEW; mirrors PR #295)&#xa;                                                          field check on the doc above, no extra Mongo query" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontFamily=Courier New;" vertex="1" parent="new">
+          <mxGeometry x="60" y="185" width="810" height="110" as="geometry" />
         </mxCell>
 
-        <mxCell id="n_step4" value="Step 4   Issue v1 token   (NEW format)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2E7D32;fontSize=12;fontStyle=1;align=left;verticalAlign=top;" vertex="1" parent="new">
-          <mxGeometry x="40" y="400" width="850" height="120" as="geometry" />
+        <mxCell id="n_step3" value="Step 3   Issue v1 token   (NEW format)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2E7D32;fontSize=12;fontStyle=1;align=left;verticalAlign=top;" vertex="1" parent="new">
+          <mxGeometry x="40" y="320" width="850" height="120" as="geometry" />
         </mxCell>
-        <mxCell id="n_step4_body" value="raw  = &quot;bp1_&quot; + base64url( crypto/rand.Read(32) )       ← 256-bit entropy, versioned prefix&#xa;hash = base64( HMAC-SHA-256( TOKEN_HMAC_KEY, raw ) )   ← keyed hash, server-side secret&#xa;wire format = bp1_&lt;43-char base64url&gt;   (47 chars total)" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontFamily=Courier New;" vertex="1" parent="new">
-          <mxGeometry x="60" y="425" width="810" height="90" as="geometry" />
-        </mxCell>
-
-        <mxCell id="n_step5" value="Step 5   INSERT sessions row + cap enforcement (FIFO by issuedAt)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2E7D32;fontSize=12;fontStyle=1;align=left;verticalAlign=top;" vertex="1" parent="new">
-          <mxGeometry x="40" y="540" width="850" height="140" as="geometry" />
-        </mxCell>
-        <mxCell id="n_step5_body" value="db.sessions.insertOne({ _id: hash, userId, account, siteId,&#xa;                       scheme:&#x27;v1&#x27;, issuedAt: now })&#xa;over := db.sessions.countDocuments({userId}) - SESSIONS_MAX_PER_ACCOUNT&#xa;if over &gt; 0:&#xa;    victims := find({userId}).sort({issuedAt:1}).limit(over)  ← IXSCAN on {userId,issuedAt}&#xa;    deleteMany(victims._ids) + valkey.del(each)               ← explicit cache invalidation&#xa;✓ O(1) validate by _id (cap doesn&#x27;t affect read cost)" style="text;html=1;align=left;verticalAlign=middle;fontSize=10;fontFamily=Courier New;" vertex="1" parent="new">
-          <mxGeometry x="60" y="565" width="810" height="110" as="geometry" />
+        <mxCell id="n_step3_body" value="raw  = &quot;bp_&quot; + base64url( crypto/rand.Read(32) )        ← 256-bit entropy, per-class prefix&#xa;hash = base64( HMAC-SHA-256( TOKEN_HMAC_KEY, raw ) )   ← keyed hash, server-side secret&#xa;wire format = bp_&lt;43-char base64url&gt;    (46 chars total; ad_ for admin tokens)" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontFamily=Courier New;" vertex="1" parent="new">
+          <mxGeometry x="60" y="345" width="810" height="90" as="geometry" />
         </mxCell>
 
-        <mxCell id="n_step6" value="Step 6   Warm Valkey cache + return RC-compatible envelope" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2E7D32;fontSize=12;fontStyle=1;align=left;verticalAlign=top;" vertex="1" parent="new">
-          <mxGeometry x="40" y="680" width="850" height="120" as="geometry" />
+        <mxCell id="n_step4" value="Step 4   INSERT sessions row + cap enforcement (FIFO by issuedAt)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2E7D32;fontSize=12;fontStyle=1;align=left;verticalAlign=top;" vertex="1" parent="new">
+          <mxGeometry x="40" y="460" width="850" height="140" as="geometry" />
         </mxCell>
-        <mxCell id="n_step6_body" value="SETEX valkey  hash  →  principal  (TTL 5m, hot path for validate)&#xa;{ status:&#x27;success&#x27;, data:{ authToken:&#x27;bp1_…&#x27;, userId, me } }&#xa;subsequent calls: X-Auth-Token + X-User-Id  (SAME header shape)" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontFamily=Courier New;" vertex="1" parent="new">
-          <mxGeometry x="60" y="705" width="810" height="90" as="geometry" />
+        <mxCell id="n_step4_body" value="db.sessions.insertOne({ _id: hash, userId, account, siteId,&#xa;                       scheme:&#x27;v1&#x27;, issuedAt: now })&#xa;over := db.sessions.countDocuments({userId}) - SESSIONS_MAX_PER_ACCOUNT&#xa;if over &gt; 0:&#xa;    victims := find({userId}).sort({issuedAt:1}).limit(over)  ← IXSCAN on {userId,issuedAt}&#xa;    deleteMany(victims._ids) + valkey.del(each)               ← explicit cache invalidation&#xa;✓ O(1) validate by _id (cap doesn&#x27;t affect read cost)" style="text;html=1;align=left;verticalAlign=middle;fontSize=10;fontFamily=Courier New;" vertex="1" parent="new">
+          <mxGeometry x="60" y="485" width="810" height="110" as="geometry" />
+        </mxCell>
+
+        <mxCell id="n_step5" value="Step 5   Warm Valkey cache + return RC-compatible envelope" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2E7D32;fontSize=12;fontStyle=1;align=left;verticalAlign=top;" vertex="1" parent="new">
+          <mxGeometry x="40" y="620" width="850" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="n_step5_body" value="SETEX valkey  hash  →  principal  (TTL 5m, hot path for validate)&#xa;{ status:&#x27;success&#x27;, data:{ authToken:&#x27;bp_…&#x27;, userId, me } }&#xa;subsequent calls: X-Auth-Token + X-User-Id  (SAME header shape)" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontFamily=Courier New;" vertex="1" parent="new">
+          <mxGeometry x="60" y="645" width="810" height="90" as="geometry" />
         </mxCell>
 
         <mxCell id="n_wins" value="What the new mechanism wins" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#2E7D32;fontSize=12;fontStyle=1;align=left;verticalAlign=top;" vertex="1" parent="new">

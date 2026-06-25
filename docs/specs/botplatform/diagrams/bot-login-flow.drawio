@@ -72,9 +72,10 @@
           <mxGeometry x="960" y="700" width="200" height="30" as="geometry" />
         </mxCell>
 
-        <!-- Step 10: PROVISIONING GATE -->
-        <mxCell id="m10" value="10. PROVISIONING GATE — find {account, siteId} in users" style="edgeStyle=none;html=1;endArrow=classic;strokeColor=#C62828;strokeWidth=3;fontSize=12;fontStyle=1;verticalAlign=bottom;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="1030" y="780" as="sourcePoint" /><mxPoint x="1260" y="780" as="targetPoint" /></mxGeometry></mxCell>
-        <mxCell id="m11" value="11. found ✓  (else 403 account_not_provisioned)" style="edgeStyle=none;html=1;endArrow=classic;dashed=1;strokeColor=#C62828;fontSize=12;verticalAlign=bottom;" edge="1" parent="1"><mxGeometry relative="1" as="geometry"><mxPoint x="1260" y="830" as="sourcePoint" /><mxPoint x="1030" y="830" as="targetPoint" /></mxGeometry></mxCell>
+        <!-- Step 10: PROVISIONING GATE — in-process field check on user doc from step 8 (NO Mongo round-trip) -->
+        <mxCell id="m10_act" value="10. PROVISIONING GATE (in-process, no extra Mongo) — if u.siteId != SITE_ID → 403 account_not_provisioned" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFCDD2;strokeColor=#C62828;fontSize=11;align=center;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="800" y="775" width="510" height="30" as="geometry" />
+        </mxCell>
 
         <!-- Step 12: in-process token gen (green) -->
         <mxCell id="m12_act" value="12. issue v1 token (bp1_ + HMAC-SHA-256)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=11;align=center;fontStyle=1;" vertex="1" parent="1">
@@ -117,7 +118,7 @@
         <mxCell id="ann_9" value="(9) bcrypt.CompareHashAndPassword(passwordHash, sha256_hex(plaintext)); dummy compare on unknown account for timing uniformity" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFF8DC;strokeColor=#B8860B;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="1">
           <mxGeometry x="1530" y="620" width="240" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="ann_10" value="(10) fail-closed on store error; REQUIRE_PROVISIONED=true default; mirrors auth-service from PR #295" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFEBEE;strokeColor=#C62828;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="1">
+        <mxCell id="ann_10" value="(10) In-process field check on user doc from step 8 — NO extra Mongo query. REQUIRE_PROVISIONED=true default; mirrors auth-service from PR #295. Fail-closed if u.siteId missing." style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FFEBEE;strokeColor=#C62828;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="1">
           <mxGeometry x="1530" y="760" width="240" height="70" as="geometry" />
         </mxCell>
         <mxCell id="ann_12" value="(12) raw = 'bp1_' + base64url(crypto/rand.Read(32))   hash = base64(HMAC-SHA-256(TOKEN_HMAC_KEY, raw))" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=10;align=left;verticalAlign=top;" vertex="1" parent="1">
@@ -128,7 +129,7 @@
         </mxCell>
 
         <!-- Legend -->
-        <mxCell id="legend" value="LEGEND  &#xa;━━ blue: client / gateway HTTP hop    ━━ orange: cross-cluster mTLS&#xa;━━ red: provisioning gate (fail-closed)    ━━ green: token issue + cache&#xa;━━ grey: store lookup    ┄┄ dashed: response&#xa;yellow box: in-process validation step on botplatform-service lifeline" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#90A4AE;fontSize=11;align=left;verticalAlign=top;" vertex="1" parent="1">
+        <mxCell id="legend" value="LEGEND  &#xa;━━ blue: client / gateway HTTP hop    ━━ orange: cross-cluster mTLS&#xa;━━ green: token issue + cache    ━━ grey: store lookup    ┄┄ dashed: response&#xa;yellow box: in-process validation step on botplatform-service lifeline&#xa;red box: in-process security gate (fail-closed; no extra Mongo query)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#FAFAFA;strokeColor=#90A4AE;fontSize=11;align=left;verticalAlign=top;" vertex="1" parent="1">
           <mxGeometry x="60" y="1250" width="900" height="80" as="geometry" />
         </mxCell>
       </root>
