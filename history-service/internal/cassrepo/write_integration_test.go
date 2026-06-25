@@ -1513,13 +1513,13 @@ func TestEditMessage_Plaintext_NullsEncryptedColumns(t *testing.T) {
 	}
 }
 
-// TestEditMessage_Encrypted_NullsLegacyQuotedParent verifies that editing
-// a legacy row with a plaintext quoted_parent_message UDT under the
-// cipher-enabled path nulls the on-disk UDT column. Without this, the
-// re-encryption cycle promotes the quoted body INTO the bundle (via
-// readEncryptedFields) but leaves the plaintext column on disk — defeating
-// the at-rest goal for the quoted parent body.
-func TestEditMessage_Encrypted_NullsLegacyQuotedParent(t *testing.T) {
+// TestEditMessage_Encrypted_PreservesLegacyQuotedParentMetadata verifies that
+// editing a legacy row with a plaintext quoted_parent_message UDT under the
+// cipher-enabled path keeps the parent's metadata in the plaintext column while
+// only the body sub-fields (msg, attachments) move into enc_payload — the
+// StripEncryptedFields contract. Regression guard for the whole-column-null
+// data loss (#385).
+func TestEditMessage_Encrypted_PreservesLegacyQuotedParentMetadata(t *testing.T) {
 	ctx := context.Background()
 	session := setupCassandra(t)
 	mongoDB := setupMongo(t)
@@ -1576,7 +1576,13 @@ func TestEditMessage_Encrypted_NullsLegacyQuotedParent(t *testing.T) {
 	} {
 		var got *cassmodel.QuotedParentMessage
 		require.NoError(t, session.Query(table.q, table.args...).Scan(&got), "select from %s", table.name)
-		assert.Nil(t, got, "%s: quoted_parent_message must be NULL after encrypted edit — the body has been promoted into enc_payload", table.name)
+		require.NotNil(t, got, "%s: quoted_parent_message metadata must survive the encrypted edit", table.name)
+		assert.Equal(t, "q-parent", got.MessageID, "%s: messageId preserved", table.name)
+		assert.Equal(t, roomID, got.RoomID, "%s: roomId preserved", table.name)
+		assert.Equal(t, "alice", got.Sender.Account, "%s: sender preserved", table.name)
+		assert.True(t, parentCreatedAt.Equal(got.CreatedAt), "%s: createdAt preserved", table.name)
+		assert.Empty(t, got.Msg, "%s: body moved into enc_payload", table.name)
+		assert.Nil(t, got.Attachments, "%s: body attachments moved into enc_payload", table.name)
 	}
 }
 
