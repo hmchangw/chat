@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -565,17 +566,42 @@ func TestCountUnread_Happy(t *testing.T) {
 	assert.Equal(t, 1, resp.Count)
 }
 
-func TestCountUnread_FallbackToTotal(t *testing.T) {
+func TestCountUnread_FailedSiteSkipped(t *testing.T) {
 	svc, subs, _, _, rooms, _ := newSvc(t)
+	seen := time.UnixMilli(100).UTC()
+	newer := time.UnixMilli(200).UTC()
 	subs.EXPECT().CountActiveSubscriptions(gomock.Any(), "alice").Return(5, nil)
-	// A CROSS-SITE sub (the local path makes no RPC, so it can't trigger the fallback).
+	// One LOCAL unread (counted from the baseline) + one CROSS-SITE sub whose site's RPC fails.
 	subs.EXPECT().GetActiveSubscriptions(gomock.Any(), "alice", 5).
-		Return([]model.Subscription{{RoomID: "r1", SiteID: "site-b"}}, nil)
+		Return([]model.Subscription{
+			{RoomID: "r1", SiteID: "site-a", LastSeenAt: &seen, LastMsgAt: &newer}, // local unread
+			{RoomID: "r2", SiteID: "site-b", LastSeenAt: &seen},                    // cross-site, site fails
+		}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-b", gomock.Any()).Return(nil, errors.New("down"))
 	yes := true
 	resp, err := svc.CountSubscriptions(ctx("alice", "site-a"), models.CountRequest{Unread: &yes})
 	require.NoError(t, err)
-	assert.Equal(t, 5, resp.Count) // cross-site RPC failed → fell back to total
+	// The unreachable site is SKIPPED; the local unread still counts — NOT a fallback to total(5).
+	assert.Equal(t, 1, resp.Count)
+}
+
+func TestCountUnread_PartialFailureCountsHealthySites(t *testing.T) {
+	svc, subs, _, _, rooms, _ := newSvc(t)
+	seen := time.UnixMilli(100).UTC()
+	newer := int64(200)
+	subs.EXPECT().CountActiveSubscriptions(gomock.Any(), "alice").Return(9, nil)
+	subs.EXPECT().GetActiveSubscriptions(gomock.Any(), "alice", 9).Return([]model.Subscription{
+		{RoomID: "rb1", SiteID: "site-b", LastSeenAt: &seen}, // healthy site, unread
+		{RoomID: "rc1", SiteID: "site-c", LastSeenAt: &seen}, // failing site, skipped
+	}, nil)
+	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-b", gomock.Any()).
+		Return([]model.RoomInfo{{RoomID: "rb1", Found: true, LastMsgAt: &newer}}, nil)
+	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-c", gomock.Any()).Return(nil, errors.New("down"))
+	yes := true
+	resp, err := svc.CountSubscriptions(ctx("alice", "site-a"), models.CountRequest{Unread: &yes})
+	require.NoError(t, err)
+	// site-b's unread counts; the unreachable site-c is skipped — NOT a fallback to total(9).
+	assert.Equal(t, 1, resp.Count)
 }
 
 func TestCountUnread_GetActiveStoreError(t *testing.T) {
@@ -637,6 +663,26 @@ func TestCountUnread_EmptyActive(t *testing.T) {
 	assert.Equal(t, 0, resp.Count)
 }
 
+func TestCountUnread_ContextCancelled_SkipsRPC(t *testing.T) {
+	// A cancelled client context must short-circuit the cross-site fan-out before
+	// firing any ~5s GetRoomsInfo RPC; local subs still count from the baseline.
+	svc, subs, _, _, rooms, _ := newSvc(t)
+	seen := time.UnixMilli(100).UTC()
+	newer := time.UnixMilli(200).UTC()
+	subs.EXPECT().GetActiveSubscriptions(gomock.Any(), "alice", 2).
+		Return([]model.Subscription{
+			{RoomID: "r1", SiteID: "site-a", LastSeenAt: &seen, LastMsgAt: &newer}, // local unread
+			{RoomID: "r2", SiteID: "site-b", LastSeenAt: &seen},                    // cross-site, must be skipped
+		}, nil)
+	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	resp, err := svc.countUnread(cancelled, "alice", 2)
+	require.NoError(t, err)
+	assert.Equal(t, 1, resp.Count, "cross-site site skipped on cancel; local unread still counts")
+}
+
 func TestDistinctListNames(t *testing.T) {
 	subs := []model.Subscription{
 		{Name: "helper.bot", RoomType: model.RoomTypeBotDM},
@@ -655,22 +701,6 @@ func TestDistinctListNames_Empty(t *testing.T) {
 	bots, dmCounterparts := distinctListNames(nil)
 	assert.Empty(t, bots)
 	assert.Empty(t, dmCounterparts)
-}
-
-func TestCountUnread_DedupsRoomIDs(t *testing.T) {
-	svc, subs, _, _, rooms, _ := newSvc(t)
-	seen := time.UnixMilli(100).UTC()
-	newer := int64(200)
-	// Cross-site subs (the dedup applies to the per-site RPC roomID list).
-	subs.EXPECT().GetActiveSubscriptions(gomock.Any(), "alice", 2).Return([]model.Subscription{
-		{ID: "a", RoomID: "r1", SiteID: "site-b", LastSeenAt: &seen},
-		{ID: "b", RoomID: "r1", SiteID: "site-b", LastSeenAt: &seen}, // same room
-	}, nil)
-	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-b", []string{"r1"}).
-		Return([]model.RoomInfo{{RoomID: "r1", Found: true, LastMsgAt: &newer}}, nil)
-	resp, err := svc.countUnread(ctx("alice", "site-a"), "alice", 2)
-	require.NoError(t, err)
-	assert.Equal(t, 2, resp.Count) // both subs counted unread; RPC roomIDs deduped to ["r1"]
 }
 
 func TestCount_UnreadFalse(t *testing.T) {

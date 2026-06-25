@@ -4183,7 +4183,7 @@ Returns the count of active subscriptions, optionally filtered to unread rooms o
 { "count": 5 }
 ```
 
-**Unread count behavior:** when `unread: true`, the service fetches the active subscriptions and splits them by site. **Local** subscriptions are counted directly from the room baseline carried on the `$lookup` (comparing the room's `lastMsgAt` against the subscription's `lastSeenAt`) — no RPC is made. Only **cross-site** subscriptions trigger a per-site `GetRoomsInfo` RPC, run in **parallel** using `errgroup` (fail-fast). If **any** cross-site RPC fails, the entire unread count falls back to the total active-subscription count (logged as a warning). This is intentionally all-or-nothing and differs from `subscription.list` enrichment, which degrades per-site — a partial unread count would be misleading.
+**Unread count behavior:** when `unread: true`, the service fetches the active subscriptions and splits them by site. **Local** subscriptions are counted directly from the room baseline carried on the `$lookup` (comparing the room's `lastMsgAt` against the subscription's `lastSeenAt`) — no RPC is made. Only **cross-site** subscriptions trigger a per-site `GetRoomsInfo` RPC, run in **parallel**. The count **degrades per-site** (matching `subscription.list` enrichment): if a cross-site RPC fails, that site's subscriptions are **skipped** — omitted from the count and logged as a warning — while local subscriptions and the sites that did respond still contribute. The result is a best-effort count that may under-report while a remote site is unreachable, rather than the full active-subscription total.
 
 ##### Error response
 
