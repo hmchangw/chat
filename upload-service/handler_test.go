@@ -307,6 +307,49 @@ func TestHandleHealth(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "ok")
 }
 
+func TestHandleUploadFile_SendsTimestampedName_ReturnsOriginal(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	store.EXPECT().IsMember(gomock.Any(), "r1", "alice").Return(true, nil)
+	store.EXPECT().GetRoomSiteID(gomock.Any(), "r1").Return("site-x", nil)
+	fd := &fakeDrive{
+		baseURL: "http://drive",
+		uploadResp: []drive.UploadGroupImageResponse{
+			{Status: "success", File: drive.GroupImageObject{FileID: "f1", GroupID: "r1", Filename: "photo_1719312000000.png", FileSize: 3}},
+		},
+	}
+	h := NewHandler(store, fd, 0, 0, 100<<20, newMediaTypeFilter("", "image/svg+xml"), imagePreview)
+	h.nowMilli = func() int64 { return 1719312000000 }
+
+	body := &bytes.Buffer{}
+	mw := multipart.NewWriter(body)
+	w, err := mw.CreateFormFile("file", "photo.png")
+	require.NoError(t, err)
+	_, _ = w.Write([]byte("xxx"))
+	require.NoError(t, mw.Close())
+
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/rooms/r1/upload/file", body)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	c.Request = req
+	c.Params = gin.Params{{Key: "roomId", Value: "r1"}}
+	c.Set(ctxUserKey, okUser())
+
+	h.HandleUploadFile(c)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, []string{"photo_1719312000000.png"}, fd.uploadGot.filenames, "drive receives the timestamped name")
+
+	var got struct {
+		Attachments []model.Attachment `json:"attachments"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Len(t, got.Attachments, 1)
+	assert.Equal(t, "photo.png", got.Attachments[0].Title, "response keeps the original name")
+}
+
 func Test_timestampedName(t *testing.T) {
 	const milli int64 = 1719312000000
 	tests := []struct {

@@ -246,7 +246,7 @@ func (h *Handler) HandleUploadFile(c *gin.Context) {
 	}
 
 	responses, err := h.drive.UploadGroupImages(user.Account, user.DisplayName(), user.Email, roomID, siteID,
-		[]drive.MultipartFile{{File: driveFile, Filename: fh.Filename}})
+		[]drive.MultipartFile{{File: driveFile, Filename: timestampedName(fh.Filename, h.nowMilli())}})
 	if err != nil {
 		errhttp.Write(ctx, c, fmt.Errorf("upload file to drive: %w", err))
 		return
