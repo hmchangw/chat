@@ -33,6 +33,7 @@ type fakeDrive struct {
 	uploadGot  struct {
 		userID, username, email, groupID, origin string
 		n                                        int
+		filenames                                []string
 	}
 
 	getResp *drive.GetGroupImageResponse
@@ -45,6 +46,10 @@ type fakeDrive struct {
 func (f *fakeDrive) UploadGroupImages(userID, username, email, groupID, origin string, files []drive.MultipartFile) ([]drive.UploadGroupImageResponse, error) {
 	f.uploadGot.userID, f.uploadGot.username, f.uploadGot.email = userID, username, email
 	f.uploadGot.groupID, f.uploadGot.origin, f.uploadGot.n = groupID, origin, len(files)
+	f.uploadGot.filenames = nil
+	for _, mf := range files {
+		f.uploadGot.filenames = append(f.uploadGot.filenames, mf.Filename)
+	}
 	return f.uploadResp, f.uploadErr
 }
 func (f *fakeDrive) GetGroupImage(host, groupID, fileID string) (*drive.GetGroupImageResponse, error) {
