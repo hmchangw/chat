@@ -45,9 +45,11 @@ type Subscription struct {
 	Restricted     bool `json:"restricted,omitempty"     bson:"restricted,omitempty"`
 	ExternalAccess bool `json:"externalAccess,omitempty" bson:"externalAccess,omitempty"`
 
-	// Authoritative subscription state maintained by the write path; never recomputed by read enrichment.
-	HasGroupMention bool `json:"hasGroupMention" bson:"hasGroupMention"`
-	HasUnread       bool `json:"hasUnread"       bson:"hasUnread"`
+	// HasUnread and HasGroupMention are NOT persisted (bson:"-"); subscription.list
+	// enrichment computes them at read time from the room's LastMsgAt /
+	// LastMentionAllAt vs the subscription's LastSeenAt.
+	HasUnread       bool `json:"hasUnread"       bson:"-"`
+	HasGroupMention bool `json:"hasGroupMention" bson:"-"`
 
 	// Read-time baseline from the rooms $lookup/$addFields — internal only (json:"-"), used to build
 	// sub.Room for LOCAL subs (cross-site subs carry zero values). Writers persisting a full Subscription
@@ -89,10 +91,13 @@ type SubscriptionRoom struct {
 	// UserCount/AppCount/LastMsgID mirror the room-service room document (model.Room).
 	UserCount int `json:"userCount,omitempty" bson:"-"`
 	AppCount  int `json:"appCount,omitempty" bson:"-"`
-	// LastMsgAt/LastMentionAllAt are epoch millis (*int64) — they arrive over the room-service RPC.
-	LastMsgAt        *int64 `json:"lastMsgAt,omitempty" bson:"-"`
-	LastMsgID        string `json:"lastMsgId,omitempty" bson:"-"`
-	LastMentionAllAt *int64 `json:"lastMentionAllAt,omitempty" bson:"-"`
+	// LastMsgAt/LastMentionAllAt are returned to the client as
+	// RFC3339 timestamps (*time.Time). The room-service RPC delivers them as epoch
+	// millis; enrichment converts at the seam (the local $lookup baseline already
+	// carries *time.Time).
+	LastMsgAt        *time.Time `json:"lastMsgAt,omitempty" bson:"-"`
+	LastMsgID        string     `json:"lastMsgId,omitempty" bson:"-"`
+	LastMentionAllAt *time.Time `json:"lastMentionAllAt,omitempty" bson:"-"`
 	// Room E2E key delivered to authorized members for initial key bootstrap
 	// on subscription.list (same payload as the room.key.get RPC).
 	PrivateKey *string `json:"privateKey,omitempty" bson:"-"`

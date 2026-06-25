@@ -52,10 +52,10 @@ func (r *SubscriptionRepo) EnsureIndexes(ctx context.Context) error {
 }
 
 // roomsEnrichStages builds the shared rooms-join + enrichment. When dropDeleted is true
-// (count/active paths) it also drops local soft-deleted (^Del-) rooms; the list paths
-// pass false and keep them (the service nulls their room object). A missing/cross-site
-// room has no room.name so it is kept either way. The activity window is applied
-// separately by the caller on the subscription's own _updatedAt.
+// it drops local soft-deleted (^Del-) rooms — the list, count, and active paths all
+// pass true. A missing/cross-site room has no room.name so it is kept either way. The
+// rooms-type activity window is applied separately by the caller on the room's
+// lastMsgAt (surfaced here).
 func roomsEnrichStages(dropDeleted bool) bson.A {
 	stages := bson.A{
 		bson.M{"$lookup": bson.M{"from": roomsCollection, "localField": "roomId", "foreignField": "_id", "as": "room"}},
@@ -131,16 +131,16 @@ func subscriptionProjection(extra bson.M) bson.M {
 		"joinedAt":           1,
 		"lastSeenAt":         1,
 		"hasMention":         1,
-		"hasGroupMention":    1,
-		"hasUnread":          1,
-		"threadUnread":       1,
-		"alert":              1,
-		"muted":              1,
-		"favorite":           1,
-		"restricted":         1,
-		"externalAccess":     1,
-		"favoritedAt":        1,
-		"_updatedAt":         1, // subscription's Mongo field (wire: updatedAt)
+		// hasGroupMention removed from the schema; hasUnread is computed at read
+		// time (bson:"-"). Neither is projected from Mongo.
+		"threadUnread":   1,
+		"alert":          1,
+		"muted":          1,
+		"favorite":       1,
+		"restricted":     1,
+		"externalAccess": 1,
+		"favoritedAt":    1,
+		"_updatedAt":     1, // subscription's Mongo field (wire: updatedAt)
 		// room baseline copied to the top level (consumed by local enrichment)
 		"userCount":        1,
 		"lastMsgAt":        1,

@@ -22,6 +22,7 @@ func TestEnrichCrossSite_ContextCancelled_SkipsRPC(t *testing.T) {
 		{ID: "b", RoomID: "r2", SiteID: "site-b"},
 	}
 	idxBySite := map[string][]int{"site-b": {0}}
+	roomIDsBySite := map[string][]string{"site-b": {"r2"}}
 
 	c := ctx("alice", "site-a")
 	cancelled, cancel := context.WithCancel(context.Background())
@@ -30,7 +31,7 @@ func TestEnrichCrossSite_ContextCancelled_SkipsRPC(t *testing.T) {
 
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
 
-	svc.enrichCrossSite(c, subs, idxBySite)
+	svc.enrichCrossSite(c, subs, idxBySite, roomIDsBySite)
 
 	assert.Nil(t, subs[0].Room, "cancelled fan-out leaves the sub without a room object")
 }
@@ -72,13 +73,15 @@ func TestEnrichWithRoomInfo_LocalAndCrossSite(t *testing.T) {
 	assert.Equal(t, 2, subs[0].Room.AppCount)
 	assert.Equal(t, "m-7", subs[0].Room.LastMsgID)
 	require.NotNil(t, subs[0].Room.LastMsgAt)
-	assert.Equal(t, localMsg.UnixMilli(), *subs[0].Room.LastMsgAt)
+	assert.Equal(t, localMsg, *subs[0].Room.LastMsgAt, "local baseline *time.Time passes through unconverted")
 
 	require.NotNil(t, subs[1].Room)
 	assert.Equal(t, "Ops", subs[1].Room.Name)
 	assert.False(t, subs[1].Alert, "no stored alert ⇒ stays false; never set from room data")
 	assert.Equal(t, 3, subs[1].Room.UserCount) // cross-site sub gets room fields via RPC
 	assert.Equal(t, "m-3", subs[1].Room.LastMsgID)
+	require.NotNil(t, subs[1].Room.LastMsgAt, "cross-site RPC epoch millis are converted to a timestamp")
+	assert.Equal(t, time.UnixMilli(newer).UTC(), *subs[1].Room.LastMsgAt)
 }
 
 // TestEnrichWithRoomInfo_LocalKeyMaterial pins that a LOCAL sub whose room has a
@@ -299,37 +302,117 @@ func TestUnread(t *testing.T) {
 
 func ptrInt64(v int64) *int64 { return &v }
 
-// TestEnrichWithRoomInfo_LocalDedupsRoomIDs pins that two local subs on the same
-// room cause a single deduped key read and both receive the baseline room.
-func TestEnrichWithRoomInfo_LocalDedupsRoomIDs(t *testing.T) {
-	svc, _, _, _, _, _ := newSvc(t)
+// hasUnread is computed at read time for LOCAL subs: the room's lastMsgAt
+// (baseline) is newer than the subscription's lastSeenAt. A deleted/absent room
+// yields no room object and so is never unread.
+func TestEnrichWithRoomInfo_ComputesHasUnread_Local(t *testing.T) {
 	seen := time.UnixMilli(100).UTC()
-	subs := []model.Subscription{
-		{ID: "a", RoomID: "r1", SiteID: "site-a", LastSeenAt: &seen, RoomName: "Eng"},
-		{ID: "b", RoomID: "r1", SiteID: "site-a", LastSeenAt: &seen, RoomName: "Eng"}, // same room, second sub
+	newer := time.UnixMilli(200).UTC()
+	older := time.UnixMilli(50).UTC()
+	cases := []struct {
+		name string
+		sub  model.Subscription
+		want bool
+	}{
+		{"room msg newer than lastSeen is unread",
+			model.Subscription{RoomID: "r1", SiteID: "site-a", RoomName: "Eng", LastSeenAt: &seen, LastMsgAt: &newer}, true},
+		{"room msg older than lastSeen is read",
+			model.Subscription{RoomID: "r1", SiteID: "site-a", RoomName: "Eng", LastSeenAt: &seen, LastMsgAt: &older}, false},
+		{"never seen but room has a msg is unread",
+			model.Subscription{RoomID: "r1", SiteID: "site-a", RoomName: "Eng", LastMsgAt: &newer}, true},
+		{"room has no msg is read",
+			model.Subscription{RoomID: "r1", SiteID: "site-a", RoomName: "Eng", LastSeenAt: &seen}, false},
+		{"soft-deleted room (no room object) is read",
+			model.Subscription{RoomID: "r1", SiteID: "site-a", RoomName: "Del-Eng", LastSeenAt: &seen, LastMsgAt: &newer}, false},
 	}
-	// EXPECT exactly ["r1"], not ["r1","r1"] — gomock fails the call on arg mismatch.
-	svc.enrichWithRoomInfo(ctx("alice", "site-a"), subs)
-	require.NotNil(t, subs[0].Room)
-	require.NotNil(t, subs[1].Room)
-	assert.Equal(t, "Eng", subs[0].Room.Name)
-	assert.Equal(t, "Eng", subs[1].Room.Name) // both subs enriched from the single baseline
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, _, _, _, _ := newSvc(t)
+			subs := []model.Subscription{tc.sub}
+			svc.enrichWithRoomInfo(ctx("alice", "site-a"), subs)
+			assert.Equal(t, tc.want, subs[0].HasUnread)
+		})
+	}
 }
 
-// TestEnrichWithRoomInfo_CrossSiteDedupsRoomIDs pins the cross-site RPC also dedups.
-func TestEnrichWithRoomInfo_CrossSiteDedupsRoomIDs(t *testing.T) {
-	svc, _, _, _, rooms, _ := newSvc(t)
+// hasUnread is computed at read time for CROSS-SITE subs from the room-service
+// RPC's lastMsgAt vs lastSeenAt; a not-found room yields no room object and is
+// never unread.
+func TestApplyRoomInfo_ComputesHasUnread_CrossSite(t *testing.T) {
 	seen := time.UnixMilli(100).UTC()
-	newer := int64(200)
-	subs := []model.Subscription{
-		{ID: "a", RoomID: "r2", SiteID: "site-b", LastSeenAt: &seen},
-		{ID: "b", RoomID: "r2", SiteID: "site-b", LastSeenAt: &seen}, // same room, second sub
+	cases := []struct {
+		name     string
+		info     model.RoomInfo
+		lastSeen *time.Time
+		want     bool
+	}{
+		{"rpc msg newer than lastSeen is unread", model.RoomInfo{RoomID: "r2", Found: true, Name: "Ops", LastMsgAt: ptrInt64(200)}, &seen, true},
+		{"rpc msg older than lastSeen is read", model.RoomInfo{RoomID: "r2", Found: true, Name: "Ops", LastMsgAt: ptrInt64(50)}, &seen, false},
+		{"never seen but rpc has a msg is unread", model.RoomInfo{RoomID: "r2", Found: true, Name: "Ops", LastMsgAt: ptrInt64(200)}, nil, true},
+		{"not found (no room object) is read", model.RoomInfo{RoomID: "r2", Found: false}, &seen, false},
 	}
-	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-b", []string{"r2"}).
-		Return([]model.RoomInfo{{RoomID: "r2", Found: true, Name: "Ops", LastMsgAt: &newer}}, nil)
-	svc.enrichWithRoomInfo(ctx("alice", "site-a"), subs)
-	require.NotNil(t, subs[0].Room)
-	require.NotNil(t, subs[1].Room)
-	assert.Equal(t, "Ops", subs[0].Room.Name)
-	assert.Equal(t, "Ops", subs[1].Room.Name)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sub := model.Subscription{RoomID: "r2", SiteID: "site-b", LastSeenAt: tc.lastSeen}
+			applyRoomInfo(&sub, &tc.info)
+			assert.Equal(t, tc.want, sub.HasUnread)
+		})
+	}
+}
+
+// hasGroupMention is computed at read time for LOCAL subs from the room's
+// lastMentionAllAt (an @all mention) vs lastSeenAt — the @all-mention parallel of
+// hasUnread; a soft-deleted room (no room object) is never a group mention.
+func TestEnrichWithRoomInfo_ComputesHasGroupMention_Local(t *testing.T) {
+	seen := time.UnixMilli(100).UTC()
+	newer := time.UnixMilli(200).UTC()
+	older := time.UnixMilli(50).UTC()
+	cases := []struct {
+		name string
+		sub  model.Subscription
+		want bool
+	}{
+		{"@all mention newer than lastSeen is a group mention",
+			model.Subscription{RoomID: "r1", SiteID: "site-a", RoomName: "Eng", LastSeenAt: &seen, LastMentionAllAt: &newer}, true},
+		{"@all mention older than lastSeen is read",
+			model.Subscription{RoomID: "r1", SiteID: "site-a", RoomName: "Eng", LastSeenAt: &seen, LastMentionAllAt: &older}, false},
+		{"never seen but room has an @all mention",
+			model.Subscription{RoomID: "r1", SiteID: "site-a", RoomName: "Eng", LastMentionAllAt: &newer}, true},
+		{"no @all mention is read",
+			model.Subscription{RoomID: "r1", SiteID: "site-a", RoomName: "Eng", LastSeenAt: &seen}, false},
+		{"soft-deleted room (no room object) is read",
+			model.Subscription{RoomID: "r1", SiteID: "site-a", RoomName: "Del-Eng", LastSeenAt: &seen, LastMentionAllAt: &newer}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, _, _, _, _ := newSvc(t)
+			subs := []model.Subscription{tc.sub}
+			svc.enrichWithRoomInfo(ctx("alice", "site-a"), subs)
+			assert.Equal(t, tc.want, subs[0].HasGroupMention)
+		})
+	}
+}
+
+// hasGroupMention is computed for CROSS-SITE subs from the RPC's lastMentionAllAt
+// vs lastSeenAt; a not-found room is never a group mention.
+func TestApplyRoomInfo_ComputesHasGroupMention_CrossSite(t *testing.T) {
+	seen := time.UnixMilli(100).UTC()
+	cases := []struct {
+		name     string
+		info     model.RoomInfo
+		lastSeen *time.Time
+		want     bool
+	}{
+		{"rpc @all mention newer than lastSeen is a group mention", model.RoomInfo{RoomID: "r2", Found: true, Name: "Ops", LastMentionAllAt: ptrInt64(200)}, &seen, true},
+		{"rpc @all mention older than lastSeen is read", model.RoomInfo{RoomID: "r2", Found: true, Name: "Ops", LastMentionAllAt: ptrInt64(50)}, &seen, false},
+		{"never seen but rpc has an @all mention", model.RoomInfo{RoomID: "r2", Found: true, Name: "Ops", LastMentionAllAt: ptrInt64(200)}, nil, true},
+		{"not found (no room object) is read", model.RoomInfo{RoomID: "r2", Found: false}, &seen, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sub := model.Subscription{RoomID: "r2", SiteID: "site-b", LastSeenAt: tc.lastSeen}
+			applyRoomInfo(&sub, &tc.info)
+			assert.Equal(t, tc.want, sub.HasGroupMention)
+		})
+	}
 }

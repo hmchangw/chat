@@ -118,9 +118,9 @@ func TestApplyRoomInfo_NestedRoom(t *testing.T) {
 	assert.Equal(t, 2, sub.Room.AppCount)
 	assert.Equal(t, "m9", sub.Room.LastMsgID)
 	require.NotNil(t, sub.Room.LastMsgAt)
-	assert.Equal(t, int64(200), *sub.Room.LastMsgAt)
+	assert.Equal(t, time.UnixMilli(lastMsg).UTC(), *sub.Room.LastMsgAt)
 	require.NotNil(t, sub.Room.LastMentionAllAt)
-	assert.Equal(t, int64(50), *sub.Room.LastMentionAllAt)
+	assert.Equal(t, time.UnixMilli(lastMention).UTC(), *sub.Room.LastMentionAllAt)
 	require.NotNil(t, sub.Room.PrivateKey, "private key must be forwarded, not dropped")
 	assert.Equal(t, pk, *sub.Room.PrivateKey)
 	require.NotNil(t, sub.Room.KeyVersion)
@@ -157,7 +157,7 @@ func TestListSubscriptions_LocalBaselineRoom_NoKey(t *testing.T) {
 	assert.Equal(t, 9, room.UserCount)
 	assert.Equal(t, "m1", room.LastMsgID)
 	require.NotNil(t, room.LastMsgAt)
-	assert.Equal(t, lastMsg.UnixMilli(), *room.LastMsgAt)
+	assert.Equal(t, lastMsg, *room.LastMsgAt)
 	assert.Nil(t, room.PrivateKey, "no baseline key ⇒ no key material")
 }
 
@@ -635,6 +635,26 @@ func TestCountUnread_EmptyActive(t *testing.T) {
 	resp, err := svc.CountSubscriptions(ctx("alice", "site-a"), models.CountRequest{Unread: &yes})
 	require.NoError(t, err)
 	assert.Equal(t, 0, resp.Count)
+}
+
+func TestDistinctListNames(t *testing.T) {
+	subs := []model.Subscription{
+		{Name: "helper.bot", RoomType: model.RoomTypeBotDM},
+		{Name: "bob", RoomType: model.RoomTypeDM},
+		{Name: "Eng", RoomType: model.RoomTypeChannel},      // channels feed neither set
+		{Name: "helper.bot", RoomType: model.RoomTypeBotDM}, // duplicate bot
+		{Name: "carol", RoomType: model.RoomTypeDM},
+		{Name: "bob", RoomType: model.RoomTypeDM}, // duplicate dm counterpart
+	}
+	bots, dmCounterparts := distinctListNames(subs)
+	assert.Equal(t, []string{"helper.bot"}, bots, "bot accounts deduped in first-seen order")
+	assert.Equal(t, []string{"bob", "carol"}, dmCounterparts, "dm counterparts deduped in first-seen order")
+}
+
+func TestDistinctListNames_Empty(t *testing.T) {
+	bots, dmCounterparts := distinctListNames(nil)
+	assert.Empty(t, bots)
+	assert.Empty(t, dmCounterparts)
 }
 
 func TestCountUnread_DedupsRoomIDs(t *testing.T) {

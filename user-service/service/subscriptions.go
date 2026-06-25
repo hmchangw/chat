@@ -15,6 +15,7 @@ import (
 	"github.com/hmchangw/chat/pkg/model"
 	"github.com/hmchangw/chat/pkg/natsrouter"
 	"github.com/hmchangw/chat/pkg/natsutil"
+	"github.com/hmchangw/chat/pkg/timeutil"
 	"github.com/hmchangw/chat/user-service/models"
 )
 
@@ -67,8 +68,10 @@ func (s *UserService) ListSubscriptions(c *natsrouter.Context, req models.Subscr
 // App and HR lookups degrade independently: a failed/missing lookup keeps the base
 // name and omits the app object — it never fails the request.
 func (s *UserService) buildListItems(c *natsrouter.Context, subs []model.Subscription) []model.SubscriptionItem {
-	apps := s.lookupApps(c, subs)
-	hrInfo := s.lookupHRInfo(c, subs)
+	// One pass over subs yields both name sets the lookups need.
+	bots, dmCounterparts := distinctListNames(subs)
+	apps := s.lookupApps(c, bots)
+	hrInfo := s.lookupHRInfo(c, dmCounterparts)
 	items := make([]model.SubscriptionItem, len(subs))
 	for i := range subs {
 		base := &subs[i]
@@ -96,10 +99,9 @@ func (s *UserService) buildListItems(c *natsrouter.Context, subs []model.Subscri
 	return items
 }
 
-// lookupApps fetches the full app docs for the distinct botDM bot accounts; a
+// lookupApps fetches the full app docs for the given distinct bot accounts; a
 // lookup failure degrades to nil (base name kept, no overlay).
-func (s *UserService) lookupApps(c *natsrouter.Context, subs []model.Subscription) map[string]*model.App {
-	bots := distinctNamesByType(subs, model.RoomTypeBotDM)
+func (s *UserService) lookupApps(c *natsrouter.Context, bots []string) map[string]*model.App {
 	if len(bots) == 0 {
 		return nil
 	}
@@ -111,10 +113,9 @@ func (s *UserService) lookupApps(c *natsrouter.Context, subs []model.Subscriptio
 	return apps
 }
 
-// lookupHRInfo fetches the HR records for the distinct dm counterpart accounts; a
-// lookup failure degrades to nil (no hrInfo).
-func (s *UserService) lookupHRInfo(c *natsrouter.Context, subs []model.Subscription) map[string]*model.SubscriptionHRInfo {
-	accounts := distinctNamesByType(subs, model.RoomTypeDM)
+// lookupHRInfo fetches the HR records for the given distinct dm counterpart
+// accounts; a lookup failure degrades to nil (no hrInfo).
+func (s *UserService) lookupHRInfo(c *natsrouter.Context, accounts []string) map[string]*model.SubscriptionHRInfo {
 	if len(accounts) == 0 {
 		return nil
 	}
@@ -126,21 +127,29 @@ func (s *UserService) lookupHRInfo(c *natsrouter.Context, subs []model.Subscript
 	return hr
 }
 
-// distinctNamesByType returns the deduplicated sub.Name values for rows of roomType.
-func distinctNamesByType(subs []model.Subscription, roomType model.RoomType) []string {
-	var names []string
-	seen := map[string]struct{}{}
+// distinctListNames collects, in a single pass, the deduped botDM bot accounts and
+// the dm counterpart accounts — the two name sets the app and HR lookups need —
+// each in first-seen order.
+func distinctListNames(subs []model.Subscription) (bots, dmCounterparts []string) {
+	seenBot := map[string]struct{}{}
+	seenDM := map[string]struct{}{}
 	for i := range subs {
-		if subs[i].RoomType != roomType {
-			continue
+		switch subs[i].RoomType {
+		case model.RoomTypeBotDM:
+			if _, dup := seenBot[subs[i].Name]; !dup {
+				seenBot[subs[i].Name] = struct{}{}
+				bots = append(bots, subs[i].Name)
+			}
+		case model.RoomTypeDM:
+			if _, dup := seenDM[subs[i].Name]; !dup {
+				seenDM[subs[i].Name] = struct{}{}
+				dmCounterparts = append(dmCounterparts, subs[i].Name)
+			}
+		default:
+			// channel / discussion rows contribute to neither lookup set.
 		}
-		if _, dup := seen[subs[i].Name]; dup {
-			continue
-		}
-		seen[subs[i].Name] = struct{}{}
-		names = append(names, subs[i].Name)
 	}
-	return names
+	return bots, dmCounterparts
 }
 
 // enrichWithRoomInfo populates sub.Room for every subscription. LOCAL subs
@@ -155,20 +164,24 @@ func (s *UserService) enrichWithRoomInfo(c *natsrouter.Context, subs []model.Sub
 		return
 	}
 
-	// Partition by locality. Cross-site subs are further grouped per remote site
-	// for the fan-out RPC.
+	// Partition by locality, building each remote site's roomID list directly here.
+	// No roomID dedup: the unique (roomId, account) index means one account holds at
+	// most one sub per room, so a site's roomIDs are already distinct.
 	var localIdx []int
 	idxBySite := map[string][]int{}
+	roomIDsBySite := map[string][]string{}
 	for i := range subs {
 		if subs[i].SiteID == s.siteID {
 			localIdx = append(localIdx, i)
 			continue
 		}
-		idxBySite[subs[i].SiteID] = append(idxBySite[subs[i].SiteID], i)
+		site := subs[i].SiteID
+		idxBySite[site] = append(idxBySite[site], i)
+		roomIDsBySite[site] = append(roomIDsBySite[site], subs[i].RoomID)
 	}
 
 	s.enrichLocal(subs, localIdx)
-	s.enrichCrossSite(c, subs, idxBySite)
+	s.enrichCrossSite(c, subs, idxBySite, roomIDsBySite)
 }
 
 // enrichLocal builds sub.Room for LOCAL subs entirely from the $lookup baseline —
@@ -177,13 +190,18 @@ func (s *UserService) enrichWithRoomInfo(c *natsrouter.Context, subs []model.Sub
 func (s *UserService) enrichLocal(subs []model.Subscription, localIdx []int) {
 	for _, j := range localIdx {
 		subs[j].Room = buildLocalRoom(&subs[j])
+		// hasUnread / hasGroupMention are computed at read time: room activity (resp.
+		// an @all mention) newer than lastSeenAt. No room object (deleted/absent) ⇒
+		// nothing to be unread/mentioned about.
+		subs[j].HasUnread = subs[j].Room != nil && unread(subs[j].LastSeenAt, timeutil.TimeToMillis(subs[j].Room.LastMsgAt))
+		subs[j].HasGroupMention = subs[j].Room != nil && unread(subs[j].LastSeenAt, timeutil.TimeToMillis(subs[j].Room.LastMentionAllAt))
 	}
 }
 
 // enrichCrossSite fans out per remote site to GetRoomsInfo; a failed site RPC
 // leaves that site's subs without a room object (no baseline fallback — there is
 // no local room doc for a cross-site room).
-func (s *UserService) enrichCrossSite(c *natsrouter.Context, subs []model.Subscription, idxBySite map[string][]int) {
+func (s *UserService) enrichCrossSite(c *natsrouter.Context, subs []model.Subscription, idxBySite map[string][]int, roomIDsBySite map[string][]string) {
 	if len(idxBySite) == 0 {
 		return
 	}
@@ -213,17 +231,7 @@ func (s *UserService) enrichCrossSite(c *natsrouter.Context, subs []model.Subscr
 			if c.Err() != nil {
 				return
 			}
-			roomIDs := make([]string, 0, len(idxBySite[site]))
-			seen := make(map[string]struct{}, len(idxBySite[site]))
-			for _, j := range idxBySite[site] {
-				rid := subs[j].RoomID
-				if _, dup := seen[rid]; dup {
-					continue
-				}
-				seen[rid] = struct{}{}
-				roomIDs = append(roomIDs, rid)
-			}
-			infos, err := s.rooms.GetRoomsInfo(c, site, roomIDs)
+			infos, err := s.rooms.GetRoomsInfo(c, site, roomIDsBySite[site])
 			if err != nil {
 				slog.WarnContext(c, "room-info enrichment degraded", "account", c.Param("account"), "site", site, "request_id", natsutil.RequestIDFromContext(c), "error", err)
 				return
@@ -254,9 +262,9 @@ const roomKeySecretLen = 32
 
 // buildLocalRoom builds a SubscriptionRoom for a LOCAL sub entirely from its flat
 // $lookup baseline — room metadata plus the E2E key projected from the room's
-// encKey sub-document — so no separate key store read is needed. The baseline
-// carries *time.Time, but the wire room object is epoch millis, so LastMsgAt/
-// LastMentionAllAt are converted here (matching the cross-site RPC path).
+// encKey sub-document — so no separate key store read is needed. The baseline and
+// the wire room object both carry *time.Time, so LastMsgAt/LastMentionAllAt pass
+// through unconverted.
 func buildLocalRoom(sub *model.Subscription) *model.SubscriptionRoom {
 	// A soft-deleted room (name "Del-...") is surfaced with no room object.
 	if strings.HasPrefix(sub.RoomName, deletedRoomNamePrefix) {
@@ -267,9 +275,9 @@ func buildLocalRoom(sub *model.Subscription) *model.SubscriptionRoom {
 		Name:             sub.RoomName,
 		UserCount:        sub.UserCount,
 		AppCount:         sub.AppCount,
-		LastMsgAt:        timeToMillis(sub.LastMsgAt),
+		LastMsgAt:        sub.LastMsgAt,
 		LastMsgID:        sub.LastMsgID,
-		LastMentionAllAt: timeToMillis(sub.LastMentionAllAt),
+		LastMentionAllAt: sub.LastMentionAllAt,
 	}
 	if len(sub.RoomKeyPriv) == roomKeySecretLen {
 		enc := base64.StdEncoding.EncodeToString(sub.RoomKeyPriv)
@@ -292,20 +300,24 @@ func applyRoomInfo(sub *model.Subscription, info *model.RoomInfo) {
 	if strings.HasPrefix(info.Name, deletedRoomNamePrefix) {
 		return
 	}
-	// info.LastMsgAt/LastMentionAllAt are already epoch millis (*int64) — the wire
-	// room object uses the same representation, so they pass through directly.
+	// info.LastMsgAt/LastMentionAllAt arrive from the RPC as epoch millis (*int64);
+	// the wire room object returns RFC3339 timestamps, so convert them here.
 	room := &model.SubscriptionRoom{
 		SiteID:           info.SiteID,
 		Name:             info.Name,
 		UserCount:        info.UserCount,
 		AppCount:         info.AppCount,
-		LastMsgAt:        info.LastMsgAt,
+		LastMsgAt:        timeutil.MillisToTime(info.LastMsgAt),
 		LastMsgID:        info.LastMsgID,
-		LastMentionAllAt: info.LastMentionAllAt,
+		LastMentionAllAt: timeutil.MillisToTime(info.LastMentionAllAt),
 		PrivateKey:       info.PrivateKey,
 		KeyVersion:       info.KeyVersion,
 	}
 	sub.Room = room
+	// hasUnread / hasGroupMention are computed at read time from the room's
+	// last-message / last-@all-mention time vs lastSeenAt.
+	sub.HasUnread = unread(sub.LastSeenAt, info.LastMsgAt)
+	sub.HasGroupMention = unread(sub.LastSeenAt, info.LastMentionAllAt)
 }
 
 // timeToMillis converts a nullable UTC timestamp to epoch millis for the wire
