@@ -125,6 +125,53 @@ func TestHistoryService_ListThreadSubscriptions_AccessWindowDropsParent(t *testi
 	assert.Empty(t, resp.Items) // dropped — parent predates access window
 }
 
+func TestHistoryService_ListThreadSubscriptions_NotSubscribedRoomDropped(t *testing.T) {
+	svc, msgs, subs, _, threadSubs := newThreadListService(t)
+	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	rows := []mongorepo.ThreadSubRow{
+		{ThreadRoomID: "tr-1", RoomID: "r1", SiteID: "site-a", ParentMessageID: "p1", LastMsgID: "m1", LastMsgAt: base.Add(5 * time.Hour)},
+		{ThreadRoomID: "tr-2", RoomID: "r2", SiteID: "site-a", ParentMessageID: "p2", LastMsgID: "m2", LastMsgAt: base.Add(3 * time.Hour)},
+	}
+	threadSubs.EXPECT().ListUserThreadSubscriptions(gomock.Any(), "alice", gomock.Any(), gomock.Any(), gomock.Any()).Return(rows, false, nil)
+	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return([]models.Message{
+		{MessageID: "p1", RoomID: "r1"}, {MessageID: "m1", RoomID: "r1"},
+		{MessageID: "p2", RoomID: "r2"}, {MessageID: "m2", RoomID: "r2"},
+	}, nil)
+	// r1 subscribed; r2 not subscribed ⇒ r2's threads are dropped, r1's kept.
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "alice", "r1").Return(nil, true, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "alice", "r2").Return(nil, false, nil)
+
+	resp, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, resp.Items, 1)
+	assert.Equal(t, "tr-1", resp.Items[0].ThreadRoomID)
+	assert.Equal(t, "r1", resp.Items[0].RoomID)
+}
+
+func TestHistoryService_ListThreadSubscriptions_AccessErrorDegrades(t *testing.T) {
+	svc, msgs, subs, _, threadSubs := newThreadListService(t)
+	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	rows := []mongorepo.ThreadSubRow{
+		{ThreadRoomID: "tr-1", RoomID: "r1", SiteID: "site-a", ParentMessageID: "p1", LastMsgID: "m1", LastMsgAt: base.Add(5 * time.Hour)},
+		{ThreadRoomID: "tr-2", RoomID: "r2", SiteID: "site-a", ParentMessageID: "p2", LastMsgID: "m2", LastMsgAt: base.Add(3 * time.Hour)},
+	}
+	threadSubs.EXPECT().ListUserThreadSubscriptions(gomock.Any(), "alice", gomock.Any(), gomock.Any(), gomock.Any()).Return(rows, false, nil)
+	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return([]models.Message{
+		{MessageID: "p1", RoomID: "r1"}, {MessageID: "m1", RoomID: "r1"},
+		{MessageID: "p2", RoomID: "r2"}, {MessageID: "m2", RoomID: "r2"},
+	}, nil)
+	// r2's access lookup fails ⇒ log + continue: r2 dropped, the page still succeeds.
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "alice", "r1").Return(nil, true, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "alice", "r2").Return(nil, false, errors.New("mongo timeout"))
+
+	resp, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, resp.Items, 1)
+	assert.Equal(t, "r1", resp.Items[0].RoomID)
+}
+
 func TestHistoryService_ListThreadSubscriptions_MissingRoomMetaDegrades(t *testing.T) {
 	svc, msgs, subs, _, threadSubs := newThreadListService(t)
 	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)

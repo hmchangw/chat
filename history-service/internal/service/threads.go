@@ -202,13 +202,19 @@ func (s *HistoryService) ListThreadSubscriptions(c *natsrouter.Context, req pkgm
 		msgByID[msgs[i].MessageID] = msgs[i]
 	}
 
-	// Access window per distinct room (the user is an active member, so the
-	// lookup is cheap and bounded by the page's distinct rooms).
+	// Access window per distinct room. getAccessSince also enforces subscription:
+	// a room the user is not subscribed to (or that errors) is dropped from the
+	// map — and its threads are skipped below — so the inbox never lists rooms
+	// the user cannot access. A per-room failure degrades that room only, never
+	// the whole page.
 	accessSince := make(map[string]*time.Time, len(roomIDs))
 	for _, rid := range roomIDs {
-		since, _, err := s.subscriptions.GetHistorySharedSince(c, req.Account, rid)
+		since, err := s.getAccessSince(c, req.Account, rid)
 		if err != nil {
-			return nil, fmt.Errorf("loading access window for room %s: %w", rid, err)
+			slog.Warn("thread list: dropping inaccessible room",
+				"request_id", natsutil.RequestIDFromContext(c),
+				"account", req.Account, "room_id", rid, "error", err)
+			continue
 		}
 		accessSince[rid] = since
 	}
@@ -216,7 +222,11 @@ func (s *HistoryService) ListThreadSubscriptions(c *natsrouter.Context, req pkgm
 	items := make([]pkgmodel.ThreadListItem, 0, len(rows))
 	for i := range rows {
 		row := rows[i]
-		since := accessSince[row.RoomID]
+		since, ok := accessSince[row.RoomID]
+		if !ok {
+			// Room not accessible (not subscribed, or errored above) — skip its threads.
+			continue
+		}
 		parent, hasParent := msgByID[row.ParentMessageID]
 		// Drop threads whose parent predates the user's access window.
 		if hasParent && since != nil && parent.CreatedAt.Before(*since) {
