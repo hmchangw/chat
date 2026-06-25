@@ -355,6 +355,16 @@ func readMultipartFile(fh *multipart.FileHeader) ([]byte, error) {
 	return io.ReadAll(f)
 }
 
+// timestampedName inserts a millisecond timestamp before the file extension so
+// repeated uploads of the same file get distinct Drive object names:
+// "photo.png" -> "photo_1719312000000.png". A name with no extension just gets
+// the suffix appended. Extension detection follows filepath.Ext semantics.
+func timestampedName(name string, milli int64) string {
+	ext := filepath.Ext(name)
+	base := strings.TrimSuffix(name, ext)
+	return fmt.Sprintf("%s_%d%s", base, milli, ext)
+}
+
 // bytesFile adapts a *bytes.Reader (Read/ReadAt/Seek) to multipart.File by adding
 // a no-op Close, so already-buffered image bytes can be handed to Drive without
 // re-reading the upload.

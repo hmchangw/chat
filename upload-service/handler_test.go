@@ -302,6 +302,26 @@ func TestHandleHealth(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "ok")
 }
 
+func Test_timestampedName(t *testing.T) {
+	const milli int64 = 1719312000000
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"with extension", "photo.png", "photo_1719312000000.png"},
+		{"uppercase extension", "IMG.JPG", "IMG_1719312000000.JPG"},
+		{"no extension", "README", "README_1719312000000"},
+		{"multi dot", "a.tar.gz", "a.tar_1719312000000.gz"},
+		{"dotfile (filepath.Ext semantics)", ".gitignore", "_1719312000000.gitignore"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, timestampedName(tt.in, milli))
+		})
+	}
+}
+
 func TestRegisterRoutes_HealthAndAuthGuard(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	h := newHandler(NewMockStore(ctrl), &fakeDrive{})
