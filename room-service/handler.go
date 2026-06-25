@@ -1632,6 +1632,10 @@ func (h *Handler) publishThreadMessageReadEvent(ctx context.Context, tr *model.T
 		slog.Error("get parent room for thread_message_read fan-out failed", "error", err, "roomId", tr.RoomID, "threadRoomId", tr.ID)
 		return
 	}
+	if room == nil {
+		// Best-effort no-op on a missing parent room — never panic the RPC (GetThreadRoomByID can return (nil,nil)).
+		return
+	}
 	switch room.Type {
 	case model.RoomTypeChannel:
 		h.publishThreadChannelEvent(ctx, tr, floor)

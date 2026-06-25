@@ -3995,6 +3995,21 @@ func TestHandler_MessageThreadRead_GetParentRoomError_StillAccepted(t *testing.T
 	assert.Empty(t, f.coreSubjects)
 }
 
+func TestHandler_MessageThreadRead_ParentRoomNil_StillAccepted(t *testing.T) {
+	f := newThreadReadFixture(t)
+	fullThreadReadSetup(f, baseThreadSub("alice", "r1", "p1", "tr1"))
+	minT := time.Now().UTC().Add(-10 * time.Minute)
+	expectThreadFloorAdvance(f, &minT)
+	// GetRoom can return (nil, nil) in this store family (cf. GetThreadRoomByID);
+	// a missing parent room must be a no-op, never a nil-deref panic.
+	f.store.EXPECT().GetRoom(gomock.Any(), "r1").Return(nil, nil)
+
+	resp, err := f.handler.messageThreadRead(ctxParams(map[string]string{"account": "alice", "roomID": "r1"}), model.MessageThreadReadRequest{ThreadID: "p1"})
+	require.NoError(t, err, "missing parent room must not fail the RPC")
+	assert.Equal(t, "accepted", resp.Status)
+	assert.Empty(t, f.coreSubjects)
+}
+
 func TestHandler_MessageThreadRead_DMListSubscriptionsError_StillAccepted(t *testing.T) {
 	f := newThreadReadFixture(t)
 	fullThreadReadSetup(f, baseThreadSub("alice", "r1", "p1", "tr1"))
