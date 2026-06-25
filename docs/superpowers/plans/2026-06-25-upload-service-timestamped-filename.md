@@ -2,15 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Send a unique, millisecond-timestamped filename to Drive on every upload (so re-uploading the same file no longer collides) while returning the original filename to the client.
+**Goal:** Send a unique filename to Drive on every upload (so neither re-uploading the same file across requests nor duplicate names within one batch collide) while returning the original filename to the client.
 
-**Architecture:** A small `timestampedName` helper inserts `_<unixMilli>` before the file extension. Both `upload-service` handlers (`HandleUploadFile`, `HandleUploadImages`) apply it to the name sent to `drive.UploadGroupImages`. `HandleUploadFile` already returns the original `fh.Filename`, so it needs no strip-back. `HandleUploadImages` echoes Drive's filename, so `preprocessFiles` returns a `timestamped→original` map used to restore the original name in the response. A `nowMilli func() int64` field on `Handler` makes the clock injectable for deterministic tests.
+**Architecture:** A small `uniqueName` helper inserts `_<unixMilli>_<index>` before the file extension — the timestamp separates re-uploads across requests, the per-batch index separates duplicate names within a single request (which are processed in the same millisecond). Both `upload-service` handlers (`HandleUploadFile`, `HandleUploadImages`) apply it to the name sent to `drive.UploadGroupImages`. `HandleUploadFile` already returns the original `fh.Filename`, so it needs no strip-back. `HandleUploadImages` echoes Drive's filename, so `preprocessFiles` returns an `origNames []string` (originals in send order) used to restore the original name in the response by position. A `nowMilli func() int64` field on `Handler` makes the clock injectable for deterministic tests.
 
 **Tech Stack:** Go 1.25, Gin, `stretchr/testify`, `go.uber.org/mock`. Run tests with `make test SERVICE=upload-service`.
 
 ---
 
-### Task 1: `timestampedName` helper
+### Task 1: `uniqueName` helper
 
 **Files:**
 - Modify: `upload-service/handler.go` (add helper near the bottom, beside `readMultipartFile`)
@@ -21,22 +21,23 @@
 Add to `upload-service/handler_test.go`:
 
 ```go
-func Test_timestampedName(t *testing.T) {
+func Test_uniqueName(t *testing.T) {
 	const milli int64 = 1719312000000
 	tests := []struct {
 		name string
 		in   string
+		i    int
 		want string
 	}{
-		{"with extension", "photo.png", "photo_1719312000000.png"},
-		{"uppercase extension", "IMG.JPG", "IMG_1719312000000.JPG"},
-		{"no extension", "README", "README_1719312000000"},
-		{"multi dot", "a.tar.gz", "a.tar_1719312000000.gz"},
-		{"dotfile (filepath.Ext semantics)", ".gitignore", "_1719312000000.gitignore"},
+		{"with extension", "photo.png", 0, "photo_1719312000000_0.png"},
+		{"uppercase extension", "IMG.JPG", 1, "IMG_1719312000000_1.JPG"},
+		{"no extension", "README", 2, "README_1719312000000_2"},
+		{"multi dot", "a.tar.gz", 0, "a.tar_1719312000000_0.gz"},
+		{"dotfile (filepath.Ext semantics)", ".gitignore", 0, "_1719312000000_0.gitignore"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, timestampedName(tt.in, milli))
+			assert.Equal(t, tt.want, uniqueName(tt.in, milli, tt.i))
 		})
 	}
 }
@@ -45,21 +46,23 @@ func Test_timestampedName(t *testing.T) {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `make test SERVICE=upload-service`
-Expected: FAIL — `undefined: timestampedName`.
+Expected: FAIL — `undefined: uniqueName`.
 
 - [ ] **Step 3: Write minimal implementation**
 
 Add to `upload-service/handler.go` (after `readMultipartFile`, before `bytesFile`):
 
 ```go
-// timestampedName inserts a millisecond timestamp before the file extension so
-// repeated uploads of the same file get distinct Drive object names:
-// "photo.png" -> "photo_1719312000000.png". A name with no extension just gets
-// the suffix appended. Extension detection follows filepath.Ext semantics.
-func timestampedName(name string, milli int64) string {
+// uniqueName inserts a millisecond timestamp and a per-batch index before the
+// file extension so uploads get distinct Drive object names:
+// "photo.png" -> "photo_1719312000000_0.png". The timestamp separates re-uploads
+// across requests; the index separates duplicate filenames within a single batch
+// (which are processed in the same millisecond). A name with no extension just
+// gets the suffix appended. Extension detection follows filepath.Ext semantics.
+func uniqueName(name string, milli int64, i int) string {
 	ext := filepath.Ext(name)
 	base := strings.TrimSuffix(name, ext)
-	return fmt.Sprintf("%s_%d%s", base, milli, ext)
+	return fmt.Sprintf("%s_%d_%d%s", base, milli, i, ext)
 }
 ```
 
@@ -74,7 +77,7 @@ Expected: PASS.
 
 ```bash
 git add upload-service/handler.go upload-service/handler_test.go
-git commit -m "feat(upload-service): add timestampedName filename helper"
+git commit -m "feat(upload-service): add uniqueName filename helper"
 ```
 
 ---
@@ -188,7 +191,7 @@ git commit -m "test(upload-service): capture uploaded filenames in fakeDrive"
 
 ---
 
-### Task 4: Timestamp the filename in `HandleUploadFile`
+### Task 4: Unique filename in `HandleUploadFile`
 
 **Files:**
 - Modify: `upload-service/handler.go` (`HandleUploadFile`, around line 245-246)
@@ -196,10 +199,10 @@ git commit -m "test(upload-service): capture uploaded filenames in fakeDrive"
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `upload-service/handler_test.go`. This mirrors the existing single-file success test setup (`newFileHandler` builds a `Handler` with a real preview + a 100MB file ceiling); confirm that helper name by checking the file — the call below uses the same constructor pattern as the existing file tests (`NewHandler(store, fd, 0, 0, 100<<20, newMediaTypeFilter("", "image/svg+xml"), imagePreview)`).
+Add to `upload-service/handler_test.go`. The constructor mirrors the existing file tests: `NewHandler(store, fd, 0, 0, 100<<20, newMediaTypeFilter("", "image/svg+xml"), imagePreview)`.
 
 ```go
-func TestHandleUploadFile_SendsTimestampedName_ReturnsOriginal(t *testing.T) {
+func TestHandleUploadFile_SendsUniqueName_ReturnsOriginal(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockStore(ctrl)
 	store.EXPECT().IsMember(gomock.Any(), "r1", "alice").Return(true, nil)
@@ -207,7 +210,7 @@ func TestHandleUploadFile_SendsTimestampedName_ReturnsOriginal(t *testing.T) {
 	fd := &fakeDrive{
 		baseURL: "http://drive",
 		uploadResp: []drive.UploadGroupImageResponse{
-			{Status: "success", File: drive.GroupImageObject{FileID: "f1", GroupID: "r1", Filename: "photo_1719312000000.png", FileSize: 3}},
+			{Status: "success", File: drive.GroupImageObject{FileID: "f1", GroupID: "r1", Filename: "photo_1719312000000_0.png", FileSize: 3}},
 		},
 	}
 	h := NewHandler(store, fd, 0, 0, 100<<20, newMediaTypeFilter("", "image/svg+xml"), imagePreview)
@@ -232,7 +235,7 @@ func TestHandleUploadFile_SendsTimestampedName_ReturnsOriginal(t *testing.T) {
 	h.HandleUploadFile(c)
 
 	require.Equal(t, http.StatusOK, rec.Code)
-	require.Equal(t, []string{"photo_1719312000000.png"}, fd.uploadGot.filenames, "drive receives the timestamped name")
+	require.Equal(t, []string{"photo_1719312000000_0.png"}, fd.uploadGot.filenames, "drive receives the unique name")
 
 	var got struct {
 		Attachments []model.Attachment `json:"attachments"`
@@ -247,16 +250,16 @@ Note: the uploaded filename surfaces as `Attachment.Title` (json `title`) via `b
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `make test SERVICE=upload-service -run TestHandleUploadFile_SendsTimestampedName`
-Expected: FAIL — `fd.uploadGot.filenames` is `["photo.png"]`, not the timestamped name.
+Run: `make test SERVICE=upload-service -run TestHandleUploadFile_SendsUniqueName`
+Expected: FAIL — `fd.uploadGot.filenames` is `["photo.png"]`, not the unique name.
 
 - [ ] **Step 3: Implement**
 
-In `upload-service/handler.go` `HandleUploadFile`, change the Drive call (currently lines 245-246) to send the timestamped name. The original `fh.Filename` is still used for `meta.name` below, so the response is unaffected:
+In `upload-service/handler.go` `HandleUploadFile`, change the Drive call (currently lines 245-246) to send the unique name (single file → index `0`). The original `fh.Filename` is still used for `meta.name` below, so the response is unaffected:
 
 ```go
 	responses, err := h.drive.UploadGroupImages(user.Account, user.DisplayName(), user.Email, roomID, siteID,
-		[]drive.MultipartFile{{File: driveFile, Filename: timestampedName(fh.Filename, h.nowMilli())}})
+		[]drive.MultipartFile{{File: driveFile, Filename: uniqueName(fh.Filename, h.nowMilli(), 0)}})
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -268,23 +271,23 @@ Expected: PASS (new test passes; all existing file/image tests still pass).
 
 ```bash
 git add upload-service/handler.go upload-service/handler_test.go
-git commit -m "feat(upload-service): timestamp Drive filename in HandleUploadFile"
+git commit -m "feat(upload-service): unique Drive filename in HandleUploadFile"
 ```
 
 ---
 
-### Task 5: Timestamp + strip-back in `HandleUploadImages`
+### Task 5: Unique names + strip-back in `HandleUploadImages`
 
 **Files:**
 - Modify: `upload-service/handler.go` (`preprocessFiles` signature + body; `HandleUploadImages` call site + response loop)
-- Test: `upload-service/handler_test.go` (new test)
+- Test: `upload-service/handler_test.go` (new tests)
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing tests**
 
-Add to `upload-service/handler_test.go`. The fake is configured to **echo the timestamped name** (as real Drive does), so the strip-back via the map is actually exercised:
+Add to `upload-service/handler_test.go`. The fake echoes the unique name (as real Drive does); the response strip-back comes from `origNames[i]`:
 
 ```go
-func TestHandleUploadImages_SendsTimestampedNames_ReturnsOriginals(t *testing.T) {
+func TestHandleUploadImages_SendsUniqueNames_ReturnsOriginals(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	store := NewMockStore(ctrl)
 	store.EXPECT().IsMember(gomock.Any(), "r1", "alice").Return(true, nil)
@@ -292,7 +295,7 @@ func TestHandleUploadImages_SendsTimestampedNames_ReturnsOriginals(t *testing.T)
 	fd := &fakeDrive{
 		baseURL: "https://drive.example.com",
 		uploadResp: []drive.UploadGroupImageResponse{
-			{Status: "success", File: drive.GroupImageObject{FileID: "img-1", GroupID: "r1", Filename: "a_1719312000000.png"}},
+			{Status: "success", File: drive.GroupImageObject{FileID: "img-1", GroupID: "r1", Filename: "a_1719312000000_0.png"}},
 		},
 	}
 	h := newHandler(store, fd)
@@ -303,7 +306,7 @@ func TestHandleUploadImages_SendsTimestampedNames_ReturnsOriginals(t *testing.T)
 	h.HandleUploadImages(c)
 
 	require.Equal(t, http.StatusOK, w.Code)
-	require.Equal(t, []string{"a_1719312000000.png"}, fd.uploadGot.filenames, "drive receives the timestamped name")
+	require.Equal(t, []string{"a_1719312000000_0.png"}, fd.uploadGot.filenames, "drive receives the unique name")
 
 	var got struct {
 		Results []uploadResultItem `json:"results"`
@@ -313,6 +316,48 @@ func TestHandleUploadImages_SendsTimestampedNames_ReturnsOriginals(t *testing.T)
 	assert.Equal(t, "success", got.Results[0].Status)
 	assert.Equal(t, "a.png", got.Results[0].Name, "response shows the original name")
 	assert.Equal(t, "api/v1/rooms/r1/file/img-1?drive_host=https://drive.example.com", got.Results[0].RelativePath)
+}
+
+// Two files with the SAME name in one batch must get distinct indexed names so
+// they don't collide in Drive; both response items keep the original name.
+func TestHandleUploadImages_DuplicateNamesInBatch_GetDistinctNames(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	store.EXPECT().IsMember(gomock.Any(), "r1", "alice").Return(true, nil)
+	store.EXPECT().GetRoomSiteID(gomock.Any(), "r1").Return("site-x", nil)
+	fd := &fakeDrive{
+		baseURL: "https://drive.example.com",
+		uploadResp: []drive.UploadGroupImageResponse{
+			{Status: "success", File: drive.GroupImageObject{FileID: "img-0", GroupID: "r1", Filename: "a_1719312000000_0.png"}},
+			{Status: "success", File: drive.GroupImageObject{FileID: "img-1", GroupID: "r1", Filename: "a_1719312000000_1.png"}},
+		},
+	}
+	h := newHandler(store, fd)
+	h.nowMilli = func() int64 { return 1719312000000 }
+
+	// Two parts under the same field with the same filename.
+	body := &bytes.Buffer{}
+	mw := multipart.NewWriter(body)
+	for i := 0; i < 2; i++ {
+		w, err := mw.CreateFormFile("images", "a.png")
+		require.NoError(t, err)
+		_, _ = w.Write([]byte("x"))
+	}
+	require.NoError(t, mw.Close())
+
+	c, w := newUploadCtx(t, "r1", body, mw.FormDataContentType(), okUser())
+	h.HandleUploadImages(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, []string{"a_1719312000000_0.png", "a_1719312000000_1.png"}, fd.uploadGot.filenames, "duplicate names get distinct indexed names")
+
+	var got struct {
+		Results []uploadResultItem `json:"results"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	require.Len(t, got.Results, 2)
+	assert.Equal(t, "a.png", got.Results[0].Name)
+	assert.Equal(t, "a.png", got.Results[1].Name)
 }
 
 func TestHandleUploadImages_DriveErrorEmptyFilename_KeepsOriginalName(t *testing.T) {
@@ -350,10 +395,10 @@ func TestHandleUploadImages_DriveErrorEmptyFilename_KeepsOriginalName(t *testing
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `make test SERVICE=upload-service -run 'TestHandleUploadImages_SendsTimestampedNames|TestHandleUploadImages_DriveErrorEmptyFilename'`
-Expected: FAIL — `fd.uploadGot.filenames` is `["a.png"]` (not timestamped); once timestamping is added without strip-back, the success `Name` would be `"a_1719312000000.png"`; and the error case `Name` would be `""`.
+Run: `make test SERVICE=upload-service -run 'TestHandleUploadImages_SendsUniqueNames|TestHandleUploadImages_DuplicateNamesInBatch|TestHandleUploadImages_DriveErrorEmptyFilename'`
+Expected: FAIL — `fd.uploadGot.filenames` is `["a.png"]` (not unique); once unique naming is added without strip-back, the success `Name` would be the unique name; and the error case `Name` would be `""`.
 
-- [ ] **Step 3: Change `preprocessFiles` to apply the timestamp and return the originals**
+- [ ] **Step 3: Change `preprocessFiles` to apply the unique name and return the originals**
 
 Replace `preprocessFiles` in `upload-service/handler.go` with:
 
@@ -361,9 +406,10 @@ Replace `preprocessFiles` in `upload-service/handler.go` with:
 // preprocessFiles runs the per-file size/extension/open checks. Rejected files
 // become failure result items; accepted files become MultipartFiles whose open
 // handles the caller is responsible for closing. Each accepted file is uploaded
-// under a timestamped name (so re-uploads don't collide in Drive); origNames
+// under a unique name (timestamp + accepted-file index, so neither re-uploads
+// across requests nor duplicate names within a batch collide in Drive); origNames
 // lists the caller-facing originals in send order so the response can show them
-// (Drive echoes the timestamped name, and an empty name on a per-file failure).
+// (Drive echoes the unique name, and an empty name on a per-file failure).
 func preprocessFiles(files []*multipart.FileHeader, maxSize, milli int64) (results []uploadResultItem, fileHeaders []drive.MultipartFile, origNames []string) {
 	for _, fh := range files {
 		if fh.Size > maxSize {
@@ -379,12 +425,14 @@ func preprocessFiles(files []*multipart.FileHeader, maxSize, milli int64) (resul
 			results = append(results, uploadResultItem{Name: fh.Filename, Status: statusFailure, Error: "failed to open file"})
 			continue
 		}
+		fileHeaders = append(fileHeaders, drive.MultipartFile{File: f, Filename: uniqueName(fh.Filename, milli, len(origNames))})
 		origNames = append(origNames, fh.Filename)
-		fileHeaders = append(fileHeaders, drive.MultipartFile{File: f, Filename: timestampedName(fh.Filename, milli)})
 	}
 	return results, fileHeaders, origNames
 }
 ```
+
+The index passed to `uniqueName` is `len(origNames)` *before* the append — i.e. the accepted-file index — so it stays aligned with the `responses[i]` / `origNames[i]` correlation and skips rejected files.
 
 - [ ] **Step 4: Update the `HandleUploadImages` call site and response loop**
 
@@ -395,7 +443,7 @@ In `HandleUploadImages`, change the `preprocessFiles` call (currently line 131) 
 ```
 
 Then update the response loop (currently lines 150-156) to set the name from send
-order, ignoring Drive's (timestamped or empty) echo:
+order, ignoring Drive's (unique or empty) echo:
 
 ```go
 	driveHost := h.drive.GetBaseURLFromRoomOrigin(siteID)
@@ -415,13 +463,13 @@ order, ignoring Drive's (timestamped or empty) echo:
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `make test SERVICE=upload-service`
-Expected: PASS — both new tests pass; `TestUpload_MixedSuccessAndFailure_Merges` still passes (one valid file → one response at index 0 → `origNames[0]` is `"a.png"`).
+Expected: PASS — the three new tests pass; `TestUpload_MixedSuccessAndFailure_Merges` still passes (one valid file → one response at index 0 → `origNames[0]` is `"a.png"`).
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add upload-service/handler.go upload-service/handler_test.go
-git commit -m "feat(upload-service): timestamp Drive filenames in HandleUploadImages, return originals"
+git commit -m "feat(upload-service): unique Drive filenames in HandleUploadImages, return originals"
 ```
 
 ---
@@ -455,9 +503,10 @@ git push -u origin claude/amazing-albattani-pt99o4
 ## Self-Review
 
 **Spec coverage:**
-- Timestamp added to Drive filename → Tasks 1, 4, 5. ✅
+- Unique name (timestamp + index) on Drive filename → Tasks 1, 4, 5. ✅
 - Both handlers (`HandleUploadFile`, `HandleUploadImages`) → Tasks 4, 5. ✅
-- Response excludes the timestamp → Task 4 (uses original `fh.Filename`), Task 5 (`origNames[i]` by send order). ✅
+- Response excludes the suffix → Task 4 (uses original `fh.Filename`), Task 5 (`origNames[i]` by send order). ✅
+- Within-batch duplicate names get distinct names → Task 1 (index param), Task 5 (`uniqueName(..., len(origNames))` + `TestHandleUploadImages_DuplicateNamesInBatch_GetDistinctNames`). ✅
 - Response `Name` never empty on Drive per-file failure (empty echo) → Task 5 (`origNames[i]` + `TestHandleUploadImages_DriveErrorEmptyFilename_KeepsOriginalName`). ✅
 - Testable clock → Task 2. ✅
 - Edge cases (no ext, multi-dot, dotfile) → Task 1 table test. ✅
@@ -465,4 +514,4 @@ git push -u origin claude/amazing-albattani-pt99o4
 
 **Placeholder scan:** No TBD/TODO; all steps contain concrete code and commands. Task 4 asserts on `Attachment.Title` (confirmed via `attachment.go`: `meta.name` → `att.Title`).
 
-**Type consistency:** `timestampedName(string, int64) string`, `nowMilli func() int64`, and `preprocessFiles(..., milli int64) (results []uploadResultItem, fileHeaders []drive.MultipartFile, origNames []string)` are used consistently across Tasks 1-5 (the call site in Task 5 Step 4 destructures all three returns). The `fakeDrive.uploadGot.filenames []string` field defined in Task 3 is read in Tasks 4-5.
+**Type consistency:** `uniqueName(string, int64, int) string`, `nowMilli func() int64`, and `preprocessFiles(..., milli int64) (results []uploadResultItem, fileHeaders []drive.MultipartFile, origNames []string)` are used consistently across Tasks 1-5 (the call site in Task 5 Step 4 destructures all three returns; the index passed to `uniqueName` is `len(origNames)` before the append). The `fakeDrive.uploadGot.filenames []string` field defined in Task 3 is read in Tasks 4-5.

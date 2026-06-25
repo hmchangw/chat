@@ -13,8 +13,9 @@ sees the original filename in the response.
 
 ## Solution
 
-Send a timestamped filename to Drive; return the original (timestamp-free) name
-to the client. Applies to both handlers that call `drive.UploadGroupImages`:
+Send a unique filename to Drive — original base + millisecond timestamp +
+per-batch index — and return the original (suffix-free) name to the client.
+Applies to both handlers that call `drive.UploadGroupImages`:
 `HandleUploadImages` (bulk) and `HandleUploadFile` (single file).
 
 ### Filename transform
@@ -22,16 +23,26 @@ to the client. Applies to both handlers that call `drive.UploadGroupImages`:
 New unexported helper in `upload-service/handler.go`:
 
 ```go
-// timestampedName inserts a millisecond timestamp before the file extension:
-// "photo.png" -> "photo_1719312000000.png". The extension is preserved so
-// Drive's content-type sniffing is unaffected; a name with no extension just
-// gets the suffix appended ("README" -> "README_1719312000000").
-func timestampedName(name string, milli int64) string
+// uniqueName inserts a millisecond timestamp and a per-batch index before the
+// file extension: "photo.png" -> "photo_1719312000000_0.png". The timestamp
+// separates re-uploads across requests; the index separates duplicate filenames
+// within a single batch (processed in the same millisecond). The extension is
+// preserved so Drive's content-type sniffing is unaffected; a name with no
+// extension just gets the suffix appended ("README" -> "README_1719312000000_0").
+func uniqueName(name string, milli int64, i int) string
 ```
 
-- Split on `filepath.Ext`, insert `_<milli>` between base and extension.
+- Split on `filepath.Ext`, insert `_<milli>_<i>` between base and extension.
 - Multi-dot names (`a.tar.gz`) keep only the final extension as the ext, which
   matches `filepath.Ext` semantics — acceptable.
+
+### Why timestamp + index (not timestamp alone)
+
+A bulk request's files are processed in a tight loop that completes within a
+single millisecond, so a timestamp alone cannot distinguish two files with the
+same name in one batch — both would get the same `_<milli>` suffix and collide
+in Drive. The per-file index guarantees within-batch uniqueness regardless of
+clock resolution. The timestamp still does the cross-request work.
 
 ### Clock injection (testability)
 
@@ -45,19 +56,20 @@ deterministic assertions, so no existing call site changes.
 The response `name` already uses the original `fh.Filename`, so only the upload
 path changes:
 
-- Send `timestampedName(fh.Filename, h.nowMilli())` as the `MultipartFile.Filename`
-  to `UploadGroupImages`.
+- Send `uniqueName(fh.Filename, h.nowMilli(), 0)` as the `MultipartFile.Filename`
+  to `UploadGroupImages` (single file → index `0`).
 - `meta.name` stays `fh.Filename`. No strip-back required.
 
 ### HandleUploadImages (bulk)
 
 The response `Name` currently echoes Drive's `resp.File.Filename`, which would be
-the timestamped name. To return originals, track them in send order:
+the unique name. To return originals, track them in send order:
 
-- `preprocessFiles` builds `MultipartFile`s with timestamped names and returns an
-  `origNames []string` slice of the originals in send order. It takes the current
-  `milli` (computed once per request by the caller) so all files in a batch share
-  a consistent timestamp source.
+- `preprocessFiles` builds `MultipartFile`s via `uniqueName(fh.Filename, milli, i)`
+  — where `i` is the accepted-file index — and returns an `origNames []string`
+  slice of the originals in send order. It takes the current `milli` (computed
+  once per request by the caller) so all files in a batch share a consistent
+  timestamp source while the index keeps them distinct.
 - In the response loop (`for i, resp := range responses`), set the response name
   from `origNames[i]` when `i < len(origNames)`, ignoring Drive's echo. This
   correlates each response to the file we sent by position.
@@ -79,21 +91,27 @@ and empty echoes handled uniformly.)
 ## Edge cases
 
 - **No extension:** suffix appended to the whole name.
-- **Identical filenames in one bulk request, same millisecond:** would still
-  collide. This is out of scope — the reported bug is re-uploads across separate
-  requests. Documented here; per-file indexing can be added later if needed.
+- **Identical filenames in one bulk request:** handled — each accepted file gets a
+  distinct index, so `a.png` twice becomes `a_<milli>_0.png` and `a_<milli>_1.png`.
+- **Two separate requests in the same millisecond, same filename:** still
+  theoretically collides (same `milli`, both index `0`). Negligible for human
+  re-uploads (seconds apart); if true timing-independence is ever required, swap
+  the timestamp for an `idgen` unique token.
 - **Rejected files** (size/type/open failures in `preprocessFiles`) never reach
-  Drive and already report the original `fh.Filename` — unchanged.
+  Drive and already report the original `fh.Filename` — unchanged. The index is
+  the accepted-file index, so rejections don't create gaps that misalign
+  `origNames[i]` with `responses[i]`.
 
 ## Testing (TDD: Red → Green → Refactor)
 
-- `timestampedName`: table-driven — extension, no extension, dotfile
-  (`.gitignore`), multi-dot (`a.tar.gz`), with a fixed `milli`.
+- `uniqueName`: table-driven — extension, no extension, dotfile (`.gitignore`),
+  multi-dot (`a.tar.gz`), with a fixed `milli` and index.
 - `HandleUploadFile`: fake drive captures the uploaded `Filename`; assert it is
-  the timestamped form while the response attachment `name` is the original.
+  the unique form (`..._0.png`) while the response attachment `name` is the original.
 - `HandleUploadImages`: fake drive captures uploaded names; assert Drive receives
-  timestamped names and each response item `Name` is the original. Cover mixed
-  success/failure and the existing per-file-rejection paths.
+  unique names and each response item `Name` is the original. Cover mixed
+  success/failure, the existing per-file-rejection paths, and **two identical
+  filenames in one batch get distinct indexed names**.
 
 ## Out of scope / no change
 

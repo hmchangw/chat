@@ -250,7 +250,7 @@ func (h *Handler) HandleUploadFile(c *gin.Context) {
 	}
 
 	responses, err := h.drive.UploadGroupImages(user.Account, user.DisplayName(), user.Email, roomID, siteID,
-		[]drive.MultipartFile{{File: driveFile, Filename: timestampedName(fh.Filename, h.nowMilli())}})
+		[]drive.MultipartFile{{File: driveFile, Filename: uniqueName(fh.Filename, h.nowMilli(), 0)}})
 	if err != nil {
 		errhttp.Write(ctx, c, fmt.Errorf("upload file to drive: %w", err))
 		return
@@ -332,9 +332,10 @@ func (h *Handler) requireMembership(ctx context.Context, c *gin.Context, roomID,
 // preprocessFiles runs the per-file size/extension/open checks. Rejected files
 // become failure result items; accepted files become MultipartFiles whose open
 // handles the caller is responsible for closing. Each accepted file is uploaded
-// under a timestamped name (so re-uploads don't collide in Drive); origNames
+// under a unique name (timestamp + accepted-file index, so neither re-uploads
+// across requests nor duplicate names within a batch collide in Drive); origNames
 // lists the caller-facing originals in send order so the response can show them
-// (Drive echoes the timestamped name, and an empty name on a per-file failure).
+// (Drive echoes the unique name, and an empty name on a per-file failure).
 func preprocessFiles(files []*multipart.FileHeader, maxSize, milli int64) (results []uploadResultItem, fileHeaders []drive.MultipartFile, origNames []string) {
 	for _, fh := range files {
 		if fh.Size > maxSize {
@@ -350,8 +351,8 @@ func preprocessFiles(files []*multipart.FileHeader, maxSize, milli int64) (resul
 			results = append(results, uploadResultItem{Name: fh.Filename, Status: statusFailure, Error: "failed to open file"})
 			continue
 		}
+		fileHeaders = append(fileHeaders, drive.MultipartFile{File: f, Filename: uniqueName(fh.Filename, milli, len(origNames))})
 		origNames = append(origNames, fh.Filename)
-		fileHeaders = append(fileHeaders, drive.MultipartFile{File: f, Filename: timestampedName(fh.Filename, milli)})
 	}
 	return results, fileHeaders, origNames
 }
@@ -366,14 +367,16 @@ func readMultipartFile(fh *multipart.FileHeader) ([]byte, error) {
 	return io.ReadAll(f)
 }
 
-// timestampedName inserts a millisecond timestamp before the file extension so
-// repeated uploads of the same file get distinct Drive object names:
-// "photo.png" -> "photo_1719312000000.png". A name with no extension just gets
-// the suffix appended. Extension detection follows filepath.Ext semantics.
-func timestampedName(name string, milli int64) string {
+// uniqueName inserts a millisecond timestamp and a per-batch index before the
+// file extension so uploads get distinct Drive object names:
+// "photo.png" -> "photo_1719312000000_0.png". The timestamp separates re-uploads
+// across requests; the index separates duplicate filenames within a single batch
+// (which are processed in the same millisecond). A name with no extension just
+// gets the suffix appended. Extension detection follows filepath.Ext semantics.
+func uniqueName(name string, milli int64, i int) string {
 	ext := filepath.Ext(name)
 	base := strings.TrimSuffix(name, ext)
-	return fmt.Sprintf("%s_%d%s", base, milli, ext)
+	return fmt.Sprintf("%s_%d_%d%s", base, milli, i, ext)
 }
 
 // bytesFile adapts a *bytes.Reader (Read/ReadAt/Seek) to multipart.File by adding
