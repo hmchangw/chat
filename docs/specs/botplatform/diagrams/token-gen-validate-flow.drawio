@@ -34,7 +34,7 @@
           <mxGeometry x="830" y="80" width="200" height="80" as="geometry" />
         </mxCell>
 
-        <mxCell id="g_prefix" value="prepend &quot;bp1_&quot;&#xa;→ raw = bp1_&lt;43 chars&gt;&#xa;= 47 chars total" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#1B5E20;fontSize=11;fontStyle=1;align=center;" vertex="1" parent="gen_band">
+        <mxCell id="g_prefix" value="prepend &quot;bp_&quot;&#xa;→ raw = bp_&lt;43 chars&gt;&#xa;= 47 chars total" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#C8E6C9;strokeColor=#1B5E20;fontSize=11;fontStyle=1;align=center;" vertex="1" parent="gen_band">
           <mxGeometry x="1080" y="80" width="220" height="80" as="geometry" />
         </mxCell>
 
@@ -55,7 +55,7 @@
         <mxCell id="g_a6" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;strokeColor=#B8860B;strokeWidth=2;" edge="1" parent="gen_band" source="g_hmac" target="g_persist"><mxGeometry relative="1" as="geometry" /></mxCell>
 
         <!-- response back -->
-        <mxCell id="g_response" value="response — bot receives the RAW token (bp1_…) in authToken; the HMAC hash never leaves the server" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=11;fontStyle=1;align=center;" vertex="1" parent="gen_band">
+        <mxCell id="g_response" value="response — bot receives the RAW token (bp_…) in authToken; the HMAC hash never leaves the server" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=11;fontStyle=1;align=center;" vertex="1" parent="gen_band">
           <mxGeometry x="40" y="240" width="1800" height="50" as="geometry" />
         </mxCell>
 
@@ -63,7 +63,7 @@
         <mxCell id="g_coexist_title" value="Why this shape — design rationale (cross-ref Part II §4.3)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2E7D32;fontSize=12;fontStyle=1;verticalAlign=top;align=left;" vertex="1" parent="gen_band">
           <mxGeometry x="40" y="320" width="1800" height="180" as="geometry" />
         </mxCell>
-        <mxCell id="g_coexist_body" value="bp1_ prefix     • always-on for new tokens — gates the validator hash-dispatch (next page) so v1 tokens skip the legacy-store probe entirely&#xa;                   • forward versioning (bp2_…) without DB migration&#xa;                   • detected by every standard secret scanner (GitHub, gitleaks, trufflehog) when leaked into a public repo&#xa;&#xa;HMAC-SHA-256 storage   • defense in depth — a stolen sessions table is opaque without the server-side TOKEN_HMAC_KEY (plain SHA-256 was a public function)&#xa;                          • cost identical to plain SHA-256 (two SHA-256 ops vs one — both ~free at 1M validations/min)&#xa;                          • bound to a server secret → leaked hash from logs/errors is NOT a usable lookup key&#xa;                          • NOT bcrypt/Argon2 — tokens have 256-bit entropy; slow hashing buys nothing and costs 1,667 cores/min at our rate" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontFamily=Courier New;" vertex="1" parent="gen_band">
+        <mxCell id="g_coexist_body" value="bp_ / ad_ per-class prefix     • always-on for new tokens — gates the validator hash-dispatch (next page) so v1 tokens skip the legacy-store probe entirely&#xa;                   • class is self-evident from X-Auth-Token (bp_ = bot, ad_ = admin) — no DB lookup needed to know principal class&#xa;                   • detected by every standard secret scanner (GitHub, gitleaks, trufflehog) when leaked into a public repo&#xa;&#xa;HMAC-SHA-256 storage   • defense in depth — a stolen sessions table is opaque without the server-side TOKEN_HMAC_KEY (plain SHA-256 was a public function)&#xa;                          • cost identical to plain SHA-256 (two SHA-256 ops vs one — both ~free at 1M validations/min)&#xa;                          • bound to a server secret → leaked hash from logs/errors is NOT a usable lookup key&#xa;                          • NOT bcrypt/Argon2 — tokens have 256-bit entropy; slow hashing buys nothing and costs 1,667 cores/min at our rate" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontFamily=Courier New;" vertex="1" parent="gen_band">
           <mxGeometry x="60" y="345" width="1760" height="150" as="geometry" />
         </mxCell>
 
@@ -127,7 +127,7 @@
         <!-- validation arrows -->
         <mxCell id="va1" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;strokeColor=#37474F;" edge="1" parent="val_band" source="v_caller" target="v_dispatch"><mxGeometry relative="1" as="geometry" /></mxCell>
 
-        <mxCell id="va_v1" value="starts with &quot;bp1_&quot;" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.3;entryX=0;entryY=0.5;strokeColor=#1B5E20;strokeWidth=2;fontSize=10;fontStyle=1;" edge="1" parent="val_band" source="v_dispatch" target="v_v1_hash"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="va_v1" value="starts with &quot;bp_&quot;" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.3;entryX=0;entryY=0.5;strokeColor=#1B5E20;strokeWidth=2;fontSize=10;fontStyle=1;" edge="1" parent="val_band" source="v_dispatch" target="v_v1_hash"><mxGeometry relative="1" as="geometry" /></mxCell>
         <mxCell id="va_lg" value="no prefix (legacy)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.7;entryX=0;entryY=0.5;strokeColor=#C62828;strokeWidth=2;fontSize=10;fontStyle=1;" edge="1" parent="val_band" source="v_dispatch" target="v_lg_hash"><mxGeometry relative="1" as="geometry" /></mxCell>
 
         <mxCell id="va_v1_to_cache" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.3;strokeColor=#37474F;" edge="1" parent="val_band" source="v_v1_hash" target="v_cache"><mxGeometry relative="1" as="geometry" /></mxCell>
@@ -144,7 +144,7 @@
 
         <mxCell id="va_found" value="yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=1;entryX=1;entryY=0.2;strokeColor=#1B5E20;strokeWidth=2;fontSize=11;fontStyle=1;" edge="1" parent="val_band" source="v_session_check" target="v_ok"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1560" y="400" /></Array></mxGeometry></mxCell>
 
-        <mxCell id="va_legacy_fb" value="not found AND no bp1_ prefix" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;strokeColor=#C62828;strokeWidth=2;fontSize=10;fontStyle=1;" edge="1" parent="val_band" source="v_session_check" target="v_legacy_fallback"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="va_legacy_fb" value="not found AND no bp_ prefix" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;strokeColor=#C62828;strokeWidth=2;fontSize=10;fontStyle=1;" edge="1" parent="val_band" source="v_session_check" target="v_legacy_fallback"><mxGeometry relative="1" as="geometry" /></mxCell>
 
         <mxCell id="va_legacy_to_fail" value="legacy miss" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;strokeColor=#C62828;strokeWidth=2;fontSize=10;" edge="1" parent="val_band" source="v_legacy_fallback" target="v_fail"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1670" y="450" /></Array></mxGeometry></mxCell>
 
