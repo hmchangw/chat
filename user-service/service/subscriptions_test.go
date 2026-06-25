@@ -21,7 +21,7 @@ func TestListSubscriptions_Types(t *testing.T) {
 		t.Run(typ, func(t *testing.T) {
 			svc, subs, _, _, rooms, _ := newSvc(t)
 			subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", typ, false, gomock.Any(), gomock.Any()).
-				Return(mongoutil.OffsetPage[model.Subscription]{Data: []model.Subscription{{ID: "s1"}}, Total: 1}, nil)
+				Return(mongoutil.OffsetPage[model.EnrichedSubscription]{Data: []model.EnrichedSubscription{{Subscription: model.Subscription{ID: "s1"}}}, Total: 1}, nil)
 			rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 			resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: typ})
 			require.NoError(t, err)
@@ -96,7 +96,11 @@ func TestApplyRoomInfo_NotFound_NoRoom(t *testing.T) {
 // *time.Time), so buildLocalRoom passes it through unconverted onto sub.Room.
 func TestBuildLocalRoom_MinUserLastSeenAt(t *testing.T) {
 	floor := time.UnixMilli(300).UTC()
-	sub := model.Subscription{SiteID: "site-a", RoomName: "Eng", MinUserLastSeenAt: &floor}
+	sub := model.EnrichedSubscription{
+		Subscription:      model.Subscription{SiteID: "site-a"},
+		RoomName:          "Eng",
+		MinUserLastSeenAt: &floor,
+	}
 	room := buildLocalRoom(&sub)
 	require.NotNil(t, room)
 	require.NotNil(t, room.MinUserLastSeenAt, "local baseline minUserLastSeenAt must reach the room object")
@@ -109,11 +113,11 @@ func TestBuildLocalRoom_MinUserLastSeenAt(t *testing.T) {
 func TestListSubscriptions_LocalBaselineRoom_NoKey(t *testing.T) {
 	svc, subs, _, _, _, _ := newSvc(t)
 	lastMsg := time.UnixMilli(400).UTC()
-	storeSubs := []model.Subscription{{
-		ID: "s1", RoomID: "r1", SiteID: "site-a", Name: "general",
-		RoomType: model.RoomTypeChannel, RoomName: "General", UserCount: 9, LastMsgAt: &lastMsg, LastMsgID: "m1",
+	storeSubs := []model.EnrichedSubscription{{
+		Subscription: model.Subscription{ID: "s1", RoomID: "r1", SiteID: "site-a", Name: "general", RoomType: model.RoomTypeChannel},
+		RoomName:     "General", UserCount: 9, LastMsgAt: &lastMsg, LastMsgID: "m1",
 	}}
-	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", false, gomock.Any(), gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", false, gomock.Any(), gomock.Any()).Return(mongoutil.OffsetPage[model.EnrichedSubscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
 	require.NoError(t, err)
 	require.Len(t, resp.Subscriptions, 1)
@@ -140,11 +144,11 @@ func appHelper() *model.App {
 
 func TestListSubscriptions_BotDM_AppDisplayNameAndMeta(t *testing.T) {
 	svc, subs, _, apps, _, _ := newSvc(t)
-	storeSubs := []model.Subscription{
-		{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot", RoomName: "bot-room-canonical"},
-		{ID: "c1", RoomID: "rc1", SiteID: "site-a", RoomType: model.RoomTypeChannel, Name: "general", RoomName: "general"},
+	storeSubs := []model.EnrichedSubscription{
+		{Subscription: model.Subscription{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"}, RoomName: "bot-room-canonical"},
+		{Subscription: model.Subscription{ID: "c1", RoomID: "rc1", SiteID: "site-a", RoomType: model.RoomTypeChannel, Name: "general"}, RoomName: "general"},
 	}
-	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", false, gomock.Any(), gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", false, gomock.Any(), gomock.Any()).Return(mongoutil.OffsetPage[model.EnrichedSubscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
 	apps.EXPECT().GetAppsByAssistants(gomock.Any(), []string{"helper.bot"}).
 		Return(map[string]*model.App{"helper.bot": appHelper()}, nil)
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
@@ -171,11 +175,11 @@ func TestListSubscriptions_BotDM_AppDisplayNameAndMeta(t *testing.T) {
 
 func TestListSubscriptions_DM_CarriesHRInfo(t *testing.T) {
 	svc, subs, users, _, _, _ := newSvc(t)
-	storeSubs := []model.Subscription{
-		{ID: "d1", RoomID: "rd1", SiteID: "site-a", RoomType: model.RoomTypeDM, Name: "bob"},
-		{ID: "c1", RoomID: "rc1", SiteID: "site-a", RoomType: model.RoomTypeChannel, Name: "general"},
+	storeSubs := []model.EnrichedSubscription{
+		{Subscription: model.Subscription{ID: "d1", RoomID: "rd1", SiteID: "site-a", RoomType: model.RoomTypeDM, Name: "bob"}},
+		{Subscription: model.Subscription{ID: "c1", RoomID: "rc1", SiteID: "site-a", RoomType: model.RoomTypeChannel, Name: "general"}},
 	}
-	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", false, gomock.Any(), gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", false, gomock.Any(), gomock.Any()).Return(mongoutil.OffsetPage[model.EnrichedSubscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
 	users.EXPECT().GetHRInfoByAccounts(gomock.Any(), []string{"bob"}).
 		Return(map[string]*model.SubscriptionHRInfo{"bob": {Account: "bob", Name: "鮑勃", EngName: "Bob Chen"}}, nil)
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
@@ -192,10 +196,10 @@ func TestListSubscriptions_DM_CarriesHRInfo(t *testing.T) {
 
 func TestListSubscriptions_DM_HRLookupDegrades(t *testing.T) {
 	svc, subs, users, _, _, _ := newSvc(t)
-	storeSubs := []model.Subscription{
-		{ID: "d1", RoomID: "rd1", SiteID: "site-a", RoomType: model.RoomTypeDM, Name: "bob"},
+	storeSubs := []model.EnrichedSubscription{
+		{Subscription: model.Subscription{ID: "d1", RoomID: "rd1", SiteID: "site-a", RoomType: model.RoomTypeDM, Name: "bob"}},
 	}
-	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", false, gomock.Any(), gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", false, gomock.Any(), gomock.Any()).Return(mongoutil.OffsetPage[model.EnrichedSubscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
 	users.EXPECT().GetHRInfoByAccounts(gomock.Any(), []string{"bob"}).Return(nil, errors.New("db down"))
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
 	require.NoError(t, err, "hr lookup failure must degrade, not fail the request")
@@ -210,11 +214,11 @@ func TestListSubscriptions_DM_HRLookupDegrades(t *testing.T) {
 // argument, and both rows get the resolved display name and overlay.
 func TestListSubscriptions_BotDM_DedupsBotAccount(t *testing.T) {
 	svc, subs, _, apps, _, _ := newSvc(t)
-	storeSubs := []model.Subscription{
-		{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"},
-		{ID: "a2", RoomID: "rb2", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"},
+	storeSubs := []model.EnrichedSubscription{
+		{Subscription: model.Subscription{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"}},
+		{Subscription: model.Subscription{ID: "a2", RoomID: "rb2", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"}},
 	}
-	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "apps", false, gomock.Any(), gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "apps", false, gomock.Any(), gomock.Any()).Return(mongoutil.OffsetPage[model.EnrichedSubscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
 	// Exactly ["helper.bot"], not duplicated — gomock fails the call on arg mismatch.
 	apps.EXPECT().GetAppsByAssistants(gomock.Any(), []string{"helper.bot"}).
 		Return(map[string]*model.App{"helper.bot": appHelper()}, nil)
@@ -233,10 +237,10 @@ func TestListSubscriptions_BotDM_DedupsBotAccount(t *testing.T) {
 
 func TestListSubscriptions_BotDM_AppLookupDegrades(t *testing.T) {
 	svc, subs, _, apps, _, _ := newSvc(t)
-	storeSubs := []model.Subscription{
-		{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"},
+	storeSubs := []model.EnrichedSubscription{
+		{Subscription: model.Subscription{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"}},
 	}
-	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "apps", false, gomock.Any(), gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "apps", false, gomock.Any(), gomock.Any()).Return(mongoutil.OffsetPage[model.EnrichedSubscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
 	apps.EXPECT().GetAppsByAssistants(gomock.Any(), []string{"helper.bot"}).
 		Return(nil, errors.New("db down"))
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "apps"})
@@ -250,10 +254,10 @@ func TestListSubscriptions_BotDM_AppLookupDegrades(t *testing.T) {
 
 func TestListSubscriptions_BotDM_NoAppMatch(t *testing.T) {
 	svc, subs, _, apps, _, _ := newSvc(t)
-	storeSubs := []model.Subscription{
-		{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "orphan.bot"},
+	storeSubs := []model.EnrichedSubscription{
+		{Subscription: model.Subscription{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "orphan.bot"}},
 	}
-	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "apps", false, gomock.Any(), gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
+	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "apps", false, gomock.Any(), gomock.Any()).Return(mongoutil.OffsetPage[model.EnrichedSubscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
 	apps.EXPECT().GetAppsByAssistants(gomock.Any(), []string{"orphan.bot"}).
 		Return(map[string]*model.App{}, nil)
 	resp, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "apps"})
@@ -267,7 +271,7 @@ func TestListSubscriptions_BotDM_NoAppMatch(t *testing.T) {
 func TestListSubscriptions_StoreError(t *testing.T) {
 	svc, subs, _, _, _, _ := newSvc(t)
 	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", false, gomock.Any(), gomock.Any()).
-		Return(mongoutil.OffsetPage[model.Subscription]{}, errors.New("db down"))
+		Return(mongoutil.OffsetPage[model.EnrichedSubscription]{}, errors.New("db down"))
 	_, err := svc.ListSubscriptions(ctx("alice", "site-a"), models.SubscriptionListRequest{Type: "current"})
 	requireCode(t, err, errcode.CodeInternal)
 }
@@ -277,12 +281,12 @@ func TestListSubscriptions_Favorite(t *testing.T) {
 	// Favorite filtering + self-DM ordering now happen in the query, so the repo
 	// returns the already-filtered, self-first set; the service passes it through.
 	// The handler must forward favorite=true to the store.
-	storeSubs := []model.Subscription{
-		{ID: "self", RoomType: model.RoomTypeDM, Name: "alice", Favorite: true},
-		{ID: "ch2", RoomType: model.RoomTypeChannel, Name: "random", Favorite: true},
+	storeSubs := []model.EnrichedSubscription{
+		{Subscription: model.Subscription{ID: "self", RoomType: model.RoomTypeDM, Name: "alice", Favorite: true}},
+		{Subscription: model.Subscription{ID: "ch2", RoomType: model.RoomTypeChannel, Name: "random", Favorite: true}},
 	}
 	subs.EXPECT().AggregateSubscriptions(gomock.Any(), "alice", "current", true, gomock.Any(), gomock.Any()).
-		Return(mongoutil.OffsetPage[model.Subscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
+		Return(mongoutil.OffsetPage[model.EnrichedSubscription]{Data: storeSubs, Total: int64(len(storeSubs))}, nil)
 	users.EXPECT().GetHRInfoByAccounts(gomock.Any(), []string{"alice"}).
 		Return(map[string]*model.SubscriptionHRInfo{"alice": {Account: "alice", Name: "Alice"}}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
@@ -299,10 +303,10 @@ func TestListSubscriptions_Favorite(t *testing.T) {
 func TestListSubscriptions_Pagination(t *testing.T) {
 	// capturePage records the OffsetPageRequest the handler forwards and returns a
 	// page carrying the given full total.
-	capturePage := func(into *mongoutil.OffsetPageRequest, total int64) func(context.Context, string, string, bool, *int, mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.Subscription], error) {
-		return func(_ context.Context, _, _ string, _ bool, _ *int, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.Subscription], error) {
+	capturePage := func(into *mongoutil.OffsetPageRequest, total int64) func(context.Context, string, string, bool, *int, mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.EnrichedSubscription], error) {
+		return func(_ context.Context, _, _ string, _ bool, _ *int, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.EnrichedSubscription], error) {
 			*into = page
-			return mongoutil.OffsetPage[model.Subscription]{Data: []model.Subscription{}, Total: total}, nil
+			return mongoutil.OffsetPage[model.EnrichedSubscription]{Data: []model.EnrichedSubscription{}, Total: total}, nil
 		}
 	}
 
@@ -405,7 +409,7 @@ func TestGetChannels_AccountNamesAtCap(t *testing.T) {
 	for i := range names {
 		names[i] = "u"
 	}
-	subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", names, gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{Data: []model.Subscription{{ID: "c1"}}, Total: 1}, nil)
+	subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", names, gomock.Any()).Return(mongoutil.OffsetPage[model.EnrichedSubscription]{Data: []model.EnrichedSubscription{{Subscription: model.Subscription{ID: "c1"}}}, Total: 1}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 	resp, err := svc.GetChannels(ctx("alice", "site-a"), models.GetChannelsRequest{AccountNames: names})
 	require.NoError(t, err)
@@ -414,7 +418,7 @@ func TestGetChannels_AccountNamesAtCap(t *testing.T) {
 
 func TestGetChannels_ByMembersContain(t *testing.T) {
 	svc, subs, _, _, rooms, _ := newSvc(t)
-	subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", []string{"carol"}, gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{Data: []model.Subscription{{ID: "c1"}}, Total: 1}, nil)
+	subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", []string{"carol"}, gomock.Any()).Return(mongoutil.OffsetPage[model.EnrichedSubscription]{Data: []model.EnrichedSubscription{{Subscription: model.Subscription{ID: "c1"}}}, Total: 1}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 	resp, err := svc.GetChannels(ctx("alice", "site-a"), models.GetChannelsRequest{MembersContain: "carol"})
 	require.NoError(t, err)
@@ -423,7 +427,7 @@ func TestGetChannels_ByMembersContain(t *testing.T) {
 
 func TestGetChannels_ByAccountNames(t *testing.T) {
 	svc, subs, _, _, rooms, _ := newSvc(t)
-	subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", []string{"carol", "dave"}, gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{Data: []model.Subscription{{ID: "c1"}}, Total: 1}, nil)
+	subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", []string{"carol", "dave"}, gomock.Any()).Return(mongoutil.OffsetPage[model.EnrichedSubscription]{Data: []model.EnrichedSubscription{{Subscription: model.Subscription{ID: "c1"}}}, Total: 1}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 	resp, err := svc.GetChannels(ctx("alice", "site-a"), models.GetChannelsRequest{AccountNames: []string{"carol", "dave"}})
 	require.NoError(t, err)
@@ -432,7 +436,7 @@ func TestGetChannels_ByAccountNames(t *testing.T) {
 
 func TestGetChannels_StoreError(t *testing.T) {
 	svc, subs, _, _, _, _ := newSvc(t)
-	subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", []string{"carol"}, gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{}, errors.New("db down"))
+	subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", []string{"carol"}, gomock.Any()).Return(mongoutil.OffsetPage[model.EnrichedSubscription]{}, errors.New("db down"))
 	_, err := svc.GetChannels(ctx("alice", "site-a"), models.GetChannelsRequest{MembersContain: "carol"})
 	requireCode(t, err, errcode.CodeInternal)
 }
@@ -441,9 +445,9 @@ func TestGetChannels_Pagination(t *testing.T) {
 	svc, subs, _, _, rooms, _ := newSvc(t)
 	var got mongoutil.OffsetPageRequest
 	subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", []string{"carol"}, gomock.Any()).
-		DoAndReturn(func(_ context.Context, _ string, _ []string, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.Subscription], error) {
+		DoAndReturn(func(_ context.Context, _ string, _ []string, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.EnrichedSubscription], error) {
 			got = page
-			return mongoutil.OffsetPage[model.Subscription]{Data: []model.Subscription{}, Total: 12}, nil
+			return mongoutil.OffsetPage[model.EnrichedSubscription]{Data: []model.EnrichedSubscription{}, Total: 12}, nil
 		})
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 	resp, err := svc.GetChannels(ctx("alice", "site-a"), models.GetChannelsRequest{MembersContain: "carol", Offset: 10, Limit: 5})
@@ -483,9 +487,9 @@ func TestGetDM_NotFound(t *testing.T) {
 func TestGetDM_OK(t *testing.T) {
 	svc, subs, _, _, rooms, _ := newSvc(t)
 	subs.EXPECT().GetDMSubscription(gomock.Any(), "alice", "bob").
-		Return(&model.DMSubscription{
-			Subscription: &model.Subscription{ID: "d1"},
-			HRInfo:       &model.SubscriptionHRInfo{Account: "bob", Name: "bob", EngName: "Bob"},
+		Return(&model.EnrichedDMSubscription{
+			EnrichedSubscription: model.EnrichedSubscription{Subscription: model.Subscription{ID: "d1"}},
+			HRInfo:               &model.SubscriptionHRInfo{Account: "bob", Name: "bob", EngName: "Bob"},
 		}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 	resp, err := svc.GetDM(ctx("alice", "site-a"), models.GetDMRequest{AccountName: "bob"})
@@ -501,23 +505,16 @@ func TestGetDM_StoreError(t *testing.T) {
 	requireCode(t, err, errcode.CodeInternal)
 }
 
-func TestGetDM_NilEmbeddedSubscription(t *testing.T) {
-	svc, subs, _, _, _, _ := newSvc(t)
-	subs.EXPECT().GetDMSubscription(gomock.Any(), "alice", "bob").Return(
-		&model.DMSubscription{Subscription: nil, HRInfo: &model.SubscriptionHRInfo{Account: "bob"}},
-		nil,
-	)
-	_, err := svc.GetDM(ctx("alice", "site-a"), models.GetDMRequest{AccountName: "bob"})
-	requireCode(t, err, errcode.CodeInternal)
-}
-
 func TestGetDM_Enriched(t *testing.T) {
 	svc, subs, _, _, _, _ := newSvc(t)
 	subs.EXPECT().GetDMSubscription(gomock.Any(), "alice", "bob").
-		Return(&model.DMSubscription{
+		Return(&model.EnrichedDMSubscription{
 			// LOCAL sub: room view comes from the baseline (RoomName), not the RPC.
-			Subscription: &model.Subscription{ID: "d1", SiteID: "site-a", RoomID: "r1", Name: "bob", RoomName: "Renamed"},
-			HRInfo:       &model.SubscriptionHRInfo{Account: "bob", Name: "bob", EngName: "Bob"},
+			EnrichedSubscription: model.EnrichedSubscription{
+				Subscription: model.Subscription{ID: "d1", SiteID: "site-a", RoomID: "r1", Name: "bob"},
+				RoomName:     "Renamed",
+			},
+			HRInfo: &model.SubscriptionHRInfo{Account: "bob", Name: "bob", EngName: "Bob"},
 		}, nil)
 	resp, err := svc.GetDM(ctx("alice", "site-a"), models.GetDMRequest{AccountName: "bob"})
 	require.NoError(t, err)
@@ -554,7 +551,10 @@ func TestGetByRoomID_StoreError(t *testing.T) {
 func TestGetByRoomID_OK_Enriched(t *testing.T) {
 	svc, subs, _, _, _, _ := newSvc(t)
 	subs.EXPECT().GetSubscriptionByRoomID(gomock.Any(), "alice", "r1").
-		Return(&model.Subscription{ID: "s1", SiteID: "site-a", RoomID: "r1", Name: "Stale", RoomName: "Renamed"}, nil)
+		Return(&model.EnrichedSubscription{
+			Subscription: model.Subscription{ID: "s1", SiteID: "site-a", RoomID: "r1", Name: "Stale"},
+			RoomName:     "Renamed",
+		}, nil)
 	resp, err := svc.GetByRoomID(ctx("alice", "site-a"), models.GetByRoomIDRequest{RoomID: "r1"})
 	require.NoError(t, err)
 	assert.Equal(t, 1, resp.Total)
@@ -570,11 +570,11 @@ func TestGetChannels_Empty(t *testing.T) {
 	for _, name := range []string{"nil_slice", "empty_slice"} {
 		t.Run(name, func(t *testing.T) {
 			svc, subs, _, _, _, _ := newSvc(t)
-			var returned []model.Subscription
+			var returned []model.EnrichedSubscription
 			if name == "empty_slice" {
-				returned = []model.Subscription{}
+				returned = []model.EnrichedSubscription{}
 			}
-			subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", []string{"carol"}, gomock.Any()).Return(mongoutil.OffsetPage[model.Subscription]{Data: returned, Total: int64(len(returned))}, nil)
+			subs.EXPECT().FindChannelsByMembers(gomock.Any(), "alice", []string{"carol"}, gomock.Any()).Return(mongoutil.OffsetPage[model.EnrichedSubscription]{Data: returned, Total: int64(len(returned))}, nil)
 			resp, err := svc.GetChannels(ctx("alice", "site-a"), models.GetChannelsRequest{MembersContain: "carol"})
 			require.NoError(t, err)
 			assert.Equal(t, 0, resp.Total)
@@ -585,7 +585,7 @@ func TestGetChannels_Empty(t *testing.T) {
 func TestGetByRoomID_BotDM_AppDisplayName(t *testing.T) {
 	svc, subs, _, apps, _, _ := newSvc(t)
 	subs.EXPECT().GetSubscriptionByRoomID(gomock.Any(), "alice", "rb1").
-		Return(&model.Subscription{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"}, nil)
+		Return(&model.EnrichedSubscription{Subscription: model.Subscription{ID: "a1", RoomID: "rb1", SiteID: "site-a", RoomType: model.RoomTypeBotDM, Name: "helper.bot"}}, nil)
 	apps.EXPECT().GetAppsByAssistants(gomock.Any(), []string{"helper.bot"}).
 		Return(map[string]*model.App{"helper.bot": appHelper()}, nil)
 	resp, err := svc.GetByRoomID(ctx("alice", "site-a"), models.GetByRoomIDRequest{RoomID: "rb1"})
@@ -620,7 +620,7 @@ func TestCountUnread_Happy(t *testing.T) {
 	subs.EXPECT().CountActiveSubscriptions(gomock.Any(), "alice").Return(2, nil)
 	// LOCAL sub: lastMsgAt is on the $lookup baseline — counted with NO RPC.
 	subs.EXPECT().GetActiveSubscriptions(gomock.Any(), "alice", 2).
-		Return([]model.Subscription{{RoomID: "r1", SiteID: "site-a", LastSeenAt: &seen, LastMsgAt: &newer}}, nil)
+		Return([]model.EnrichedSubscription{{Subscription: model.Subscription{RoomID: "r1", SiteID: "site-a", LastSeenAt: &seen}, LastMsgAt: &newer}}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
 	yes := true
 	resp, err := svc.CountSubscriptions(ctx("alice", "site-a"), models.CountRequest{Unread: &yes})
@@ -635,9 +635,9 @@ func TestCountUnread_FailedSiteSkipped(t *testing.T) {
 	subs.EXPECT().CountActiveSubscriptions(gomock.Any(), "alice").Return(5, nil)
 	// One LOCAL unread (counted from the baseline) + one CROSS-SITE sub whose site's RPC fails.
 	subs.EXPECT().GetActiveSubscriptions(gomock.Any(), "alice", 5).
-		Return([]model.Subscription{
-			{RoomID: "r1", SiteID: "site-a", LastSeenAt: &seen, LastMsgAt: &newer}, // local unread
-			{RoomID: "r2", SiteID: "site-b", LastSeenAt: &seen},                    // cross-site, site fails
+		Return([]model.EnrichedSubscription{
+			{Subscription: model.Subscription{RoomID: "r1", SiteID: "site-a", LastSeenAt: &seen}, LastMsgAt: &newer}, // local unread
+			{Subscription: model.Subscription{RoomID: "r2", SiteID: "site-b", LastSeenAt: &seen}},                    // cross-site, site fails
 		}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-b", gomock.Any()).Return(nil, errors.New("down"))
 	yes := true
@@ -652,9 +652,9 @@ func TestCountUnread_PartialFailureCountsHealthySites(t *testing.T) {
 	seen := time.UnixMilli(100).UTC()
 	newer := int64(200)
 	subs.EXPECT().CountActiveSubscriptions(gomock.Any(), "alice").Return(9, nil)
-	subs.EXPECT().GetActiveSubscriptions(gomock.Any(), "alice", 9).Return([]model.Subscription{
-		{RoomID: "rb1", SiteID: "site-b", LastSeenAt: &seen}, // healthy site, unread
-		{RoomID: "rc1", SiteID: "site-c", LastSeenAt: &seen}, // failing site, skipped
+	subs.EXPECT().GetActiveSubscriptions(gomock.Any(), "alice", 9).Return([]model.EnrichedSubscription{
+		{Subscription: model.Subscription{RoomID: "rb1", SiteID: "site-b", LastSeenAt: &seen}}, // healthy site, unread
+		{Subscription: model.Subscription{RoomID: "rc1", SiteID: "site-c", LastSeenAt: &seen}}, // failing site, skipped
 	}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-b", gomock.Any()).
 		Return([]model.RoomInfo{{RoomID: "rb1", Found: true, LastMsgAt: &newer}}, nil)
@@ -681,11 +681,11 @@ func TestCountUnread_MultiSite(t *testing.T) {
 	newerT := time.UnixMilli(200).UTC()
 	newer := int64(200)
 	subs.EXPECT().CountActiveSubscriptions(gomock.Any(), "alice").Return(4, nil)
-	subs.EXPECT().GetActiveSubscriptions(gomock.Any(), "alice", 4).Return([]model.Subscription{
-		{RoomID: "ra1", SiteID: "site-a", LastSeenAt: &seen, LastMsgAt: &newerT}, // local unread (baseline)
-		{RoomID: "ra2", SiteID: "site-a", LastSeenAt: &seen},                     // local read (no lastMsgAt)
-		{RoomID: "rb1", SiteID: "site-b", LastSeenAt: &seen},
-		{RoomID: "rb2", SiteID: "site-b", LastSeenAt: &seen},
+	subs.EXPECT().GetActiveSubscriptions(gomock.Any(), "alice", 4).Return([]model.EnrichedSubscription{
+		{Subscription: model.Subscription{RoomID: "ra1", SiteID: "site-a", LastSeenAt: &seen}, LastMsgAt: &newerT}, // local unread (baseline)
+		{Subscription: model.Subscription{RoomID: "ra2", SiteID: "site-a", LastSeenAt: &seen}},                     // local read (no lastMsgAt)
+		{Subscription: model.Subscription{RoomID: "rb1", SiteID: "site-b", LastSeenAt: &seen}},
+		{Subscription: model.Subscription{RoomID: "rb2", SiteID: "site-b", LastSeenAt: &seen}},
 	}, nil)
 	// Only the CROSS-SITE site is RPC'd; local rows are counted from the baseline.
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-b", gomock.InAnyOrder([]string{"rb1", "rb2"})).
@@ -704,9 +704,9 @@ func TestCountUnread_AllRead(t *testing.T) {
 	seen := time.UnixMilli(300).UTC()
 	older := time.UnixMilli(100).UTC() // older than seen → not unread
 	subs.EXPECT().CountActiveSubscriptions(gomock.Any(), "alice").Return(2, nil)
-	subs.EXPECT().GetActiveSubscriptions(gomock.Any(), "alice", 2).Return([]model.Subscription{
-		{RoomID: "r1", SiteID: "site-a", LastSeenAt: &seen, LastMsgAt: &older},
-		{RoomID: "r2", SiteID: "site-a", LastSeenAt: &seen}, // no lastMsgAt → read
+	subs.EXPECT().GetActiveSubscriptions(gomock.Any(), "alice", 2).Return([]model.EnrichedSubscription{
+		{Subscription: model.Subscription{RoomID: "r1", SiteID: "site-a", LastSeenAt: &seen}, LastMsgAt: &older},
+		{Subscription: model.Subscription{RoomID: "r2", SiteID: "site-a", LastSeenAt: &seen}}, // no lastMsgAt → read
 	}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
 	yes := true
@@ -732,9 +732,9 @@ func TestCountUnread_ContextCancelled_SkipsRPC(t *testing.T) {
 	seen := time.UnixMilli(100).UTC()
 	newer := time.UnixMilli(200).UTC()
 	subs.EXPECT().GetActiveSubscriptions(gomock.Any(), "alice", 2).
-		Return([]model.Subscription{
-			{RoomID: "r1", SiteID: "site-a", LastSeenAt: &seen, LastMsgAt: &newer}, // local unread
-			{RoomID: "r2", SiteID: "site-b", LastSeenAt: &seen},                    // cross-site, must be skipped
+		Return([]model.EnrichedSubscription{
+			{Subscription: model.Subscription{RoomID: "r1", SiteID: "site-a", LastSeenAt: &seen}, LastMsgAt: &newer}, // local unread
+			{Subscription: model.Subscription{RoomID: "r2", SiteID: "site-b", LastSeenAt: &seen}},                    // cross-site, must be skipped
 		}, nil)
 	rooms.EXPECT().GetRoomsInfo(gomock.Any(), gomock.Any(), gomock.Any()).Times(0)
 
@@ -745,14 +745,33 @@ func TestCountUnread_ContextCancelled_SkipsRPC(t *testing.T) {
 	assert.Equal(t, 1, resp.Count, "cross-site site skipped on cancel; local unread still counts")
 }
 
+func TestCountUnread_CrossSiteDeletedRoomNotCounted(t *testing.T) {
+	// A cross-site room soft-deleted at its origin still comes back Found=true with a
+	// stale lastMsgAt over the RPC; it must NOT inflate the unread count — the list
+	// path surfaces it room-less, and the badge must agree.
+	svc, subs, _, _, rooms, _ := newSvc(t)
+	seen := time.UnixMilli(100).UTC()
+	stale := int64(200) // newer than seen → WOULD count if the Del- room weren't skipped
+	subs.EXPECT().GetActiveSubscriptions(gomock.Any(), "alice", gomock.Any()).
+		Return([]model.EnrichedSubscription{
+			{Subscription: model.Subscription{RoomID: "rd", SiteID: "site-b", LastSeenAt: &seen}},
+		}, nil)
+	rooms.EXPECT().GetRoomsInfo(gomock.Any(), "site-b", gomock.Any()).
+		Return([]model.RoomInfo{{RoomID: "rd", Found: true, Name: "Del-secret", LastMsgAt: &stale}}, nil)
+
+	resp, err := svc.countUnread(context.Background(), "alice", 1)
+	require.NoError(t, err)
+	assert.Equal(t, 0, resp.Count, "a soft-deleted cross-site room must not be counted as unread")
+}
+
 func TestDistinctListNames(t *testing.T) {
-	subs := []model.Subscription{
-		{Name: "helper.bot", RoomType: model.RoomTypeBotDM},
-		{Name: "bob", RoomType: model.RoomTypeDM},
-		{Name: "Eng", RoomType: model.RoomTypeChannel},      // channels feed neither set
-		{Name: "helper.bot", RoomType: model.RoomTypeBotDM}, // duplicate bot
-		{Name: "carol", RoomType: model.RoomTypeDM},
-		{Name: "bob", RoomType: model.RoomTypeDM}, // duplicate dm counterpart
+	subs := []model.EnrichedSubscription{
+		{Subscription: model.Subscription{Name: "helper.bot", RoomType: model.RoomTypeBotDM}},
+		{Subscription: model.Subscription{Name: "bob", RoomType: model.RoomTypeDM}},
+		{Subscription: model.Subscription{Name: "Eng", RoomType: model.RoomTypeChannel}},      // channels feed neither set
+		{Subscription: model.Subscription{Name: "helper.bot", RoomType: model.RoomTypeBotDM}}, // duplicate bot
+		{Subscription: model.Subscription{Name: "carol", RoomType: model.RoomTypeDM}},
+		{Subscription: model.Subscription{Name: "bob", RoomType: model.RoomTypeDM}}, // duplicate dm counterpart
 	}
 	bots, dmCounterparts := distinctListNames(subs)
 	assert.Equal(t, []string{"helper.bot"}, bots, "bot accounts deduped in first-seen order")

@@ -88,14 +88,14 @@ func (s *UserService) normalizePage(offset, limit int) mongoutil.OffsetPageReque
 //
 // App and HR lookups degrade independently: a failed/missing lookup keeps the base
 // name and omits the app object — it never fails the request.
-func (s *UserService) buildListItems(c *natsrouter.Context, subs []model.Subscription) []model.SubscriptionItem {
+func (s *UserService) buildListItems(c *natsrouter.Context, subs []model.EnrichedSubscription) []model.SubscriptionItem {
 	// One pass over subs yields both name sets the lookups need.
 	bots, dmCounterparts := distinctListNames(subs)
 	apps := s.lookupApps(c, bots)
 	hrInfo := s.lookupHRInfo(c, dmCounterparts)
 	items := make([]model.SubscriptionItem, len(subs))
 	for i := range subs {
-		base := &subs[i]
+		base := &subs[i].Subscription
 		switch subs[i].RoomType {
 		case model.RoomTypeBotDM:
 			botDM := &model.BotDMSubscription{Subscription: base}
@@ -151,7 +151,7 @@ func (s *UserService) lookupHRInfo(c *natsrouter.Context, accounts []string) map
 // distinctListNames collects, in a single pass, the deduped botDM bot accounts and
 // the dm counterpart accounts — the two name sets the app and HR lookups need —
 // each in first-seen order.
-func distinctListNames(subs []model.Subscription) (bots, dmCounterparts []string) {
+func distinctListNames(subs []model.EnrichedSubscription) (bots, dmCounterparts []string) {
 	seenBot := map[string]struct{}{}
 	seenDM := map[string]struct{}{}
 	for i := range subs {
@@ -180,7 +180,7 @@ func distinctListNames(subs []model.Subscription) (bots, dmCounterparts []string
 // to the per-site GetRoomsInfo RPC, since their room docs live on another site.
 //
 // alert/hasMention are stored subscription state and are never touched here.
-func (s *UserService) enrichWithRoomInfo(c *natsrouter.Context, subs []model.Subscription) {
+func (s *UserService) enrichWithRoomInfo(c *natsrouter.Context, subs []model.EnrichedSubscription) {
 	if len(subs) == 0 {
 		return
 	}
@@ -208,7 +208,7 @@ func (s *UserService) enrichWithRoomInfo(c *natsrouter.Context, subs []model.Sub
 // enrichLocal builds sub.Room for LOCAL subs entirely from the $lookup baseline —
 // room metadata plus the E2E key projected from the room's encKey sub-document —
 // so it needs no separate key store read.
-func (s *UserService) enrichLocal(subs []model.Subscription, localIdx []int) {
+func (s *UserService) enrichLocal(subs []model.EnrichedSubscription, localIdx []int) {
 	for _, j := range localIdx {
 		subs[j].Room = buildLocalRoom(&subs[j])
 		// hasUnread / hasGroupMention are computed at read time: room activity (resp.
@@ -222,7 +222,7 @@ func (s *UserService) enrichLocal(subs []model.Subscription, localIdx []int) {
 // enrichCrossSite fans out per remote site to GetRoomsInfo; a failed site RPC
 // leaves that site's subs without a room object (no baseline fallback — there is
 // no local room doc for a cross-site room).
-func (s *UserService) enrichCrossSite(c *natsrouter.Context, subs []model.Subscription, idxBySite map[string][]int, roomIDsBySite map[string][]string) {
+func (s *UserService) enrichCrossSite(c *natsrouter.Context, subs []model.EnrichedSubscription, idxBySite map[string][]int, roomIDsBySite map[string][]string) {
 	if len(idxBySite) == 0 {
 		return
 	}
@@ -272,7 +272,7 @@ func (s *UserService) enrichCrossSite(c *natsrouter.Context, subs []model.Subscr
 		}
 		for _, j := range idxBySite[site] {
 			info := m[subs[j].RoomID]
-			applyRoomInfo(&subs[j], &info)
+			applyRoomInfo(&subs[j].Subscription, &info)
 		}
 	}
 }
@@ -286,7 +286,7 @@ const roomKeySecretLen = 32
 // encKey sub-document — so no separate key store read is needed. The baseline and
 // the wire room object both carry *time.Time, so LastMsgAt/LastMentionAllAt pass
 // through unconverted.
-func buildLocalRoom(sub *model.Subscription) *model.SubscriptionRoom {
+func buildLocalRoom(sub *model.EnrichedSubscription) *model.SubscriptionRoom {
 	// A soft-deleted room (name "Del-...") is surfaced with no room object.
 	if strings.HasPrefix(sub.RoomName, deletedRoomNamePrefix) {
 		return nil
@@ -400,15 +400,15 @@ func (s *UserService) GetDM(c *natsrouter.Context, req models.GetDMRequest) (*mo
 	if dm == nil {
 		return nil, errcode.NotFound("dm not found", errcode.WithReason(errcode.UserSubscriptionNotFound))
 	}
-	if dm.Subscription == nil {
-		return nil, errcode.Internal("malformed dm subscription")
-	}
-	// enrichWithRoomInfo mutates slice elements in place, so the single embedded sub is boxed into a 1-elem slice to receive the update.
-	one := []model.Subscription{*dm.Subscription}
+	// enrichWithRoomInfo mutates slice elements in place (local baseline + cross-site
+	// RPC), so the single enriched row is boxed into a 1-elem slice to receive the
+	// update; the wire DMSubscription then points at the boxed stored sub plus HRInfo.
+	one := []model.EnrichedSubscription{dm.EnrichedSubscription}
 	s.enrichWithRoomInfo(c, one)
-	out := *dm
-	out.Subscription = &one[0]
-	return &models.DMResponse{Subscription: out}, nil
+	return &models.DMResponse{Subscription: model.DMSubscription{
+		Subscription: &one[0].Subscription,
+		HRInfo:       dm.HRInfo,
+	}}, nil
 }
 
 // GetByRoomID returns the caller's room-info-enriched subscription for req.RoomID
@@ -426,7 +426,7 @@ func (s *UserService) GetByRoomID(c *natsrouter.Context, req models.GetByRoomIDR
 	if sub == nil {
 		return &models.SubscriptionListResponse{Subscriptions: []model.SubscriptionItem{}, Total: 0}, nil
 	}
-	one := []model.Subscription{*sub}
+	one := []model.EnrichedSubscription{*sub}
 	s.enrichWithRoomInfo(c, one)
 	items := s.buildListItems(c, one)
 	return &models.SubscriptionListResponse{Subscriptions: items, Total: len(items)}, nil
@@ -464,7 +464,7 @@ func (s *UserService) countUnread(ctx context.Context, account string, total int
 	// LOCAL subs carry room.lastMsgAt on the $lookup baseline — count them with no RPC.
 	// Only CROSS-SITE subs need the per-site GetRoomsInfo RPC (their room docs live remotely).
 	unreadTotal := 0
-	crossBySite := map[string][]model.Subscription{}
+	crossBySite := map[string][]model.EnrichedSubscription{}
 	roomIDsBySite := map[string][]string{}
 	for i := range subs {
 		if subs[i].SiteID == s.siteID {

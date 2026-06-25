@@ -24,13 +24,19 @@ const deletedRoomNameRegex = "^Del-"
 // SubscriptionRepo is the Mongo implementation of service.SubscriptionRepository.
 type SubscriptionRepo struct {
 	subscriptions *mongoutil.Collection[model.Subscription]
-	siteID        string // this instance's site — distinguishes local vs cross-site rows in the deleted-filter
+	// enriched decodes the room-enriched aggregation results (stored sub + read-time
+	// room baseline) over the same subscriptions collection; writes go through
+	// subscriptions so the baseline fields are never persisted.
+	enriched *mongoutil.Collection[model.EnrichedSubscription]
+	siteID   string // this instance's site — distinguishes local vs cross-site rows in the deleted-filter
 }
 
 // NewSubscriptionRepo builds a SubscriptionRepo over db; the deleted-filter keeps cross-site rows, drops local rows with missing/soft-deleted rooms.
 func NewSubscriptionRepo(db *mongo.Database, siteID string) *SubscriptionRepo {
+	col := db.Collection(subscriptionsCollection)
 	return &SubscriptionRepo{
-		subscriptions: mongoutil.NewCollection[model.Subscription](db.Collection(subscriptionsCollection)),
+		subscriptions: mongoutil.NewCollection[model.Subscription](col),
+		enriched:      mongoutil.NewCollection[model.EnrichedSubscription](col),
 		siteID:        siteID,
 	}
 }
@@ -201,7 +207,7 @@ func dedupeStrings(in []string) []string {
 // (^Del-) rooms are excluded. favorite restricts to favorited rows and pins the
 // caller's self-DM first; withinDays windows the rooms type on the room's lastMsgAt
 // (ignored for apps/current).
-func (r *SubscriptionRepo) AggregateSubscriptions(ctx context.Context, account, listType string, favorite bool, withinDays *int, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.Subscription], error) {
+func (r *SubscriptionRepo) AggregateSubscriptions(ctx context.Context, account, listType string, favorite bool, withinDays *int, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.EnrichedSubscription], error) {
 	match := bson.M{"u.account": account}
 	switch listType {
 	case "current":
@@ -234,7 +240,7 @@ func (r *SubscriptionRepo) AggregateSubscriptions(ctx context.Context, account, 
 	// $facet paginates (the sort key lives on the joined room, so it can't be pushed past the
 	// lookup). Fine at realistic per-account sub counts; the fix for very large accounts is
 	// denormalizing room activity onto the subscription — a write-side change tracked separately.
-	return r.subscriptions.AggregatePaged(ctx, pipeline, page)
+	return r.enriched.AggregatePaged(ctx, pipeline, page)
 }
 
 // sortStages orders rows by room activity (lastMsgAt) desc then name asc. In the
@@ -255,7 +261,7 @@ func sortStages(account string, favorite bool) bson.A {
 
 // FindChannelsByMembers returns one page of the requester's channel subs whose room contains the requester and ALL given members (bots excluded by the ".bot" suffix), room.createdAt desc, plus the full matching count.
 // The room match (roomMatchStages) runs first so the deleted/missing filter shrinks the set before the co-member self-join.
-func (r *SubscriptionRepo) FindChannelsByMembers(ctx context.Context, account string, members []string, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.Subscription], error) {
+func (r *SubscriptionRepo) FindChannelsByMembers(ctx context.Context, account string, members []string, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.EnrichedSubscription], error) {
 	// allAccounts is the full set the room must contain: the requested members plus
 	// the requester, deduped once (a duplicate member, or a member equal to the
 	// requester, collapses here). Bots (".bot" accounts) are excluded in the co-member
@@ -307,11 +313,11 @@ func (r *SubscriptionRepo) FindChannelsByMembers(ctx context.Context, account st
 		bson.M{"$sort": bson.D{{Key: matchedRoomField + ".createdAt", Value: -1}}},
 		bson.D{{Key: "$project", Value: subscriptionProjection(nil)}},
 	)
-	return r.subscriptions.AggregatePaged(ctx, pipeline, page)
+	return r.enriched.AggregatePaged(ctx, pipeline, page)
 }
 
 // GetDMSubscription returns the requester's room-enriched DM sub with target plus the counterpart's HRInfo (cross-site ⇒ nil), or (nil, nil).
-func (r *SubscriptionRepo) GetDMSubscription(ctx context.Context, account, target string) (*model.DMSubscription, error) {
+func (r *SubscriptionRepo) GetDMSubscription(ctx context.Context, account, target string) (*model.EnrichedDMSubscription, error) {
 	pipeline := bson.A{
 		bson.M{"$match": bson.M{"u.account": account, "name": target, "roomType": "dm"}},
 		bson.M{"$limit": int64(1)}, // (account, name, roomType=dm) is unique — short-circuit defensively
@@ -332,12 +338,12 @@ func (r *SubscriptionRepo) GetDMSubscription(ctx context.Context, account, targe
 		}}}},
 		bson.M{"$project": bson.M{"hrUser": 0}},
 	)
-	// .Raw(): decodes into []model.DMSubscription, not []model.Subscription.
-	cur, err := r.subscriptions.Raw().Aggregate(ctx, pipeline)
+	// r.enriched.Raw(): decodes into []model.EnrichedDMSubscription (stored sub + room baseline + hrInfo).
+	cur, err := r.enriched.Raw().Aggregate(ctx, pipeline)
 	if err != nil {
 		return nil, fmt.Errorf("aggregate dm subscription: %w", err)
 	}
-	var out []model.DMSubscription
+	var out []model.EnrichedDMSubscription
 	if err := cur.All(ctx, &out); err != nil {
 		return nil, fmt.Errorf("decode dm subscription: %w", err)
 	}
@@ -348,11 +354,11 @@ func (r *SubscriptionRepo) GetDMSubscription(ctx context.Context, account, targe
 }
 
 // GetSubscriptionByRoomID returns the requester's deleted-filtered sub for roomID, or (nil, nil); (account, roomId) is unique in practice.
-func (r *SubscriptionRepo) GetSubscriptionByRoomID(ctx context.Context, account, roomID string) (*model.Subscription, error) {
+func (r *SubscriptionRepo) GetSubscriptionByRoomID(ctx context.Context, account, roomID string) (*model.EnrichedSubscription, error) {
 	pipeline := bson.A{bson.M{"$match": bson.M{"u.account": account, "roomId": roomID}}}
 	pipeline = append(pipeline, roomsEnrichStages(false)...)
 	pipeline = append(pipeline, bson.M{"$limit": int64(1)}) // (roomId, u.account) is unique — short-circuit defensively
-	out, err := r.subscriptions.Aggregate(ctx, pipeline)
+	out, err := r.enriched.Aggregate(ctx, pipeline)
 	if err != nil {
 		return nil, fmt.Errorf("aggregate subscription by roomId: %w", err)
 	}
@@ -394,14 +400,14 @@ func (r *SubscriptionRepo) CountActiveSubscriptions(ctx context.Context, account
 }
 
 // GetActiveSubscriptions returns the deleted-filtered active set used by the unread count, capped by limit.
-func (r *SubscriptionRepo) GetActiveSubscriptions(ctx context.Context, account string, limit int) ([]model.Subscription, error) {
+func (r *SubscriptionRepo) GetActiveSubscriptions(ctx context.Context, account string, limit int) ([]model.EnrichedSubscription, error) {
 	pipeline := bson.A{bson.M{"$match": activeSubscriptionFilter(account)}}
 	pipeline = append(pipeline, roomsEnrichStages(true)...)
 	// MongoDB rejects $limit:0 — callers short-circuit zero; stay defensive here.
 	if limit > 0 {
 		pipeline = append(pipeline, bson.M{"$limit": int64(limit)})
 	}
-	return r.subscriptions.Aggregate(ctx, pipeline)
+	return r.enriched.Aggregate(ctx, pipeline)
 }
 
 // GetAppSubscription returns the requester's botDM subscription for botName, or (nil, nil).

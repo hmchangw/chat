@@ -44,10 +44,10 @@ func (m *MockSubscriptionRepository) EXPECT() *MockSubscriptionRepositoryMockRec
 }
 
 // AggregateSubscriptions mocks base method.
-func (m *MockSubscriptionRepository) AggregateSubscriptions(ctx context.Context, account, listType string, favorite bool, withinDays *int, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.Subscription], error) {
+func (m *MockSubscriptionRepository) AggregateSubscriptions(ctx context.Context, account, listType string, favorite bool, withinDays *int, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.EnrichedSubscription], error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "AggregateSubscriptions", ctx, account, listType, favorite, withinDays, page)
-	ret0, _ := ret[0].(mongoutil.OffsetPage[model.Subscription])
+	ret0, _ := ret[0].(mongoutil.OffsetPage[model.EnrichedSubscription])
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -74,10 +74,10 @@ func (mr *MockSubscriptionRepositoryMockRecorder) CountActiveSubscriptions(ctx, 
 }
 
 // FindChannelsByMembers mocks base method.
-func (m *MockSubscriptionRepository) FindChannelsByMembers(ctx context.Context, account string, members []string, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.Subscription], error) {
+func (m *MockSubscriptionRepository) FindChannelsByMembers(ctx context.Context, account string, members []string, page mongoutil.OffsetPageRequest) (mongoutil.OffsetPage[model.EnrichedSubscription], error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "FindChannelsByMembers", ctx, account, members, page)
-	ret0, _ := ret[0].(mongoutil.OffsetPage[model.Subscription])
+	ret0, _ := ret[0].(mongoutil.OffsetPage[model.EnrichedSubscription])
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -89,10 +89,10 @@ func (mr *MockSubscriptionRepositoryMockRecorder) FindChannelsByMembers(ctx, acc
 }
 
 // GetActiveSubscriptions mocks base method.
-func (m *MockSubscriptionRepository) GetActiveSubscriptions(ctx context.Context, account string, limit int) ([]model.Subscription, error) {
+func (m *MockSubscriptionRepository) GetActiveSubscriptions(ctx context.Context, account string, limit int) ([]model.EnrichedSubscription, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetActiveSubscriptions", ctx, account, limit)
-	ret0, _ := ret[0].([]model.Subscription)
+	ret0, _ := ret[0].([]model.EnrichedSubscription)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -119,10 +119,10 @@ func (mr *MockSubscriptionRepositoryMockRecorder) GetAppSubscription(ctx, accoun
 }
 
 // GetDMSubscription mocks base method.
-func (m *MockSubscriptionRepository) GetDMSubscription(ctx context.Context, account, target string) (*model.DMSubscription, error) {
+func (m *MockSubscriptionRepository) GetDMSubscription(ctx context.Context, account, target string) (*model.EnrichedDMSubscription, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetDMSubscription", ctx, account, target)
-	ret0, _ := ret[0].(*model.DMSubscription)
+	ret0, _ := ret[0].(*model.EnrichedDMSubscription)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -134,10 +134,10 @@ func (mr *MockSubscriptionRepositoryMockRecorder) GetDMSubscription(ctx, account
 }
 
 // GetSubscriptionByRoomID mocks base method.
-func (m *MockSubscriptionRepository) GetSubscriptionByRoomID(ctx context.Context, account, roomID string) (*model.Subscription, error) {
+func (m *MockSubscriptionRepository) GetSubscriptionByRoomID(ctx context.Context, account, roomID string) (*model.EnrichedSubscription, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetSubscriptionByRoomID", ctx, account, roomID)
-	ret0, _ := ret[0].(*model.Subscription)
+	ret0, _ := ret[0].(*model.EnrichedSubscription)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }

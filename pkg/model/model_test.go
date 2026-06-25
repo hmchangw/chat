@@ -1785,23 +1785,27 @@ func TestRoomInfo_MinUserLastSeenAt(t *testing.T) {
 
 func TestSubscriptionJSON_NestedRoom(t *testing.T) {
 	lastMsg := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
-	s := model.Subscription{
-		ID:        "s1",
-		User:      model.SubscriptionUser{ID: "u1", Account: "alice"},
-		RoomID:    "r1",
-		SiteID:    "site-a",
-		RoomType:  model.RoomTypeChannel,
-		Name:      "general",
-		JoinedAt:  time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+	// The read-time room baseline lives on EnrichedSubscription (all json:"-"); this
+	// pins that those fields never flatten onto the wire while Room nests under "room".
+	s := model.EnrichedSubscription{
+		Subscription: model.Subscription{
+			ID:       "s1",
+			User:     model.SubscriptionUser{ID: "u1", Account: "alice"},
+			RoomID:   "r1",
+			SiteID:   "site-a",
+			RoomType: model.RoomTypeChannel,
+			Name:     "general",
+			JoinedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+			Room: &model.SubscriptionRoom{
+				SiteID:    "site-a",
+				Name:      "general-canonical",
+				UserCount: 42,
+				LastMsgID: "m-100",
+			},
+		},
 		UserCount: 42,
 		LastMsgAt: &lastMsg,
 		LastMsgID: "m-100",
-		Room: &model.SubscriptionRoom{
-			SiteID:    "site-a",
-			Name:      "general-canonical",
-			UserCount: 42,
-			LastMsgID: "m-100",
-		},
 	}
 	data, err := json.Marshal(&s)
 	require.NoError(t, err)
