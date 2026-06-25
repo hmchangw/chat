@@ -281,9 +281,13 @@ func (s *HistoryService) buildThreadItems(c *natsrouter.Context, account string,
 		}
 		since := acc.since
 		parent, hasParent := msgByID[row.ParentMessageID]
-		// Drop threads whose parent predates the user's access window.
-		if hasParent && since != nil && parent.CreatedAt.Before(*since) {
-			continue
+		// Within a restricted access window, drop threads whose parent predates it.
+		// A missing parent (deleted / not yet replicated) has no verifiable creation
+		// time, so drop it conservatively rather than leak a pre-window thread.
+		if since != nil {
+			if !hasParent || parent.CreatedAt.Before(*since) {
+				continue
+			}
 		}
 		item := pkgmodel.ThreadListItem{
 			SiteID:          row.SiteID,

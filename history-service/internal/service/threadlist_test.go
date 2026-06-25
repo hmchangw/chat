@@ -126,6 +126,48 @@ func TestHistoryService_ListThreadSubscriptions_AccessWindowDropsParent(t *testi
 	assert.Empty(t, resp.Items) // dropped — parent predates access window
 }
 
+func TestHistoryService_ListThreadSubscriptions_AccessWindowDropsDeletedParent(t *testing.T) {
+	svc, msgs, subs, _, threadSubs := newThreadListService(t)
+	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	since := base.Add(4 * time.Hour)
+
+	rows := []mongorepo.ThreadSubRow{
+		{ThreadRoomID: "tr-gone", RoomID: "r1", SiteID: "site-a", ParentMessageID: "p-gone", LastMsgID: "m-gone", LastMsgAt: base.Add(5 * time.Hour)},
+	}
+	threadSubs.EXPECT().ListUserThreadSubscriptions(gomock.Any(), "alice", gomock.Any(), gomock.Any(), gomock.Any()).Return(rows, false, nil)
+	// Parent absent from hydration (deleted / not replicated) — its creation time
+	// cannot be verified against the access window, so the thread must be dropped.
+	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return([]models.Message{
+		{MessageID: "m-gone", RoomID: "r1", CreatedAt: base.Add(5 * time.Hour)},
+	}, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "alice", "r1").Return(&since, true, nil)
+
+	resp, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice"})
+	require.NoError(t, err)
+	assert.Empty(t, resp.Items) // dropped — parent unverifiable within a restricted access window
+}
+
+func TestHistoryService_ListThreadSubscriptions_FullAccessKeepsDeletedParent(t *testing.T) {
+	svc, msgs, subs, _, threadSubs := newThreadListService(t)
+	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	rows := []mongorepo.ThreadSubRow{
+		{ThreadRoomID: "tr-gone", RoomID: "r1", SiteID: "site-a", ParentMessageID: "p-gone", LastMsgID: "m-gone", LastMsgAt: base.Add(5 * time.Hour)},
+	}
+	threadSubs.EXPECT().ListUserThreadSubscriptions(gomock.Any(), "alice", gomock.Any(), gomock.Any(), gomock.Any()).Return(rows, false, nil)
+	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return([]models.Message{
+		{MessageID: "m-gone", RoomID: "r1", CreatedAt: base.Add(5 * time.Hour)},
+	}, nil)
+	// Full history access (since == nil): a missing parent does not drop the thread.
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "alice", "r1").Return(nil, true, nil)
+
+	resp, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice", Limit: 10})
+	require.NoError(t, err)
+	require.Len(t, resp.Items, 1)
+	assert.Equal(t, "tr-gone", resp.Items[0].ThreadRoomID)
+	assert.Nil(t, resp.Items[0].ParentMessage)
+}
+
 func TestHistoryService_ListThreadSubscriptions_NotSubscribedRoomDropped(t *testing.T) {
 	svc, msgs, subs, _, threadSubs := newThreadListService(t)
 	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
