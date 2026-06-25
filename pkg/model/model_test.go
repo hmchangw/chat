@@ -1033,8 +1033,9 @@ func TestRoomKeyGetResponseJSON(t *testing.T) {
 
 func TestNotificationEventJSON_Reaction(t *testing.T) {
 	src := model.NotificationEvent{
-		Type:   "reaction",
-		RoomID: "room-1",
+		Type:     "reaction",
+		RoomID:   "room-1",
+		RoomType: model.RoomTypeChannel,
 		Message: model.Message{
 			ID: "m1", RoomID: "room-1", UserID: "u1", UserAccount: "bob",
 			CreatedAt: time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC),

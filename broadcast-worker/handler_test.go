@@ -1378,9 +1378,61 @@ func TestHandleReacted_AuthorNotificationPolicy(t *testing.T) {
 			var got model.NotificationEvent
 			require.NoError(t, json.Unmarshal(notif.data, &got))
 			assert.Equal(t, "reaction", got.Type)
+			assert.Equal(t, model.RoomTypeChannel, got.RoomType)
 			require.NotNil(t, got.ReactionDelta)
 			assert.Equal(t, "thumbsup", got.ReactionDelta.Shortcode)
 			assert.Equal(t, tc.actorAccount, got.ReactionDelta.Actor.Account)
+		})
+	}
+}
+
+func TestHandleReacted_AuthorNotification_RoomType(t *testing.T) {
+	cases := []struct {
+		name     string
+		roomType model.RoomType
+	}{
+		{name: "channel room", roomType: model.RoomTypeChannel},
+		{name: "dm room", roomType: model.RoomTypeDM},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			store := NewMockStore(ctrl)
+			us := NewMockUserStore(ctrl)
+			pub := &mockPublisher{}
+			keyStore := NewMockRoomKeyProvider(ctrl)
+
+			roomID := "r1"
+			room := &model.Room{ID: roomID, Type: tc.roomType, SiteID: "site-a"}
+			store.EXPECT().GetRoom(gomock.Any(), roomID).Return(room, nil)
+
+			reactedAt := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+			evt := model.MessageEvent{
+				Event:     model.EventReacted,
+				SiteID:    "site-a",
+				Timestamp: reactedAt.UnixMilli(),
+				Message: model.Message{
+					ID: "m1", RoomID: roomID, UserAccount: "bob",
+					CreatedAt: reactedAt.Add(-time.Hour), UpdatedAt: &reactedAt,
+				},
+				ReactionDelta: &model.ReactionDelta{
+					Shortcode: "thumbsup",
+					Action:    model.ReactionActionAdded,
+					Actor:     model.Participant{UserID: "u-alice", Account: "alice", EngName: "Alice"},
+				},
+			}
+			data, err := json.Marshal(&evt)
+			require.NoError(t, err)
+
+			h := NewHandler(store, us, pub, keyStore, true)
+			require.NoError(t, h.HandleMessage(context.Background(), data))
+
+			notif := findPublishRecord(pub.records, subject.Notification("bob"))
+			require.NotNil(t, notif, "author notification must be published")
+			var got model.NotificationEvent
+			require.NoError(t, json.Unmarshal(notif.data, &got))
+			assert.Equal(t, tc.roomType, got.RoomType)
 		})
 	}
 }
