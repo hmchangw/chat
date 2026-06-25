@@ -241,8 +241,7 @@ Aggregation pipeline on `thread_subscriptions`:
   indexes it); the `$lookup` resolves one `thread_rooms` doc per followed thread
   by `_id` (point lookups). The sort/cursor run on the post-lookup `tr.lastMsgAt`.
 - The cost scales with the user's **thread-subscription count on that site**, not
-  the collection — acceptable for the read frequency, and bounded because §3's
-  invariant means the user is an active member of the parent room.
+  the collection — acceptable for the read frequency.
 - Fetch `N + 1` to set `HasMore` without a second count query.
 
 **Enrichment (per returned subscription):**
@@ -259,9 +258,19 @@ Aggregation pipeline on `thread_subscriptions`:
   resolution (counterpart/app name, as `user-service.buildListItems` does for the
   subscription list) is **out of scope for v1** — surface the raw `rooms.name`;
   revisit if DM threads need a friendly name.
-- **Access window** — honor `threadParentCreatedAt` / `historySharedSince`
-  exactly as `GetThreadMessages`/`GetThreadParentMessages` do, so a user can't
-  see a parent older than their access.
+- **Subscription + access window** — each distinct room is resolved through
+  `getAccessSince` (the shared helper that rejects a non-subscribed room with
+  `Forbidden`): a room the user isn't subscribed to, or whose lookup errors, is
+  logged and dropped — never failing the page. For subscribed rooms, honor
+  `threadParentCreatedAt` / `historySharedSince` exactly as
+  `GetThreadMessages`/`GetThreadParentMessages` do, so a user can't see a parent
+  older than their access.
+- **Fill loop** — both filters run **post-fetch**, so a fetched page can come
+  back fully filtered while more rows remain. The leaf keeps scanning
+  newer→older (bounded by `maxThreadListScans`) until it has a full page of
+  visible items or the source is exhausted, so it never returns an empty page
+  that still reports `HasMore` — which would leave the aggregator with `hasNext`
+  set but no cursor to advance.
 
 **Leaf request / response:**
 

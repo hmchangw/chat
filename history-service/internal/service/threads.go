@@ -155,6 +155,11 @@ func threadUnread(lastMsgAt time.Time, lastSeenAt *time.Time) bool {
 	return lastMsgAt.After(*lastSeenAt)
 }
 
+// maxThreadListScans bounds the thread-list fill loop — each scan fetches and
+// filters one page, so this caps the work spent skipping inaccessible threads
+// before returning a (possibly short) page.
+const maxThreadListScans = 5
+
 // ListThreadSubscriptions is the per-site leaf of the cross-site thread inbox:
 // it returns the account's thread subscriptions on this site, newest activity
 // first, hydrated with each thread's parent and last message plus the owning
@@ -179,16 +184,69 @@ func (s *HistoryService) ListThreadSubscriptions(c *natsrouter.Context, req pkgm
 		t := time.UnixMilli(*req.CursorLastMsgAt).UTC()
 		cursorTs = &t
 	}
+	cursorThreadRoomID := req.CursorThreadRoomID
 
-	rows, hasMore, err := s.threadSubs.ListUserThreadSubscriptions(c, req.Account, cursorTs, req.CursorThreadRoomID, limit)
-	if err != nil {
-		return nil, fmt.Errorf("listing thread subscriptions: %w", err)
-	}
-	if len(rows) == 0 {
-		return &pkgmodel.ThreadSubscriptionListResponse{Items: []pkgmodel.ThreadListItem{}, HasMore: false}, nil
+	// Fill loop: thread rows are filtered post-fetch (subscription + access
+	// window), so a fetched page can come back fully filtered while more rows
+	// remain. Keep scanning newer→older until we have a full page of visible
+	// items or the source is exhausted — never hand back an empty page that
+	// still reports HasMore, which would strand the aggregator's cursor. Bounded
+	// by maxThreadListScans for the pathological all-inaccessible case.
+	access := make(map[string]threadRoomAccess) // per-room decision, memoized across batches
+	items := make([]pkgmodel.ThreadListItem, 0, limit)
+	hasMore := false
+	for scan := 0; scan < maxThreadListScans; scan++ {
+		rows, more, err := s.threadSubs.ListUserThreadSubscriptions(c, req.Account, cursorTs, cursorThreadRoomID, limit)
+		if err != nil {
+			return nil, fmt.Errorf("listing thread subscriptions: %w", err)
+		}
+		if len(rows) == 0 {
+			hasMore = false
+			break
+		}
+
+		batch, err := s.buildThreadItems(c, req.Account, rows, access)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, batch...)
+		hasMore = more
+
+		// Advance past the last row scanned (its pre-filter position) so the next
+		// batch continues where this one stopped.
+		last := rows[len(rows)-1].LastMsgAt.UTC()
+		cursorTs = &last
+		cursorThreadRoomID = rows[len(rows)-1].ThreadRoomID
+
+		if len(items) >= limit || !more {
+			break
+		}
 	}
 
-	msgIDs, roomIDs := threadListLookupKeys(rows)
+	// Over-collected past the page: keep the newest limit, report more pending.
+	// The dropped (older) items return on the next page via the aggregator cursor.
+	if len(items) > limit {
+		items = items[:limit]
+		hasMore = true
+	}
+	return &pkgmodel.ThreadSubscriptionListResponse{Items: items, HasMore: hasMore}, nil
+}
+
+// threadRoomAccess is a memoized per-room access decision for the fill loop:
+// allowed reports whether the user may see the room's threads, and since is the
+// room's history access-window lower bound (nil = full history).
+type threadRoomAccess struct {
+	since   *time.Time
+	allowed bool
+}
+
+// buildThreadItems hydrates one batch of thread rows and returns the visible
+// items — those in a subscribed room and within that room's access window.
+// Per-room access decisions are memoized in access across the caller's fill
+// loop; a not-subscribed or errored room is logged once and its threads dropped
+// rather than failing the page.
+func (s *HistoryService) buildThreadItems(c *natsrouter.Context, account string, rows []mongorepo.ThreadSubRow, access map[string]threadRoomAccess) ([]pkgmodel.ThreadListItem, error) {
+	msgIDs, _ := threadListLookupKeys(rows)
 
 	// Hydrate message bodies from Cassandra (room name/type already rode in on
 	// the rows via the aggregation's rooms $lookup).
@@ -196,37 +254,32 @@ func (s *HistoryService) ListThreadSubscriptions(c *natsrouter.Context, req pkgm
 	if err != nil {
 		return nil, fmt.Errorf("hydrating thread list messages: %w", err)
 	}
-
 	msgByID := make(map[string]models.Message, len(msgs))
 	for i := range msgs {
 		msgByID[msgs[i].MessageID] = msgs[i]
 	}
 
-	// Access window per distinct room. getAccessSince also enforces subscription:
-	// a room the user is not subscribed to (or that errors) is dropped from the
-	// map — and its threads are skipped below — so the inbox never lists rooms
-	// the user cannot access. A per-room failure degrades that room only, never
-	// the whole page.
-	accessSince := make(map[string]*time.Time, len(roomIDs))
-	for _, rid := range roomIDs {
-		since, err := s.getAccessSince(c, req.Account, rid)
-		if err != nil {
-			slog.Warn("thread list: dropping inaccessible room",
-				"request_id", natsutil.RequestIDFromContext(c),
-				"account", req.Account, "room_id", rid, "error", err)
-			continue
-		}
-		accessSince[rid] = since
-	}
-
 	items := make([]pkgmodel.ThreadListItem, 0, len(rows))
 	for i := range rows {
 		row := rows[i]
-		since, ok := accessSince[row.RoomID]
+		acc, ok := access[row.RoomID]
 		if !ok {
-			// Room not accessible (not subscribed, or errored above) — skip its threads.
+			// getAccessSince also enforces subscription (Forbidden when not subscribed).
+			since, err := s.getAccessSince(c, account, row.RoomID)
+			if err != nil {
+				slog.Warn("thread list: dropping inaccessible room",
+					"request_id", natsutil.RequestIDFromContext(c),
+					"account", account, "room_id", row.RoomID, "error", err)
+				acc = threadRoomAccess{allowed: false}
+			} else {
+				acc = threadRoomAccess{since: since, allowed: true}
+			}
+			access[row.RoomID] = acc
+		}
+		if !acc.allowed {
 			continue
 		}
+		since := acc.since
 		parent, hasParent := msgByID[row.ParentMessageID]
 		// Drop threads whose parent predates the user's access window.
 		if hasParent && since != nil && parent.CreatedAt.Before(*since) {
@@ -257,8 +310,7 @@ func (s *HistoryService) ListThreadSubscriptions(c *natsrouter.Context, req pkgm
 		}
 		items = append(items, item)
 	}
-
-	return &pkgmodel.ThreadSubscriptionListResponse{Items: items, HasMore: hasMore}, nil
+	return items, nil
 }
 
 // threadListLookupKeys collects the distinct message IDs (parents ∪ last) and

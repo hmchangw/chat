@@ -57,7 +57,8 @@ func TestHistoryService_ListThreadSubscriptions_Success(t *testing.T) {
 	}, nil)
 	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "alice", "r1").Return(nil, true, nil)
 
-	resp, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice", Limit: 10})
+	// limit 2: the batch fills the page, so the fill loop stops after one fetch.
+	resp, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice", Limit: 2})
 	require.NoError(t, err)
 	require.Len(t, resp.Items, 2)
 	assert.True(t, resp.HasMore)
@@ -170,6 +171,59 @@ func TestHistoryService_ListThreadSubscriptions_AccessErrorDegrades(t *testing.T
 	require.NoError(t, err)
 	require.Len(t, resp.Items, 1)
 	assert.Equal(t, "r1", resp.Items[0].RoomID)
+}
+
+func TestHistoryService_ListThreadSubscriptions_FillsPageAcrossFilteredBatch(t *testing.T) {
+	svc, msgs, subs, _, threadSubs := newThreadListService(t)
+	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	// Batch 1 is entirely a room the user isn't subscribed to (filtered out) with
+	// more pending; batch 2 has the visible item. The leaf must keep scanning and
+	// return batch 2's item rather than an empty page with HasMore.
+	batch1 := []mongorepo.ThreadSubRow{
+		{ThreadRoomID: "tr-1", RoomID: "r-denied", SiteID: "site-a", ParentMessageID: "p1", LastMsgID: "m1", LastMsgAt: base.Add(5 * time.Hour)},
+	}
+	batch2 := []mongorepo.ThreadSubRow{
+		{ThreadRoomID: "tr-2", RoomID: "r-ok", SiteID: "site-a", ParentMessageID: "p2", LastMsgID: "m2", LastMsgAt: base.Add(3 * time.Hour)},
+	}
+	gomock.InOrder(
+		threadSubs.EXPECT().ListUserThreadSubscriptions(gomock.Any(), "alice", gomock.Nil(), "", gomock.Any()).Return(batch1, true, nil),
+		// Second fetch resumes at batch 1's last scanned position.
+		threadSubs.EXPECT().ListUserThreadSubscriptions(gomock.Any(), "alice", gomock.Not(gomock.Nil()), "tr-1", gomock.Any()).Return(batch2, false, nil),
+	)
+	gomock.InOrder(
+		msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return([]models.Message{{MessageID: "p1", RoomID: "r-denied"}, {MessageID: "m1", RoomID: "r-denied"}}, nil),
+		msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return([]models.Message{{MessageID: "p2", RoomID: "r-ok"}, {MessageID: "m2", RoomID: "r-ok"}}, nil),
+	)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "alice", "r-denied").Return(nil, false, nil)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "alice", "r-ok").Return(nil, true, nil)
+
+	resp, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice", Limit: 1})
+	require.NoError(t, err)
+	require.Len(t, resp.Items, 1)
+	assert.Equal(t, "tr-2", resp.Items[0].ThreadRoomID)
+	assert.False(t, resp.HasMore) // batch 2 exhausted the source
+}
+
+func TestHistoryService_ListThreadSubscriptions_FillLoopBounded(t *testing.T) {
+	svc, msgs, subs, _, threadSubs := newThreadListService(t)
+	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	// Every scan returns a filtered (not-subscribed) batch with more still
+	// pending. The loop is bounded, so after maxThreadListScans it returns an
+	// empty page that still reports HasMore — the accepted residual of option B.
+	row := []mongorepo.ThreadSubRow{
+		{ThreadRoomID: "tr-x", RoomID: "r-denied", SiteID: "site-a", ParentMessageID: "px", LastMsgID: "mx", LastMsgAt: base.Add(time.Hour)},
+	}
+	const maxScans = 5 // keep in sync with maxThreadListScans
+	threadSubs.EXPECT().ListUserThreadSubscriptions(gomock.Any(), "alice", gomock.Any(), gomock.Any(), gomock.Any()).Return(row, true, nil).Times(maxScans)
+	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return([]models.Message{{MessageID: "px", RoomID: "r-denied"}, {MessageID: "mx", RoomID: "r-denied"}}, nil).Times(maxScans)
+	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "alice", "r-denied").Return(nil, false, nil) // memoized ⇒ once
+
+	resp, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice", Limit: 1})
+	require.NoError(t, err)
+	assert.Empty(t, resp.Items)
+	assert.True(t, resp.HasMore)
 }
 
 func TestHistoryService_ListThreadSubscriptions_MissingRoomMetaDegrades(t *testing.T) {
