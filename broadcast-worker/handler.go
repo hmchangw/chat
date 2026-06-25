@@ -604,6 +604,7 @@ func (h *Handler) handleReacted(ctx context.Context, evt *model.MessageEvent) er
 	notif := model.NotificationEvent{
 		Type:          "reaction",
 		RoomID:        msg.RoomID,
+		RoomType:      room.Type,
 		Message:       msg,
 		ReactionDelta: evt.ReactionDelta,
 		Timestamp:     time.Now().UTC().UnixMilli(),

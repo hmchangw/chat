@@ -128,6 +128,7 @@ type InboxMemberEvent struct {
 type NotificationEvent struct {
 	Type          string         `json:"type"` // "reaction"
 	RoomID        string         `json:"roomId"`
+	RoomType      RoomType       `json:"roomType"`
 	Message       Message        `json:"message"`
 	ReactionDelta *ReactionDelta `json:"reactionDelta,omitempty" bson:"reactionDelta,omitempty"`
 	Timestamp     int64          `json:"timestamp"               bson:"timestamp"`
