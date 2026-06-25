@@ -3556,6 +3556,21 @@ func TestStatusWithRequestReply_JSONShape(t *testing.T) {
 	assert.JSONEq(t, `{"status":"ok","requestId":"rid"}`, string(b))
 }
 
+func TestAvatarJSON(t *testing.T) {
+	src := &model.Avatar{
+		ID:          "bot:helper.bot",
+		SubjectType: model.AvatarSubjectBot,
+		SubjectID:   "helper.bot",
+		MinioKey:    "bot/helper.bot",
+		ContentType: "image/png",
+		Size:        2048,
+		ETag:        "abc123",
+		CreatedAt:   time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC),
+		UpdatedAt:   time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC),
+	}
+	roundTrip(t, src, &model.Avatar{})
+}
+
 func TestMessageEvent_NewTCount(t *testing.T) {
 	t.Run("NewTCount nil is omitted from JSON", func(t *testing.T) {
 		e := model.MessageEvent{

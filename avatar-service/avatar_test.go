@@ -1,0 +1,66 @@
+package main
+
+import (
+	"encoding/xml"
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestIsBot(t *testing.T) {
+	assert.True(t, isBot("helper.bot"))
+	assert.True(t, isBot("p_payroll"))
+	assert.False(t, isBot("alice"))
+}
+
+func TestParseAccount(t *testing.T) {
+	l, d := parseAccount("helper.bot@site2.example.com")
+	assert.Equal(t, "helper.bot", l)
+	assert.Equal(t, "site2.example.com", d)
+	l, d = parseAccount("alice")
+	assert.Equal(t, "alice", l)
+	assert.Equal(t, "", d)
+}
+
+func TestSanitizeInitial(t *testing.T) {
+	cases := map[string]string{
+		"alice":   "A",
+		"張三":      "張",
+		"7eleven": "7",
+		"</text>": "?",
+		"":        "?",
+		" x":      "?", //nolint:gocritic // intentional: test sanitizeInitial with leading space
+	}
+	for in, want := range cases {
+		assert.Equalf(t, want, sanitizeInitial(in), "sanitizeInitial(%q)", in)
+	}
+}
+
+func TestRenderDefaultSVG_Deterministic(t *testing.T) {
+	assert.Equal(t, renderDefaultSVG("room-1", "General"), renderDefaultSVG("room-1", "General"))
+}
+
+func TestRenderDefaultSVG_StableColourPerSeed(t *testing.T) {
+	a := string(renderDefaultSVG("room-1", "Alpha"))
+	b := string(renderDefaultSVG("room-1", "Beta"))
+	fillA := strings.Split(strings.SplitN(a, `fill="`, 2)[1], `"`)[0]
+	assert.Contains(t, b, `fill="`+fillA+`"`, "same seed → same colour regardless of name")
+}
+
+func TestRenderDefaultSVG_InjectionSafe(t *testing.T) {
+	out := renderDefaultSVG("seed", `</text><script>alert(1)</script>`)
+	require.NoError(t, xml.Unmarshal(out, new(struct{ XMLName xml.Name })), "must be well-formed XML")
+	assert.NotContains(t, string(out), "<script>")
+}
+
+func TestDefaultETag_StableAndQuoted(t *testing.T) {
+	e1 := defaultETag("room-1", "General")
+	assert.Equal(t, e1, defaultETag("room-1", "General"))
+	assert.True(t, strings.HasPrefix(e1, `"`) && strings.HasSuffix(e1, `"`))
+}
+
+func TestBotObjectKey(t *testing.T) {
+	assert.Equal(t, "bot/helper.bot", botObjectKey("helper.bot"))
+}
