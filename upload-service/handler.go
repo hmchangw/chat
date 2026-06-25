@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -51,6 +52,7 @@ type Handler struct {
 	maxFileSize  int64
 	mimeFilter   *mediaTypeFilter
 	preview      previewFunc
+	nowMilli     func() int64
 }
 
 // NewHandler wires the handler dependencies. maxFiles/maxImageSize gate the image
@@ -60,6 +62,7 @@ func NewHandler(store Store, dc driveClient, maxFiles int, maxImageSize, maxFile
 	return &Handler{
 		store: store, drive: dc, maxFiles: maxFiles, maxImageSize: maxImageSize,
 		maxFileSize: maxFileSize, mimeFilter: mimeFilter, preview: preview,
+		nowMilli: func() int64 { return time.Now().UTC().UnixMilli() },
 	}
 }
 
