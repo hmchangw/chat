@@ -155,20 +155,18 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			wantNoPublish: true,
 		},
 		{
-			// #322: client sends the timestamp; the server resolves it from the
-			// parent regardless and the resolved value is what reaches downstream.
-			name:    "thread parent with client-sent timestamp — server-resolved value wins",
+			// The gatekeeper no longer reads history to resolve the thread parent's
+			// createdAt — it carries the client-sent value onto the canonical event,
+			// keeping the send path free of a synchronous Cassandra dependency.
+			// message-worker re-resolves the authoritative value downstream.
+			name:    "thread reply carries client-sent parent timestamp — no fetch",
 			account: validAccount,
 			roomID:  validRoomID,
 			siteID:  validSiteID,
 			buildData: func() []byte {
-				// Client sends a WRONG timestamp; server must override it with the
-				// parent's actual createdAt so a bad client value can't corrupt
-				// downstream consumers.
-				wrongMillis := time.Date(1999, 1, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
 				return []byte(fmt.Sprintf(
 					`{"id":%q,"content":%q,"requestId":%q,"threadParentMessageId":%q,"threadParentMessageCreatedAt":%d}`,
-					validID, validContent, validRequestID, threadParentID, wrongMillis,
+					validID, validContent, validRequestID, threadParentID, parentTS.UnixMilli(),
 				))
 			},
 			setupStore: func(s *MockStore) {
@@ -176,11 +174,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 					GetSubscription(gomock.Any(), validAccount, validRoomID).
 					Return(sub, nil)
 			},
-			setupFetcher: func(f *MockParentMessageFetcher) {
-				f.EXPECT().
-					FetchQuotedParent(gomock.Any(), validAccount, validRoomID, validSiteID, threadParentID).
-					Return(&cassandra.QuotedParentMessage{MessageID: threadParentID, RoomID: validRoomID, CreatedAt: parentTS}, nil)
-			},
+			// no setupFetcher — gomock fails the test if FetchQuotedParent is called.
 			setupPub: func() (publishFunc, *[]publishedMsg) {
 				var published []publishedMsg
 				return makePublishFunc(&published, nil), &published
@@ -192,7 +186,6 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				require.NoError(t, json.Unmarshal(data, &msg))
 				require.Equal(t, threadParentID, msg.ThreadParentMessageID)
 				require.NotNil(t, msg.ThreadParentMessageCreatedAt)
-				// Server-resolved value (parentTS), NOT the wrong client value (1999).
 				assert.Equal(t, parentTS, msg.ThreadParentMessageCreatedAt.UTC())
 
 				require.Len(t, published, 1)
@@ -204,9 +197,10 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			},
 		},
 		{
-			// #322: the field is now optional — omitting it must succeed and the
-			// server resolves the parent's createdAt server-side.
-			name:    "thread parent ID without timestamp — resolved server-side",
+			// A thread reply without the parent timestamp is a client validation
+			// error (BadRequest), not an infra Nak. Rejected before the subscription
+			// lookup, so no store interaction is expected.
+			name:    "thread reply missing parent timestamp — bad request",
 			account: validAccount,
 			roomID:  validRoomID,
 			siteID:  validSiteID,
@@ -220,71 +214,17 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				data, _ := json.Marshal(req)
 				return data
 			},
-			setupStore: func(s *MockStore) {
-				s.EXPECT().
-					GetSubscription(gomock.Any(), validAccount, validRoomID).
-					Return(sub, nil)
-			},
-			setupFetcher: func(f *MockParentMessageFetcher) {
-				f.EXPECT().
-					FetchQuotedParent(gomock.Any(), validAccount, validRoomID, validSiteID, threadParentID).
-					Return(&cassandra.QuotedParentMessage{MessageID: threadParentID, RoomID: validRoomID, CreatedAt: parentTS}, nil)
-			},
-			setupPub: func() (publishFunc, *[]publishedMsg) {
-				var published []publishedMsg
-				return makePublishFunc(&published, nil), &published
-			},
-			wantErr: false,
-			checkResult: func(t *testing.T, data []byte, published []publishedMsg) {
-				require.NotNil(t, data)
-				var msg model.Message
-				require.NoError(t, json.Unmarshal(data, &msg))
-				require.Equal(t, threadParentID, msg.ThreadParentMessageID)
-				require.NotNil(t, msg.ThreadParentMessageCreatedAt)
-				assert.Equal(t, parentTS, msg.ThreadParentMessageCreatedAt.UTC())
-
-				require.Len(t, published, 1)
-				var evt model.MessageEvent
-				require.NoError(t, json.Unmarshal(published[0].data, &evt))
-				require.NotNil(t, evt.Message.ThreadParentMessageCreatedAt)
-				assert.Equal(t, parentTS, evt.Message.ThreadParentMessageCreatedAt.UTC())
-			},
-		},
-		{
-			// #322: when the parent fetch fails transiently, the send must Nak
-			// (bare infra error), not drop the message — the resolved timestamp is
-			// correctness-critical downstream.
-			name:    "thread parent createdAt resolution fails — infra error (Nak)",
-			account: validAccount,
-			roomID:  validRoomID,
-			siteID:  validSiteID,
-			buildData: func() []byte {
-				req := model.SendMessageRequest{
-					ID:                    validID,
-					Content:               validContent,
-					RequestID:             validRequestID,
-					ThreadParentMessageID: threadParentID,
-				}
-				data, _ := json.Marshal(req)
-				return data
-			},
-			setupStore: func(s *MockStore) {
-				s.EXPECT().
-					GetSubscription(gomock.Any(), validAccount, validRoomID).
-					Return(sub, nil)
-			},
-			setupFetcher: func(f *MockParentMessageFetcher) {
-				f.EXPECT().
-					FetchQuotedParent(gomock.Any(), validAccount, validRoomID, validSiteID, threadParentID).
-					Return(nil, fmt.Errorf("history request: nats timeout"))
-			},
+			setupStore: func(s *MockStore) {},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
 				var published []publishedMsg
 				return makePublishFunc(&published, nil), &published
 			},
 			wantErr:       true,
-			wantInfra:     true,
+			wantInfra:     false,
 			wantNoPublish: true,
+			checkErr: func(t *testing.T, err error) {
+				assert.Contains(t, err.Error(), "threadParentMessageCreatedAt is required")
+			},
 		},
 		{
 			name:    "invalid UUID",
@@ -644,8 +584,8 @@ func TestHandler_ProcessMessage(t *testing.T) {
 			siteID:  validSiteID,
 			buildData: func() []byte {
 				return []byte(fmt.Sprintf(
-					`{"id":%q,"content":%q,"requestId":%q,"threadParentMessageId":%q}`,
-					idgen.GenerateMessageID(), validContent, validRequestID, threadParentID,
+					`{"id":%q,"content":%q,"requestId":%q,"threadParentMessageId":%q,"threadParentMessageCreatedAt":%d}`,
+					idgen.GenerateMessageID(), validContent, validRequestID, threadParentID, parentTS.UnixMilli(),
 				))
 			},
 			setupStore: func(s *MockStore) {
@@ -657,11 +597,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 					}, nil)
 				// No GetRoom expectation: thread replies must skip the fetch entirely.
 			},
-			setupFetcher: func(f *MockParentMessageFetcher) {
-				f.EXPECT().
-					FetchQuotedParent(gomock.Any(), validAccount, validRoomID, validSiteID, threadParentID).
-					Return(&cassandra.QuotedParentMessage{MessageID: threadParentID, RoomID: validRoomID, CreatedAt: parentTS}, nil)
-			},
+			// no setupFetcher — thread replies no longer trigger a history read.
 			setupPub: func() (publishFunc, *[]publishedMsg) {
 				var published []publishedMsg
 				return makePublishFunc(&published, nil), &published
@@ -836,7 +772,7 @@ func TestHandler_processMessage_RejectsInvalidThreadParentMessageID(t *testing.T
 		return &jetstream.PubAck{}, nil
 	}
 	reply := func(ctx context.Context, msg *nats.Msg) error { return nil }
-	h := NewHandler(store, nil, pub, reply, "site1", nil, 500)
+	h := NewHandler(store, nil, pub, reply, "site1", nil, 500, "")
 
 	req := model.SendMessageRequest{
 		ID:                    idgen.GenerateMessageID(),
@@ -864,7 +800,7 @@ func TestHandler_processMessage_PropagatesRequestIDOnCanonicalPublish(t *testing
 	}
 	reply := func(ctx context.Context, msg *nats.Msg) error { return nil }
 
-	h := NewHandler(store, nil, pub, reply, "site1", nil, 500)
+	h := NewHandler(store, nil, pub, reply, "site1", nil, 500, "")
 
 	// The JSON-payload requestId is the canonical source — it wins over any
 	// header-derived value already in ctx. Seed ctx with a stale "header" value
@@ -899,7 +835,7 @@ func TestHandler_processMessage_BridgesPayloadRequestIDWhenCtxHasNone(t *testing
 	}
 	reply := func(ctx context.Context, msg *nats.Msg) error { return nil }
 
-	h := NewHandler(store, nil, pub, reply, "site1", nil, 500)
+	h := NewHandler(store, nil, pub, reply, "site1", nil, 500, "")
 
 	const payloadReqID = "01970a4f-8c2d-7c9a-abcd-e0123456789f"
 	req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: "hello", RequestID: payloadReqID}
@@ -942,7 +878,7 @@ func TestHandler_processMessage_PopulatesUserDisplayName(t *testing.T) {
 		return &jetstream.PubAck{}, nil
 	}
 	reply := func(_ context.Context, _ *nats.Msg) error { return nil }
-	h := NewHandler(store, users, pub, reply, "site1", nil, 500)
+	h := NewHandler(store, users, pub, reply, "site1", nil, 500, "")
 
 	req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: "hi", RequestID: "01970a4f-8c2d-7c9a-abcd-e0123456789f"}
 	_, err := h.processMessage(context.Background(), "alice", "room-1", "site1", &req)
@@ -970,7 +906,7 @@ func TestHandler_processMessage_FallsBackToAccountWhenUserLookupFails(t *testing
 		return &jetstream.PubAck{}, nil
 	}
 	reply := func(_ context.Context, _ *nats.Msg) error { return nil }
-	h := NewHandler(store, users, pub, reply, "site1", nil, 500)
+	h := NewHandler(store, users, pub, reply, "site1", nil, 500, "")
 
 	req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: "hi", RequestID: "01970a4f-8c2d-7c9a-abcd-e0123456789f"}
 	_, err := h.processMessage(context.Background(), "alice", "room-1", "site1", &req)
@@ -1105,15 +1041,14 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			// #322: thread reply quoting a DIFFERENT message than its thread
-			// parent — the thread parent's createdAt is resolved via a separate
-			// fetch (threadID), and the quote snapshot is fetched too.
+			// Thread reply quoting a DIFFERENT message than its thread parent: only
+			// the quote is fetched. The thread parent's createdAt rides the
+			// client-sent value — no second history read.
 			name: "thread T msg quoting another reply in thread T — snapshot embedded",
 			buildData: func() []byte {
-				// Omit threadParentMessageCreatedAt — server resolves it.
 				return []byte(fmt.Sprintf(
-					`{"id":%q,"content":%q,"requestId":%q,"threadParentMessageId":%q,"quotedParentMessageId":%q}`,
-					validID, validContent, validRequestID, threadID, parentMessageID,
+					`{"id":%q,"content":%q,"requestId":%q,"threadParentMessageId":%q,"threadParentMessageCreatedAt":%d,"quotedParentMessageId":%q}`,
+					validID, validContent, validRequestID, threadID, threadParentTS.UnixMilli(), parentMessageID,
 				))
 			},
 			setupStore: func(s *MockStore) {
@@ -1123,10 +1058,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 				f.EXPECT().
 					FetchQuotedParent(gomock.Any(), validAccount, validRoomID, validSiteID, parentMessageID).
 					Return(inThreadSnapshot, nil)
-				// thread parent createdAt resolution (distinct ID from the quote).
-				f.EXPECT().
-					FetchQuotedParent(gomock.Any(), validAccount, validRoomID, validSiteID, threadID).
-					Return(&cassandra.QuotedParentMessage{MessageID: threadID, RoomID: validRoomID, CreatedAt: threadParentTS}, nil)
+				// no second fetch — thread parent createdAt comes from the client value.
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
 				var published []publishedMsg
@@ -1143,18 +1075,18 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 		},
 		{
 			// #336: quoting the thread-starter (quotedParentMessageId == threadParentMessageId).
+			// One fetch (the quote is the thread root); createdAt rides the client value.
 			name: "thread T msg quoting its own thread root (P==P) — snapshot embedded",
 			buildData: func() []byte {
 				return []byte(fmt.Sprintf(
-					`{"id":%q,"content":%q,"requestId":%q,"threadParentMessageId":%q,"quotedParentMessageId":%q}`,
-					validID, validContent, validRequestID, threadID, threadID,
+					`{"id":%q,"content":%q,"requestId":%q,"threadParentMessageId":%q,"threadParentMessageCreatedAt":%d,"quotedParentMessageId":%q}`,
+					validID, validContent, validRequestID, threadID, threadParentTS.UnixMilli(), threadID,
 				))
 			},
 			setupStore: func(s *MockStore) {
 				s.EXPECT().GetSubscription(gomock.Any(), validAccount, validRoomID).Return(sub, nil)
 			},
 			setupFetcher: func(f *MockParentMessageFetcher) {
-				// single fetch; resolveThreadParentCreatedAt short-circuits via snapshot.
 				threadRootSnapshot := &cassandra.QuotedParentMessage{
 					MessageID:   threadID,
 					RoomID:      validRoomID,
@@ -1174,8 +1106,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			},
 			assertMessage: func(t *testing.T, msg model.Message) {
 				assert.Equal(t, threadID, msg.ThreadParentMessageID)
-				require.NotNil(t, msg.ThreadParentMessageCreatedAt,
-					"createdAt must be resolved from quote snapshot (short-circuit path)")
+				require.NotNil(t, msg.ThreadParentMessageCreatedAt)
 				assert.Equal(t, threadParentTS, msg.ThreadParentMessageCreatedAt.UTC())
 				require.NotNil(t, msg.QuotedParentMessage)
 				assert.Equal(t, threadID, msg.QuotedParentMessage.MessageID)
@@ -1350,6 +1281,209 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 	}
 }
 
+func TestHandler_resolveQuoteSnapshot_Fallback(t *testing.T) {
+	const (
+		account     = "alice"
+		roomID      = "room-1"
+		siteID      = "site-a"
+		chatBaseURL = "http://chat.example"
+	)
+	quotedID := idgen.GenerateMessageID()
+
+	// clientFallback is what a well-behaved client sends: a snapshot it already
+	// built for optimistic rendering. The identity/link fields here are
+	// deliberately "wrong" so the test can prove the gatekeeper overwrites them
+	// with trusted values.
+	clientFallback := func() *cassandra.QuotedParentMessage {
+		return &cassandra.QuotedParentMessage{
+			MessageID:   "client-claimed-id",
+			RoomID:      "client-claimed-room",
+			Sender:      cassandra.Participant{ID: "u-bob", Account: "bob", EngName: "Bob Chen"},
+			CreatedAt:   time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC),
+			Msg:         "the original message",
+			MessageLink: "http://evil/forged",
+		}
+	}
+
+	transientErrcode := errcode.Unavailable("history down")
+	internalErrcode := errcode.Internal("boom")
+	bareInfraErr := fmt.Errorf("history request: %w", errors.New("no responders"))
+
+	tests := []struct {
+		name           string
+		quotedID       string
+		threadID       string
+		fallback       *cassandra.QuotedParentMessage
+		setupFetcher   func(f *MockParentMessageFetcher)
+		wantSnap       bool // expect a non-nil snapshot returned
+		wantUnverified bool
+		wantErr        bool
+		assertErr      func(t *testing.T, err error)
+		assertSnap     func(t *testing.T, snap *cassandra.QuotedParentMessage)
+	}{
+		{
+			name:     "empty quotedId — no fetch, no snapshot",
+			quotedID: "",
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				// no EXPECT — fetcher must not be called
+			},
+		},
+		{
+			name:     "authoritative fetch succeeds — snapshot used, verified",
+			quotedID: quotedID,
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				f.EXPECT().FetchQuotedParent(gomock.Any(), account, roomID, siteID, quotedID).
+					Return(&cassandra.QuotedParentMessage{MessageID: quotedID, RoomID: roomID, Msg: "authoritative"}, nil)
+			},
+			wantSnap: true,
+			assertSnap: func(t *testing.T, snap *cassandra.QuotedParentMessage) {
+				assert.Equal(t, "authoritative", snap.Msg)
+			},
+		},
+		{
+			name:     "transient bare-infra error + fallback — unverified fallback, identity fields sanitized",
+			quotedID: quotedID,
+			fallback: clientFallback(),
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				f.EXPECT().FetchQuotedParent(gomock.Any(), account, roomID, siteID, quotedID).
+					Return(nil, bareInfraErr)
+			},
+			wantSnap:       true,
+			wantUnverified: true,
+			assertSnap: func(t *testing.T, snap *cassandra.QuotedParentMessage) {
+				// Trusted overwrites.
+				assert.Equal(t, quotedID, snap.MessageID)
+				assert.Equal(t, roomID, snap.RoomID)
+				assert.Equal(t, chatBaseURL+"/"+roomID+"/"+quotedID, snap.MessageLink)
+				// Client-supplied content preserved for the degraded live render.
+				assert.Equal(t, "bob", snap.Sender.Account)
+				assert.Equal(t, "the original message", snap.Msg)
+			},
+		},
+		{
+			name:     "transient unavailable errcode + fallback — unverified",
+			quotedID: quotedID,
+			fallback: clientFallback(),
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				f.EXPECT().FetchQuotedParent(gomock.Any(), account, roomID, siteID, quotedID).Return(nil, transientErrcode)
+			},
+			wantSnap:       true,
+			wantUnverified: true,
+		},
+		{
+			name:     "internal errcode (history's Cassandra failure) + fallback — unverified",
+			quotedID: quotedID,
+			fallback: clientFallback(),
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				f.EXPECT().FetchQuotedParent(gomock.Any(), account, roomID, siteID, quotedID).Return(nil, internalErrcode)
+			},
+			wantSnap:       true,
+			wantUnverified: true,
+		},
+		{
+			name:     "nil snapshot, nil error + fallback — treated transient, unverified",
+			quotedID: quotedID,
+			fallback: clientFallback(),
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				f.EXPECT().FetchQuotedParent(gomock.Any(), account, roomID, siteID, quotedID).Return(nil, nil)
+			},
+			wantSnap:       true,
+			wantUnverified: true,
+		},
+		{
+			name:     "transient error, no fallback — bare error so handler NAKs (not dropped)",
+			quotedID: quotedID,
+			fallback: nil,
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				f.EXPECT().FetchQuotedParent(gomock.Any(), account, roomID, siteID, quotedID).Return(nil, bareInfraErr)
+			},
+			wantErr: true,
+			assertErr: func(t *testing.T, err error) {
+				var ee *errcode.Error
+				assert.False(t, errors.As(err, &ee), "no-fallback transient must be a bare error (NAK), not a typed errcode (Ack)")
+			},
+		},
+		{
+			name:     "genuine not_found + fallback — terminal, fallback ignored",
+			quotedID: quotedID,
+			fallback: clientFallback(),
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				f.EXPECT().FetchQuotedParent(gomock.Any(), account, roomID, siteID, quotedID).
+					Return(nil, errcode.NotFound("parent gone"))
+			},
+			wantErr: true,
+			assertErr: func(t *testing.T, err error) {
+				var ee *errcode.Error
+				require.True(t, errors.As(err, &ee))
+				assert.Equal(t, errcode.CodeNotFound, ee.Code)
+			},
+		},
+		{
+			name:     "forbidden + fallback — terminal (no access-control bypass), fallback ignored",
+			quotedID: quotedID,
+			fallback: clientFallback(),
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				f.EXPECT().FetchQuotedParent(gomock.Any(), account, roomID, siteID, quotedID).
+					Return(nil, errcode.Forbidden("no access"))
+			},
+			wantErr: true,
+			assertErr: func(t *testing.T, err error) {
+				var ee *errcode.Error
+				require.True(t, errors.As(err, &ee))
+				assert.Equal(t, errcode.CodeForbidden, ee.Code)
+			},
+		},
+		{
+			name:     "fallback fails same-conversation check — rejected",
+			quotedID: quotedID,
+			threadID: "thread-X",
+			fallback: func() *cassandra.QuotedParentMessage {
+				fb := clientFallback()
+				fb.ThreadParentID = "thread-Y" // different thread than the quoting message
+				return fb
+			}(),
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				f.EXPECT().FetchQuotedParent(gomock.Any(), account, roomID, siteID, quotedID).Return(nil, bareInfraErr)
+			},
+			wantErr: true,
+			assertErr: func(t *testing.T, err error) {
+				var ee *errcode.Error
+				require.True(t, errors.As(err, &ee))
+				assert.Equal(t, errcode.CodeBadRequest, ee.Code)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			fetcher := NewMockParentMessageFetcher(ctrl)
+			tc.setupFetcher(fetcher)
+			h := &Handler{parentFetcher: fetcher, chatBaseURL: chatBaseURL}
+
+			snap, unverified, err := h.resolveQuoteSnapshot(context.Background(), account, roomID, siteID, tc.quotedID, tc.threadID, tc.fallback)
+
+			if tc.wantErr {
+				require.Error(t, err)
+				if tc.assertErr != nil {
+					tc.assertErr(t, err)
+				}
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantUnverified, unverified)
+			if tc.wantSnap {
+				require.NotNil(t, snap)
+				if tc.assertSnap != nil {
+					tc.assertSnap(t, snap)
+				}
+			} else {
+				assert.Nil(t, snap)
+			}
+		})
+	}
+}
+
 func TestIsBot(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -1458,7 +1592,7 @@ func TestHandler_sendReply(t *testing.T) {
 			*captured = append(*captured, msg)
 			return nil
 		}
-		return NewHandler(nil, nil, nil, reply, "site-a", nil, 500)
+		return NewHandler(nil, nil, nil, reply, "site-a", nil, 500, "")
 	}
 
 	mk := func(requestID string) *model.SendMessageRequest {
@@ -1526,7 +1660,7 @@ func TestHandleJetStreamMsg_MalformedBody_Acks(t *testing.T) {
 		captured = append(captured, m)
 		return nil
 	}
-	h := NewHandler(nil, nil, nil, reply, "site-A", nil, 500)
+	h := NewHandler(nil, nil, nil, reply, "site-A", nil, 500, "")
 
 	msg := &fakeJSMsg{
 		subject: "chat.user.alice.room.r1.site-A.msg.send",
@@ -1541,7 +1675,7 @@ func TestHandleJetStreamMsg_MalformedBody_Acks(t *testing.T) {
 
 // Invalid subject Acks (not retryable) and sends a best-effort reply.
 func TestHandleJetStreamMsg_InvalidSubject_Acks(t *testing.T) {
-	h := NewHandler(nil, nil, nil, func(context.Context, *nats.Msg) error { return nil }, "site-A", nil, 500)
+	h := NewHandler(nil, nil, nil, func(context.Context, *nats.Msg) error { return nil }, "site-A", nil, 500, "")
 	msg := &fakeJSMsg{
 		subject: "chat.garbage",
 		data:    []byte(`{}`),
@@ -1561,26 +1695,22 @@ func TestHandler_processMessage_RequestTShowMapsToTShow(t *testing.T) {
 	parentTs := time.Now().UTC().Add(-time.Hour).UnixMilli()
 	replyFn := func(ctx context.Context, msg *nats.Msg) error { return nil }
 
-	parentCreatedAt := time.UnixMilli(parentTs).UTC()
-
 	t.Run("thread reply with tshow=true → TShow=true", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		store := NewMockStore(ctrl)
 		store.EXPECT().GetSubscription(gomock.Any(), "alice", "room-1").
 			Return(&model.Subscription{User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}}, nil)
-		fetcher := NewMockParentMessageFetcher(ctrl)
-		fetcher.EXPECT().FetchQuotedParent(gomock.Any(), "alice", "room-1", "site1", parentID).
-			Return(&cassandra.QuotedParentMessage{MessageID: parentID, RoomID: "room-1", CreatedAt: parentCreatedAt}, nil)
 
 		var published []publishedMsg
-		h := NewHandler(store, nil, makePublishFunc(&published, nil), replyFn, "site1", fetcher, 500)
+		h := NewHandler(store, nil, makePublishFunc(&published, nil), replyFn, "site1", nil, 500, "")
 
 		req := model.SendMessageRequest{
-			ID:                    idgen.GenerateMessageID(),
-			Content:               "reply",
-			RequestID:             reqUUID,
-			ThreadParentMessageID: parentID,
-			TShow:                 true,
+			ID:                           idgen.GenerateMessageID(),
+			Content:                      "reply",
+			RequestID:                    reqUUID,
+			ThreadParentMessageID:        parentID,
+			ThreadParentMessageCreatedAt: &parentTs,
+			TShow:                        true,
 		}
 		data, err := h.processMessage(context.Background(), "alice", "room-1", "site1", &req)
 		require.NoError(t, err)
@@ -1602,18 +1732,16 @@ func TestHandler_processMessage_RequestTShowMapsToTShow(t *testing.T) {
 		store := NewMockStore(ctrl)
 		store.EXPECT().GetSubscription(gomock.Any(), "alice", "room-1").
 			Return(&model.Subscription{User: model.SubscriptionUser{ID: "u-alice", Account: "alice"}}, nil)
-		fetcher := NewMockParentMessageFetcher(ctrl)
-		fetcher.EXPECT().FetchQuotedParent(gomock.Any(), "alice", "room-1", "site1", parentID).
-			Return(&cassandra.QuotedParentMessage{MessageID: parentID, RoomID: "room-1", CreatedAt: parentCreatedAt}, nil)
 
 		var published []publishedMsg
-		h := NewHandler(store, nil, makePublishFunc(&published, nil), replyFn, "site1", fetcher, 500)
+		h := NewHandler(store, nil, makePublishFunc(&published, nil), replyFn, "site1", nil, 500, "")
 
 		req := model.SendMessageRequest{
-			ID:                    idgen.GenerateMessageID(),
-			Content:               "reply",
-			RequestID:             reqUUID,
-			ThreadParentMessageID: parentID,
+			ID:                           idgen.GenerateMessageID(),
+			Content:                      "reply",
+			RequestID:                    reqUUID,
+			ThreadParentMessageID:        parentID,
+			ThreadParentMessageCreatedAt: &parentTs,
 		}
 		_, err := h.processMessage(context.Background(), "alice", "room-1", "site1", &req)
 		require.NoError(t, err)
@@ -1633,7 +1761,7 @@ func TestHandler_processMessage_RequestTShowMapsToTShow(t *testing.T) {
 			Return(roommetacache.Meta{ID: "room-1", UserCount: 1}, nil)
 
 		var published []publishedMsg
-		h := NewHandler(store, nil, makePublishFunc(&published, nil), replyFn, "site1", nil, 500)
+		h := NewHandler(store, nil, makePublishFunc(&published, nil), replyFn, "site1", nil, 500, "")
 
 		req := model.SendMessageRequest{
 			ID:        idgen.GenerateMessageID(),
@@ -1666,7 +1794,7 @@ func TestHandler_processMessage_CarriesAttachments(t *testing.T) {
 	var published []publishedMsg
 	pub := makePublishFunc(&published, nil)
 	reply := func(ctx context.Context, msg *nats.Msg) error { return nil }
-	h := NewHandler(store, nil, pub, reply, "site-a", nil, 500)
+	h := NewHandler(store, nil, pub, reply, "site-a", nil, 500, "")
 
 	att := []byte(`{"id":"f1","title":"a.png","type":"file"}`)
 	req := model.SendMessageRequest{
@@ -1692,7 +1820,7 @@ func TestHandler_processMessage_EmptyContentRejectedWithoutAttachments(t *testin
 	store := NewMockStore(ctrl)
 	pub := makePublishFunc(nil, nil)
 	reply := func(ctx context.Context, msg *nats.Msg) error { return nil }
-	h := NewHandler(store, nil, pub, reply, "site-a", nil, 500)
+	h := NewHandler(store, nil, pub, reply, "site-a", nil, 500, "")
 	req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: "", RequestID: "01970a4f-8c2d-7c9a-abcd-e0123456789f"}
 	_, err := h.processMessage(context.Background(), "alice", "room-1", "site-a", &req)
 	var ee *errcode.Error
@@ -1704,7 +1832,7 @@ func TestHandler_processMessage_RejectsTooManyAttachments(t *testing.T) {
 	store := NewMockStore(ctrl)
 	pub := makePublishFunc(nil, nil)
 	reply := func(ctx context.Context, msg *nats.Msg) error { return nil }
-	h := NewHandler(store, nil, pub, reply, "site-a", nil, 500)
+	h := NewHandler(store, nil, pub, reply, "site-a", nil, 500, "")
 	req := model.SendMessageRequest{
 		ID: idgen.GenerateMessageID(), Content: "hi", RequestID: "01970a4f-8c2d-7c9a-abcd-e0123456789f",
 		Attachments: [][]byte{[]byte("a"), []byte("b")},
