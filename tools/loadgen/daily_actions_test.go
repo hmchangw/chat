@@ -145,4 +145,6 @@ func TestThreadReply_Publishes(t *testing.T) {
 	var req model.SendMessageRequest
 	require.NoError(t, json.Unmarshal(c.pubs[0].Data, &req))
 	require.Equal(t, "parent-msg-1", req.ThreadParentMessageID)
+	require.NotNil(t, req.ThreadParentMessageCreatedAt, "gatekeeper requires the parent createdAt on a thread reply")
+	require.Positive(t, *req.ThreadParentMessageCreatedAt)
 }

@@ -174,8 +174,13 @@ func threadReply(a actionCtx, u *userState, parentID, content string) error {
 	roomID := u.Rooms[a.rand().Intn(len(u.Rooms))]
 	msgID := idgen.GenerateMessageID()
 	reqID := idgen.GenerateRequestID()
+	// The gatekeeper requires threadParentMessageCreatedAt on a thread reply;
+	// message-worker re-resolves the authoritative value, so a recent stand-in is
+	// fine for load generation.
+	parentCreatedAt := time.Now().UnixMilli()
 	req := model.SendMessageRequest{
-		ID: msgID, Content: content, RequestID: reqID, ThreadParentMessageID: parentID,
+		ID: msgID, Content: content, RequestID: reqID,
+		ThreadParentMessageID: parentID, ThreadParentMessageCreatedAt: &parentCreatedAt,
 	}
 	data, err := json.Marshal(req)
 	if err != nil {
