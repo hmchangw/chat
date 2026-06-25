@@ -1393,6 +1393,7 @@ func TestHandleReacted_AuthorNotification_RoomType(t *testing.T) {
 	}{
 		{name: "channel room", roomType: model.RoomTypeChannel},
 		{name: "dm room", roomType: model.RoomTypeDM},
+		{name: "botDM room", roomType: model.RoomTypeBotDM},
 	}
 	for _, tc := range cases {
 		tc := tc
