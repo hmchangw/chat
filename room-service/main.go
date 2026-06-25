@@ -14,7 +14,6 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/hmchangw/chat/pkg/atrest"
-	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/health"
 	"github.com/hmchangw/chat/pkg/logctx"
 	"github.com/hmchangw/chat/pkg/mongoutil"
@@ -27,23 +26,21 @@ import (
 )
 
 type config struct {
-	NatsURL                  string          `env:"NATS_URL,required"`
-	NatsCredsFile            string          `env:"NATS_CREDS_FILE"           envDefault:""`
-	SiteID                   string          `env:"SITE_ID"                   envDefault:"site-local"`
-	SiteURL                  string          `env:"SITE_URL,required"`
-	MongoURI                 string          `env:"MONGO_URI,required"`
-	MongoDB                  string          `env:"MONGO_DB"                  envDefault:"chat"`
-	MongoUsername            string          `env:"MONGO_USERNAME"            envDefault:""`
-	MongoPassword            string          `env:"MONGO_PASSWORD"            envDefault:""`
-	MaxRoomSize              int             `env:"MAX_ROOM_SIZE"             envDefault:"1000"`
-	MaxBatchSize             int             `env:"MAX_BATCH_SIZE"            envDefault:"1000"`
-	MemberListTimeout        time.Duration   `env:"MEMBER_LIST_TIMEOUT"       envDefault:"5s"`
-	RoomKeyGracePeriod       time.Duration   `env:"ROOM_KEY_GRACE_PERIOD"     envDefault:"24h"`
-	CassandraHosts           string          `env:"CASSANDRA_HOSTS,required"`
-	CassandraKeyspace        string          `env:"CASSANDRA_KEYSPACE"        envDefault:"chat"`
-	CassandraUsername        string          `env:"CASSANDRA_USERNAME"        envDefault:""`
-	CassandraPassword        string          `env:"CASSANDRA_PASSWORD"        envDefault:""`
-	CassandraNumConns        int             `env:"CASSANDRA_NUM_CONNS"       envDefault:"8"`
+	NatsURL            string        `env:"NATS_URL,required"`
+	NatsCredsFile      string        `env:"NATS_CREDS_FILE"           envDefault:""`
+	SiteID             string        `env:"SITE_ID"                   envDefault:"site-local"`
+	SiteURL            string        `env:"SITE_URL,required"`
+	MongoURI           string        `env:"MONGO_URI,required"`
+	MongoDB            string        `env:"MONGO_DB"                  envDefault:"chat"`
+	MongoUsername      string        `env:"MONGO_USERNAME"            envDefault:""`
+	MongoPassword      string        `env:"MONGO_PASSWORD"            envDefault:""`
+	MaxRoomSize        int           `env:"MAX_ROOM_SIZE"             envDefault:"1000"`
+	MaxBatchSize       int           `env:"MAX_BATCH_SIZE"            envDefault:"1000"`
+	MemberListTimeout  time.Duration `env:"MEMBER_LIST_TIMEOUT"       envDefault:"5s"`
+	RoomKeyGracePeriod time.Duration `env:"ROOM_KEY_GRACE_PERIOD"     envDefault:"24h"`
+	// HistoryRequestTimeout bounds the NATS request to history-service that backs
+	// the read-receipt message lookup (replaces room-service's direct Cassandra read).
+	HistoryRequestTimeout    time.Duration   `env:"HISTORY_REQUEST_TIMEOUT" envDefault:"2s"`
 	HealthAddr               string          `env:"HEALTH_ADDR" envDefault:":8081"`
 	PProfEnabled             bool            `env:"PPROF_ENABLED" envDefault:"false"`
 	Bootstrap                bootstrapConfig `envPrefix:"BOOTSTRAP_"`
@@ -79,6 +76,10 @@ func main() {
 	logctx.Configure(cfg.DebugLog)
 	if cfg.MemberListTimeout <= 0 {
 		slog.Error("invalid MEMBER_LIST_TIMEOUT: must be > 0", "value", cfg.MemberListTimeout)
+		os.Exit(1)
+	}
+	if cfg.HistoryRequestTimeout <= 0 {
+		slog.Error("invalid HISTORY_REQUEST_TIMEOUT: must be > 0", "value", cfg.HistoryRequestTimeout)
 		os.Exit(1)
 	}
 	if cfg.RestrictedRoomMinMembers <= 0 {
@@ -141,18 +142,10 @@ func main() {
 	}
 	ensureCancel()
 
-	cassSession, err := cassutil.Connect(cassutil.Config{
-		Hosts:    cfg.CassandraHosts,
-		Keyspace: cfg.CassandraKeyspace,
-		Username: cfg.CassandraUsername,
-		Password: cfg.CassandraPassword,
-		NumConns: cfg.CassandraNumConns,
-	})
-	if err != nil {
-		slog.Error("cassandra connect failed", "error", err)
-		os.Exit(1)
-	}
-	cassReader := NewCassMessageReader(cassSession)
+	// The read-receipt RPC looks up a message's room/createdAt/sender via
+	// history-service over NATS rather than a direct Cassandra read, so
+	// room-service holds no gocql session and boots even when Cassandra is down.
+	msgReader := newNATSMessageReader(nc.NatsConn(), cfg.SiteID, cfg.HistoryRequestTimeout)
 
 	// Graph client backs the meetings RPC. Constructed only when the Azure app
 	// credentials are present; otherwise the meetings RPC reports not-configured
@@ -188,7 +181,7 @@ func main() {
 	}
 
 	memberListClient := NewNATSMemberListClient(nc.NatsConn(), cfg.MemberListTimeout)
-	handler := NewHandler(store, keyStore, memberListClient, cassReader, cfg.SiteID, cfg.MaxRoomSize, cfg.MaxBatchSize, cfg.MemberListTimeout, cfg.RestrictedRoomMinMembers,
+	handler := NewHandler(store, keyStore, memberListClient, msgReader, cfg.SiteID, cfg.MaxRoomSize, cfg.MaxBatchSize, cfg.MemberListTimeout, cfg.RestrictedRoomMinMembers,
 		func(ctx context.Context, subj string, data []byte, msgID string) error {
 			msg := natsutil.NewMsg(ctx, subj, data)
 			var opts []jetstream.PublishOpt
@@ -241,7 +234,6 @@ func main() {
 			return nil
 		},
 		func(ctx context.Context) error { mongoutil.Disconnect(ctx, mongoClient); return nil },
-		func(ctx context.Context) error { cassutil.Close(cassSession); return nil },
 		func(context.Context) error {
 			if vaultWrapper != nil {
 				return vaultWrapper.Close()

@@ -1760,8 +1760,7 @@ A **synchronous, sender-only** RPC. Returns the list of users on the local site 
 See [Error envelope](#6-error-envelope-reference). Common errors:
 
 - `"only room members can perform this action"` — the requester has no subscription in the room.
-- `"message not found"` — no message matches `messageId`.
-- `"message does not belong to this room"` — `messageId` exists but its `roomId` differs from the subject roomID.
+- `"message not found"` — no message matches `messageId` in this room. A `messageId` that exists only in a different room (or is outside the requester's access window) is reported as not-found, not as a distinct error.
 - `"only the message sender can view read receipts"` — requester is not the author of `messageId`.
 - A malformed subject surfaces as a generic `"internal error"` (the specific reason is sanitized away). Not normally reachable — the wildcard subscription guarantees a well-formed subject.
 - `"invalid request: messageId is required"` — empty `messageId`.

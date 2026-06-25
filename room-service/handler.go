@@ -1428,7 +1428,7 @@ func (h *Handler) messageReadReceipt(c *natsrouter.Context, req model.ReadReceip
 	})
 	g.Go(func() error {
 		var err error
-		msgRoomID, msgCreatedAt, msgSender, msgFound, err = h.msgReader.GetMessageRoomAndCreatedAt(gctx, req.MessageID)
+		msgRoomID, msgCreatedAt, msgSender, msgFound, err = h.msgReader.GetMessageRoomAndCreatedAt(gctx, requesterAccount, roomID, req.MessageID)
 		if err != nil {
 			return fmt.Errorf("get message: %w", err)
 		}
