@@ -26,14 +26,16 @@ const (
 	editPinnedMsg = `UPDATE pinned_messages_by_room SET msg = ?, enc_payload = null, enc_meta = null, edited_at = ?, updated_at = ? WHERE room_id = ? AND pinned_at = ? AND message_id = ?`
 
 	// Encrypted-path edits null the encrypted legacy body columns (msg,
-	// attachments, card, card_action, quoted_parent_message).
-	// buildEditPayload has already promoted those into the new bundle; leaving
-	// any plaintext column behind would defeat the rollout's at-rest goal on
-	// edited legacy rows. sys_msg_data is NOT encrypted, so it is preserved.
-	editMsgByIDEncrypted   = `UPDATE messages_by_id SET enc_payload = ?, enc_meta = ?, msg = null, attachments = null, card = null, card_action = null, quoted_parent_message = null, edited_at = ?, updated_at = ? WHERE message_id = ?`
-	editMsgByRoomEncrypted = `UPDATE messages_by_room SET enc_payload = ?, enc_meta = ?, msg = null, attachments = null, card = null, card_action = null, quoted_parent_message = null, edited_at = ?, updated_at = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`
-	editThreadMsgEncrypted = `UPDATE thread_messages_by_thread SET enc_payload = ?, enc_meta = ?, msg = null, attachments = null, card = null, card_action = null, quoted_parent_message = null, edited_at = ?, updated_at = ? WHERE thread_room_id = ? AND created_at = ? AND message_id = ?`
-	editPinnedMsgEncrypted = `UPDATE pinned_messages_by_room SET enc_payload = ?, enc_meta = ?, msg = null, attachments = null, card = null, card_action = null, quoted_parent_message = null, edited_at = ?, updated_at = ? WHERE room_id = ? AND pinned_at = ? AND message_id = ?`
+	// attachments, card, card_action) — buildEditPayload has promoted those
+	// into the bundle, and leaving plaintext behind would defeat the at-rest
+	// goal on edited legacy rows. quoted_parent_message is bound (not nulled):
+	// only its body sub-fields move into the bundle, while its non-sensitive
+	// metadata (message_id, sender, …) must stay in the plaintext column or a
+	// read-back can't restore it. sys_msg_data is NOT encrypted, so it is preserved.
+	editMsgByIDEncrypted   = `UPDATE messages_by_id SET enc_payload = ?, enc_meta = ?, msg = null, attachments = null, card = null, card_action = null, quoted_parent_message = ?, edited_at = ?, updated_at = ? WHERE message_id = ?`
+	editMsgByRoomEncrypted = `UPDATE messages_by_room SET enc_payload = ?, enc_meta = ?, msg = null, attachments = null, card = null, card_action = null, quoted_parent_message = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`
+	editThreadMsgEncrypted = `UPDATE thread_messages_by_thread SET enc_payload = ?, enc_meta = ?, msg = null, attachments = null, card = null, card_action = null, quoted_parent_message = ?, edited_at = ?, updated_at = ? WHERE thread_room_id = ? AND created_at = ? AND message_id = ?`
+	editPinnedMsgEncrypted = `UPDATE pinned_messages_by_room SET enc_payload = ?, enc_meta = ?, msg = null, attachments = null, card = null, card_action = null, quoted_parent_message = ?, edited_at = ?, updated_at = ? WHERE room_id = ? AND pinned_at = ? AND message_id = ?`
 
 	deleteMsgByIDCAS = `UPDATE messages_by_id SET deleted = true, enc_payload = null, enc_meta = null, updated_at = ? WHERE message_id = ? IF deleted != true`
 	deleteMsgByRoom  = `UPDATE messages_by_room SET deleted = true, enc_payload = null, enc_meta = null, updated_at = ? WHERE room_id = ? AND bucket = ? AND created_at = ? AND message_id = ?`
@@ -72,6 +74,11 @@ type editPayload struct {
 	plain   string
 	payload []byte             // nil when cipher is disabled
 	meta    *cassmodel.EncMeta // nil when cipher is disabled
+	// quotedMeta is the existing quoted-parent UDT with its body sub-fields
+	// blanked (the body moves into payload). Bound to the encrypted UPDATE's
+	// quoted_parent_message column so the parent's metadata survives the edit;
+	// nil leaves the column null (no quote). Unused on the plaintext path.
+	quotedMeta *cassmodel.QuotedParentMessage
 }
 
 // buildEditPayload prepares the payload for an edit. When the cipher is
@@ -84,7 +91,7 @@ func (r *Repository) buildEditPayload(ctx context.Context, msg *models.Message, 
 	if r.cipher == nil {
 		return editPayload{plain: newMsg}, nil
 	}
-	fields, err := r.readEncryptedFields(ctx, msg)
+	fields, quoted, err := r.readEncryptedFields(ctx, msg)
 	if err != nil {
 		return editPayload{}, err
 	}
@@ -94,10 +101,25 @@ func (r *Repository) buildEditPayload(ctx context.Context, msg *models.Message, 
 		return editPayload{}, fmt.Errorf("encrypt edit body for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
 	}
 	return editPayload{
-		plain:   newMsg,
-		payload: payload,
-		meta:    &cassmodel.EncMeta{Nonce: meta.Nonce},
+		plain:      newMsg,
+		payload:    payload,
+		meta:       &cassmodel.EncMeta{Nonce: meta.Nonce},
+		quotedMeta: blankQuotedBody(quoted),
 	}, nil
+}
+
+// blankQuotedBody returns a copy of the quoted-parent UDT with only its body
+// sub-fields cleared, mirroring atrest.StripEncryptedFields — the body moves
+// into enc_payload while message_id/sender/timestamps stay in the plaintext
+// column. nil in → nil out (no quote, column stays null).
+func blankQuotedBody(quoted *cassmodel.QuotedParentMessage) *cassmodel.QuotedParentMessage {
+	if quoted == nil {
+		return nil
+	}
+	stripped := *quoted
+	stripped.Msg = ""
+	stripped.Attachments = nil
+	return &stripped
 }
 
 // readEncryptedFields fetches the existing row body from messages_by_id
@@ -110,7 +132,7 @@ func (r *Repository) buildEditPayload(ctx context.Context, msg *models.Message, 
 // attachments / card because ApplyDecryptedFields unconditionally
 // overwrites those fields with the (empty) bundle. sys_msg_data is not
 // encrypted, so it is neither read here nor carried in the bundle.
-func (r *Repository) readEncryptedFields(ctx context.Context, msg *models.Message) (atrest.EncryptedFields, error) {
+func (r *Repository) readEncryptedFields(ctx context.Context, msg *models.Message) (atrest.EncryptedFields, *cassmodel.QuotedParentMessage, error) {
 	var (
 		encPayload  []byte
 		encMeta     *cassmodel.EncMeta
@@ -127,10 +149,12 @@ func (r *Repository) readEncryptedFields(ctx context.Context, msg *models.Messag
 	).WithContext(ctx).Scan(&encPayload, &encMeta, &msgText, &attachments, &card, &cardAction, &quoted)
 	if err != nil {
 		if errors.Is(err, gocql.ErrNotFound) {
-			return atrest.EncryptedFields{}, ErrMessageNotFound
+			return atrest.EncryptedFields{}, nil, ErrMessageNotFound
 		}
-		return atrest.EncryptedFields{}, fmt.Errorf("read existing fields for message %s: %w", msg.MessageID, err)
+		return atrest.EncryptedFields{}, nil, fmt.Errorf("read existing fields for message %s: %w", msg.MessageID, err)
 	}
+	// quoted-parent metadata lives in the plaintext column on both the
+	// already-encrypted and legacy paths; the caller re-binds it body-blanked.
 	if len(encPayload) > 0 {
 		meta := atrest.EncMeta{}
 		if encMeta != nil {
@@ -138,9 +162,9 @@ func (r *Repository) readEncryptedFields(ctx context.Context, msg *models.Messag
 		}
 		fields, err := r.cipher.Decrypt(ctx, msg.RoomID, encPayload, meta)
 		if err != nil {
-			return atrest.EncryptedFields{}, fmt.Errorf("decrypt existing enc_payload for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
+			return atrest.EncryptedFields{}, nil, fmt.Errorf("decrypt existing enc_payload for message %s in room %s: %w", msg.MessageID, msg.RoomID, err)
 		}
-		return fields, nil
+		return fields, quoted, nil
 	}
 	// Legacy plaintext row — promote the plaintext body columns into the
 	// bundle so the subsequent encrypt carries them forward. The legacy
@@ -159,19 +183,19 @@ func (r *Repository) readEncryptedFields(ctx context.Context, msg *models.Messag
 			Attachments: quoted.Attachments,
 		}
 	}
-	return fields, nil
+	return fields, quoted, nil
 }
 
 // editOne runs the appropriate plaintext or encrypted UPDATE for one of
 // the four message tables. plainQ binds (newMsg, editedAt, editedAt,
-// whereArgs...); encQ binds (encPayload, encMeta, editedAt, editedAt,
-// whereArgs...).
+// whereArgs...); encQ binds (encPayload, encMeta, quotedMeta, editedAt,
+// editedAt, whereArgs...).
 func (r *Repository) editOne(ctx context.Context, plainQ, encQ string, ep editPayload, editedAt time.Time, whereArgs ...any) error {
 	if ep.payload == nil {
 		args := append([]any{ep.plain, editedAt, editedAt}, whereArgs...)
 		return r.session.Query(plainQ, args...).WithContext(ctx).Exec()
 	}
-	args := append([]any{ep.payload, ep.meta, editedAt, editedAt}, whereArgs...)
+	args := append([]any{ep.payload, ep.meta, ep.quotedMeta, editedAt, editedAt}, whereArgs...)
 	return r.session.Query(encQ, args...).WithContext(ctx).Exec()
 }
 
