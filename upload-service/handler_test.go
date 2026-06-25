@@ -436,7 +436,7 @@ func TestHandleUploadFile_SendsUniqueName_ReturnsOriginal(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(rec)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/rooms/r1/upload/file", body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/rooms/r1/upload", body)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	c.Request = req
 	c.Params = gin.Params{{Key: "roomId", Value: "r1"}}
