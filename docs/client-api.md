@@ -55,6 +55,8 @@ paths.
    - [3.3 search-service](#33-search-service)
      - [`search.messages`](#searchmessages--full-text-message-search) · [Search Rooms](#search-rooms) · [Search Apps](#search-apps) · [Search Users](#search-users)
    - [3.4 user-service](#34-user-service)
+     - [`status.getByName`](#statusgetbyname) · [`profile.getByName`](#profilegetbyname) · [`status.set`](#statusset) · [`subscription.list`](#subscriptionlist) · [`subscription.getChannels`](#subscriptiongetchannels)
+     - [`subscription.getDM`](#subscriptiongetdm) · [`subscription.getByRoomID`](#subscriptiongetbyroomid) · [`subscription.count`](#subscriptioncount) · [`subscription.setAppSubscription`](#subscriptionsetappsubscription) · [`apps.list`](#appslist)
 4. [Message Send](#4-message-send)
 5. [Room Encryption](#5-room-encryption)
 6. [Error envelope reference](#6-error-envelope-reference)
@@ -596,8 +598,8 @@ user-service endpoints via room-service's `GetRoomsInfo` enrichment. `room` is
 | `roles` | string[] | The user's roles in the room (e.g. `["member"]`, `["owner"]`). |
 | `joinedAt` | RFC3339 timestamp | When the user joined. |
 | `hasMention` | boolean | Whether the user has an unread mention. Authoritative subscription state maintained by the write path (set when the user is @-mentioned, cleared on read); **not** modified by read enrichment. |
-| `hasGroupMention` | boolean | Whether the user has an unread room-wide (@all) mention. Authoritative subscription state; **not** modified by read enrichment. |
-| `hasUnread` | boolean | Whether the room has unread messages for the user. Authoritative subscription state; **not** modified by read enrichment. |
+| `hasUnread` | boolean | Whether the room has unread messages — computed at read time by comparing the room's `lastMsgAt` to the subscription's `lastSeenAt` (not persisted). |
+| `hasGroupMention` | boolean | Whether the room has an unread @all/@channel mention — computed at read time by comparing the room's `lastMentionAllAt` to the subscription's `lastSeenAt` (not persisted). |
 | `alert` | boolean | Whether the room has an unread alert for the user. Authoritative subscription state maintained by the write path (set on new message, cleared on read receipt); **not** modified by read enrichment. |
 | `muted` | boolean | Whether the user muted the room. |
 | `favorite` | boolean | Whether the user favorited the room. |
@@ -626,9 +628,10 @@ top-level `siteId`. All fields are optional (omitted when zero/unset).
 | `name` | string | The room's canonical name (may differ from the subscription `name`). |
 | `userCount` | number | Member count. |
 | `appCount` | number | App (bot) count. |
-| `lastMsgAt` | number | Epoch millis of the room's last message. |
+| `lastMsgAt` | RFC3339 timestamp | The room's last-message time. |
 | `lastMsgId` | string | Last message ID. |
-| `lastMentionAllAt` | number | Epoch millis of the last room-wide mention. |
+| `lastMentionAllAt` | RFC3339 timestamp | The last room-wide mention time. |
+| `minUserLastSeenAt` | RFC3339 timestamp | The room-wide read floor — the oldest `lastSeenAt` across the room's members ("everyone has read up to here"). Omitted when the floor is unset (a member is still fully unread). |
 | `privateKey` | string | Base64-encoded room E2E private key — initial key bootstrap for room members (see [§5](#5-room-encryption)). Present only for encrypted (channel) rooms whose key the caller's site holds; omitted otherwise. |
 | `keyVersion` | number | Version of `privateKey`. |
 
@@ -3706,7 +3709,7 @@ Fetches the status and display-name fields for a named user. The caller's `{acco
 
 | Field  | Type   | Required | Notes |
 |--------|--------|----------|-------|
-| `name` | string | no       | Account name of the user whose status to fetch. |
+| `name` | string | yes      | Account name of the user whose status to fetch. Must be non-empty. |
 
 ```json
 { "name": "alice" }
@@ -3736,6 +3739,7 @@ Fetches the status and display-name fields for a named user. The caller's `{acco
 
 | Condition | `code` | `reason` | Notes |
 |-----------|--------|----------|-------|
+| `name` missing or empty | `bad_request` | — | `{ "code": "bad_request", "error": "name required" }` — rejected before any lookup. |
 | User not found | `not_found` | — | `{ "code": "not_found", "error": "user not found" }` |
 | Internal failure | `internal` | — | — |
 
@@ -3752,7 +3756,7 @@ The profile lookup for a named user. **Identical to [status.getByName](#statusge
 
 | Field  | Type   | Required | Notes |
 |--------|--------|----------|-------|
-| `name` | string | no       | Account name of the user whose profile to fetch. |
+| `name` | string | yes      | Account name of the user whose profile to fetch. Must be non-empty. |
 
 ```json
 { "name": "alice" }
@@ -3776,6 +3780,7 @@ Same shape as `status.getByName`:
 
 | Condition | `code` | `reason` | Notes |
 |-----------|--------|----------|-------|
+| `name` missing or empty | `bad_request` | — | `{ "code": "bad_request", "error": "name required" }` — rejected before any lookup. |
 | User not found | `not_found` | — | `{ "code": "not_found", "error": "user not found" }` |
 | Internal failure | `internal` | — | — |
 
@@ -3836,32 +3841,36 @@ Returns the user's sidebar subscriptions, optionally filtered by type, age, and 
 |---------------------|---------|----------|-------|
 | `type`              | string  | yes      | One of `"current"` (active rooms), `"rooms"` (DM and channel subscriptions), `"apps"` (botDM rooms). |
 | `favorite`          | boolean | no       | When `true`, filters to favorited subscriptions only **and** moves the self-DM to the front of the list. |
-| `updatedWithinDays` | number  | no       | When set, filters **`rooms`-type** results to subscriptions **whose own `updatedAt` is within the last N days** (the subscription record's last-update time, not room activity). **Ignored for `current`** (always returns the full active set) and for `apps`. Omit for no age filter — the server applies no default; the client supplies any default it wants. Must be non-negative; a negative value is rejected with `bad_request`. |
+| `updatedWithinDays` | number  | no       | When set, filters **`rooms`-type** results to rooms **whose last message (`room.lastMsgAt`) is within the last N days** — room activity, not the subscription's update time. Cross-site rooms (no local `lastMsgAt`) fall outside the window. **Ignored for `current`** (always returns the full active set) and for `apps`. Omit for no age filter — the server applies no default; the client supplies any default it wants. Must be non-negative; a negative value is rejected with `bad_request`. |
+| `offset`            | integer | no       | Zero-based index of the first record to return. Negative ⇒ `0`. Default `0`. |
+| `limit`             | integer | no       | Page size. Omitted or ≤ 0 ⇒ the server default `SUBSCRIPTION_DEFAULT_LIMIT` (default `40`); values above `MAX_SUBSCRIPTION_LIMIT` (default `1000`) are capped to it. |
 
 ```json
-{ "type": "current", "favorite": true }
+{ "type": "current", "favorite": true, "offset": 0, "limit": 40 }
 ```
 
 ##### Success response
 
 | Field           | Type              | Notes |
 |-----------------|-------------------|-------|
-| `subscriptions` | array<[Subscription](#subscription)> | Room-info-enriched subscription records. |
-| `total`         | number            | The number of records **actually returned** in `subscriptions` (i.e. `subscriptions.length`) — **not** the user's total subscription count. Use `subscription.count` for the true active total. |
+| `subscriptions` | array<[Subscription](#subscription)> | One page of room-info-enriched subscription records. |
+| `total`         | number            | The **full** count of subscriptions matching `type` and the filters, across all pages — use it with `limit` to compute the number of pages. **Not** the number of records in this page (`subscriptions.length`). |
+| `offset`        | number            | The zero-based offset actually applied (after defaulting/clamping). |
+| `limit`         | number            | The page size actually applied (after defaulting/capping). |
 
-`subscriptions` is an array of [Subscription](#subscription) records (full schema in §3.0), room-info-enriched per the behavior below. Ordered by the room's `lastMsgAt` descending (rooms with no messages fall back to the room's `createdAt`); favorites are **not** pinned by this ordering.
+`subscriptions` is one page of [Subscription](#subscription) records (full schema in §3.0), room-info-enriched per the behavior below. Ordered by the room's `lastMsgAt` descending (rooms with no messages fall back to the room's `createdAt`). In the `favorite` view the caller's self-DM is pinned first; otherwise favorites are **not** pinned by this ordering.
 
-The result set is capped at `MAX_SUBSCRIPTION_LIMIT` (default `1000`) server-side; a user with more matching subscriptions than the cap receives the top N by the ordering above, and `total` reflects that capped count rather than the full match count.
+Results are **paginated** by `offset`/`limit`: the server returns the requested window and `total` carries the full matching count so the client can compute the page count. `limit` defaults to `SUBSCRIPTION_DEFAULT_LIMIT` (default `40`) when omitted and is capped at `MAX_SUBSCRIPTION_LIMIT` (default `1000`); omitting `offset`/`limit` yields the first page.
 
 <a id="enrichment"></a>
 **Enrichment behavior** (shared by `subscription.list`, `subscription.getChannels`, `subscription.getDM`, `subscription.getByRoomID`):
 - Room-derived fields are returned under the nested `room` object ([SubscriptionRoom](#subscriptionroom)): **local** rows from the Mongo `$lookup` baseline (no RPC), **cross-site** rows from room-service's per-site `GetRoomsInfo` RPC. The subscription's own fields are never overwritten by room data.
 - `alert` and `hasMention` are **subscription** state, not room state: they are returned as stored on the subscription (maintained by the write path — `message-worker` sets `hasMention` when the user is @-mentioned, read receipts clear `alert`) and are **never** overwritten or recomputed by enrichment.
 - `room.privateKey` / `room.keyVersion` deliver the room's current E2E key to the member when the room has one (the initial key bootstrap on (re)connect; see §5). Both fields are omitted for rooms with no key.
-- Subscriptions whose room is soft-deleted (a `Del-` name prefix) are **kept** but returned with **no `room` object** (the `room` field is omitted). `subscription.count` (the active set) still excludes them.
+- Subscriptions whose **local** room is soft-deleted (a `Del-` name prefix) are **excluded** from the list (and from `total`). A room soft-deleted at a remote origin can't be detected locally, so a cross-site `Del-` row is surfaced with **no `room` object** rather than dropped. `subscription.count` (the active set) likewise excludes locally-deleted rooms.
 - **Local** rows carry the full room object (metadata + E2E key) from the `$lookup` baseline. **Cross-site** rows are fetched per remote site in parallel; if a site's RPC fails or a room isn't found, those rows are returned with **no `room` object** (the field is omitted) — the subscription still carries its own top-level `siteId`. `alert` and `hasMention` are unaffected (they come from the subscription, not the RPC).
 
-**Per-room-type record shape.** The kinds returned by `subscription.list` differ by row schema: `channel` and `dm` rows use the [Subscription](#subscription) schema (§3.0) — `dm` adds a top-level `hrInfo` — while `botDM` rows add a nested `app` object ([AppSubscription](#appsubscription), §3.0). All carry the nested [SubscriptionRoom](#subscriptionroom) (§3.0). Every field except the ones below is identical across the three types (`id`, `u`, `roomId`, `siteId`, `roles`, `joinedAt`, `muted`, `favorite`, `alert`, `hasMention`, `hasGroupMention`, `hasUnread`, `updatedAt`, and the rest of `room`). `isSubscribed` is a **base [Subscription](#subscription) field** (boolean, optional — omitted unless stored `true`) shared by all three types, not a type-specific field. Type-specific fields:
+**Per-room-type record shape.** The kinds returned by `subscription.list` differ by row schema: `channel` and `dm` rows use the [Subscription](#subscription) schema (§3.0) — `dm` adds a top-level `hrInfo` — while `botDM` rows add a nested `app` object ([AppSubscription](#appsubscription), §3.0). All carry the nested [SubscriptionRoom](#subscriptionroom) (§3.0). Every field except the ones below is identical across the three types (`id`, `u`, `roomId`, `siteId`, `roles`, `joinedAt`, `muted`, `favorite`, `alert`, `hasMention`, `hasUnread`, `hasGroupMention`, `updatedAt`, and the rest of `room`). `isSubscribed` is a **base [Subscription](#subscription) field** (boolean, optional — omitted unless stored `true`) shared by all three types, not a type-specific field. Type-specific fields:
 
 | Field | `channel` | `dm` | `botDM` |
 |---|---|---|---|
@@ -3886,8 +3895,8 @@ The example below shows one record of each type in order (`channel`, `dm`, `botD
       "name": "engineering-general",
       "joinedAt": "2026-05-06T08:01:23Z",
       "hasMention": false,
-      "hasGroupMention": false,
       "hasUnread": true,
+      "hasGroupMention": false,
       "alert": true,
       "muted": false,
       "favorite": true,
@@ -3897,9 +3906,10 @@ The example below shows one record of each type in order (`channel`, `dm`, `botD
         "name": "engineering-general",
         "userCount": 42,
         "appCount": 2,
-        "lastMsgAt": 1780308000000,
+        "lastMsgAt": "2026-06-01T10:00:00Z",
         "lastMsgId": "01970a4f8c2d7c9aBB",
-        "lastMentionAllAt": 1780128000000,
+        "lastMentionAllAt": "2026-05-30T08:00:00Z",
+        "minUserLastSeenAt": "2026-05-30T07:55:00Z",
         "privateKey": "bDM4dGZ5...base64...JjT0g9PQ==",
         "keyVersion": 3
       }
@@ -3914,8 +3924,8 @@ The example below shows one record of each type in order (`channel`, `dm`, `botD
       "name": "bob",
       "joinedAt": "2026-04-01T09:00:00Z",
       "hasMention": false,
-      "hasGroupMention": false,
       "hasUnread": false,
+      "hasGroupMention": false,
       "alert": false,
       "muted": false,
       "favorite": false,
@@ -3923,7 +3933,7 @@ The example below shows one record of each type in order (`channel`, `dm`, `botD
       "hrInfo": { "account": "bob", "name": "鮑伯", "engName": "Bob" },
       "room": {
         "siteId": "siteA",
-        "lastMsgAt": 1779291000000
+        "lastMsgAt": "2026-05-20T15:30:00Z"
       }
     },
     {
@@ -3937,8 +3947,8 @@ The example below shows one record of each type in order (`channel`, `dm`, `botD
       "isSubscribed": true,
       "joinedAt": "2026-03-15T11:00:00Z",
       "hasMention": false,
-      "hasGroupMention": false,
       "hasUnread": false,
+      "hasGroupMention": false,
       "alert": false,
       "muted": false,
       "favorite": false,
@@ -3956,12 +3966,14 @@ The example below shows one record of each type in order (`channel`, `dm`, `botD
         "siteId": "siteA",
         "userCount": 1,
         "appCount": 1,
-        "lastMsgAt": 1777622400000,
+        "lastMsgAt": "2026-05-01T08:00:00Z",
         "lastMsgId": "01970a4f8c2d7c9aDD"
       }
     }
   ],
-  "total": 3
+  "total": 3,
+  "offset": 0,
+  "limit": 40
 }
 ```
 
@@ -3990,14 +4002,16 @@ Exactly one of the two fields must be set. The requester's own account is implic
 |------------------|----------|----------|-------|
 | `membersContain` | string   | one-of   | Return channels that contain this single account as a member. |
 | `accountNames`   | string[] | one-of   | Return channels where ALL of the given accounts (plus the requester) are members. Accounts ending in `.bot` are ignored in the match even if listed. |
+| `offset`         | integer  | no       | Zero-based index of the first record. Negative ⇒ `0`. Default `0`. |
+| `limit`          | integer  | no       | Page size. Omitted or ≤ 0 ⇒ `SUBSCRIPTION_DEFAULT_LIMIT` (default `40`); capped at `MAX_SUBSCRIPTION_LIMIT` (default `1000`). |
 
 ```json
-{ "membersContain": "bob" }
+{ "membersContain": "bob", "offset": 0, "limit": 40 }
 ```
 
 ##### Success response
 
-Same shape as `subscription.list` — `{ "subscriptions": [...], "total": N }` with [enrichment](#enrichment) applied.
+Same paginated shape as `subscription.list` — `{ "subscriptions": [...], "total": N, "offset": N, "limit": N }`, where `total` is the **full** match count (not the page size) and `offset`/`limit` echo the applied window — with [enrichment](#enrichment) applied.
 
 ```json
 {
@@ -4012,8 +4026,8 @@ Same shape as `subscription.list` — `{ "subscriptions": [...], "total": N }` w
       "name": "engineering-general",
       "joinedAt": "2026-05-06T08:01:23Z",
       "hasMention": false,
-      "hasGroupMention": false,
       "hasUnread": true,
+      "hasGroupMention": false,
       "alert": true,
       "muted": false,
       "favorite": true,
@@ -4023,14 +4037,16 @@ Same shape as `subscription.list` — `{ "subscriptions": [...], "total": N }` w
         "name": "engineering-general",
         "userCount": 42,
         "appCount": 2,
-        "lastMsgAt": 1780308000000,
+        "lastMsgAt": "2026-06-01T10:00:00Z",
         "lastMsgId": "01970a4f8c2d7c9aBB",
         "privateKey": "bDM4dGZ5...base64...JjT0g9PQ==",
         "keyVersion": 3
       }
     }
   ],
-  "total": 1
+  "total": 1,
+  "offset": 0,
+  "limit": 40
 }
 ```
 
@@ -4086,15 +4102,15 @@ Returns the calling user's DM subscription with the named counterpart. The reply
     "joinedAt": "2026-04-01T09:00:00Z",
     "alert": false,
     "hasMention": false,
-    "hasGroupMention": false,
     "hasUnread": false,
+    "hasGroupMention": false,
     "muted": false,
     "favorite": false,
     "updatedAt": "2026-05-20T15:30:00Z",
     "hrInfo": { "account": "bob", "name": "鮑伯", "engName": "Bob" },
     "room": {
       "siteId": "siteA",
-      "lastMsgAt": 1779291000000
+      "lastMsgAt": "2026-05-20T15:30:00Z"
     }
   }
 }
@@ -4151,14 +4167,14 @@ Same shape as `subscription.list` — a (here, at most one) list:
       "joinedAt": "2026-04-01T09:00:00Z",
       "alert": false,
       "hasMention": false,
-      "hasGroupMention": false,
       "hasUnread": false,
+      "hasGroupMention": false,
       "muted": false,
       "favorite": false,
       "updatedAt": "2026-05-20T15:30:00Z",
       "room": {
         "siteId": "siteA",
-        "lastMsgAt": 1779291000000,
+        "lastMsgAt": "2026-05-20T15:30:00Z",
         "lastMsgId": "01970a4f8c2d7c9aCC"
       }
     }
@@ -4205,7 +4221,7 @@ Returns the count of active subscriptions, optionally filtered to unread rooms o
 { "count": 5 }
 ```
 
-**Unread count behavior:** when `unread: true`, the service fetches the active subscriptions and splits them by site. **Local** subscriptions are counted directly from the room baseline carried on the `$lookup` (comparing the room's `lastMsgAt` against the subscription's `lastSeenAt`) — no RPC is made. Only **cross-site** subscriptions trigger a per-site `GetRoomsInfo` RPC, run in **parallel** using `errgroup` (fail-fast). If **any** cross-site RPC fails, the entire unread count falls back to the total active-subscription count (logged as a warning). This is intentionally all-or-nothing and differs from `subscription.list` enrichment, which degrades per-site — a partial unread count would be misleading.
+**Unread count behavior:** when `unread: true`, the service fetches the active subscriptions and splits them by site. **Local** subscriptions are counted directly from the room baseline carried on the `$lookup` (comparing the room's `lastMsgAt` against the subscription's `lastSeenAt`) — no RPC is made. Only **cross-site** subscriptions trigger a per-site `GetRoomsInfo` RPC, run in **parallel**. The count **degrades per-site** (matching `subscription.list` enrichment): if a cross-site RPC fails, that site's subscriptions are **skipped** — omitted from the count and logged as a warning — while local subscriptions and the sites that did respond still contribute. The result is a best-effort count that may under-report while a remote site is unreachable, rather than the full active-subscription total.
 
 ##### Error response
 
