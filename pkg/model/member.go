@@ -62,6 +62,12 @@ type RoomMemberEntry struct {
 	IsOwner     bool   `json:"isOwner,omitempty"     bson:"-"`
 	OrgName     string `json:"orgName,omitempty"     bson:"-"`
 	MemberCount int    `json:"memberCount,omitempty" bson:"-"`
+	// Individual extras (enrich=true): section, uppercased account, employee id.
+	SectName    string `json:"sectName,omitempty"    bson:"-"`
+	AccountName string `json:"accountName,omitempty" bson:"-"`
+	EmployeeID  string `json:"employeeId,omitempty"  bson:"-"`
+	// Org extra (enrich=true): description, dept-first.
+	OrgDescription string `json:"orgDescription,omitempty" bson:"-"`
 }
 
 type RemoveMemberRequest struct {

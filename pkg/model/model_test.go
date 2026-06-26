@@ -1574,11 +1574,11 @@ func TestRoomMemberEntry_DisplayFields_JSON(t *testing.T) {
 	entry := model.RoomMemberEntry{
 		ID: "u1", Type: model.RoomMemberIndividual, Account: "alice",
 		EngName: "Alice Wang", ChineseName: "愛麗絲", IsOwner: true,
+		SectName: "Cardiology", AccountName: "ALICE", EmployeeID: "E10293",
 	}
 	data, err := json.Marshal(&entry)
 	require.NoError(t, err)
 
-	// JSON carries all fields, including the display ones.
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(data, &got))
 	assert.Equal(t, "u1", got["id"])
@@ -1587,6 +1587,9 @@ func TestRoomMemberEntry_DisplayFields_JSON(t *testing.T) {
 	assert.Equal(t, "Alice Wang", got["engName"])
 	assert.Equal(t, "愛麗絲", got["chineseName"])
 	assert.Equal(t, true, got["isOwner"])
+	assert.Equal(t, "Cardiology", got["sectName"])
+	assert.Equal(t, "ALICE", got["accountName"])
+	assert.Equal(t, "E10293", got["employeeId"])
 }
 
 func TestRoomMemberEntry_DisplayFields_OmittedWhenZero(t *testing.T) {
@@ -1597,7 +1600,7 @@ func TestRoomMemberEntry_DisplayFields_OmittedWhenZero(t *testing.T) {
 	require.NoError(t, err)
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(data, &got))
-	for _, k := range []string{"engName", "chineseName", "name", "isOwner", "orgName", "memberCount"} {
+	for _, k := range []string{"engName", "chineseName", "name", "isOwner", "orgName", "memberCount", "sectName", "accountName", "employeeId", "orgDescription"} {
 		_, present := got[k]
 		assert.False(t, present, "display field %q should be omitted when zero", k)
 	}
@@ -1606,7 +1609,8 @@ func TestRoomMemberEntry_DisplayFields_OmittedWhenZero(t *testing.T) {
 func TestRoomMemberEntry_DisplayFields_NotPersistedToBSON(t *testing.T) {
 	entry := model.RoomMemberEntry{
 		ID: "org-1", Type: model.RoomMemberOrg,
-		OrgName: "Engineering", MemberCount: 42,
+		OrgName: "Engineering", MemberCount: 42, OrgDescription: "Eng dept",
+		SectName: "Cardiology", AccountName: "ALICE", EmployeeID: "E10293",
 	}
 	data, err := bson.Marshal(&entry)
 	require.NoError(t, err)
@@ -1615,7 +1619,7 @@ func TestRoomMemberEntry_DisplayFields_NotPersistedToBSON(t *testing.T) {
 	require.NoError(t, bson.Unmarshal(data, &got))
 	assert.Equal(t, "org-1", got["id"])
 	assert.Equal(t, "org", got["type"])
-	for _, k := range []string{"engName", "chineseName", "name", "isOwner", "orgName", "memberCount"} {
+	for _, k := range []string{"engName", "chineseName", "name", "isOwner", "orgName", "memberCount", "sectName", "accountName", "employeeId", "orgDescription"} {
 		_, present := got[k]
 		assert.False(t, present, "display field %q must not be persisted to BSON", k)
 	}
@@ -1624,10 +1628,11 @@ func TestRoomMemberEntry_DisplayFields_NotPersistedToBSON(t *testing.T) {
 func TestRoomMemberEntry_BotName_RoundTrip(t *testing.T) {
 	t.Run("bot member name round-trips via JSON", func(t *testing.T) {
 		entry := model.RoomMemberEntry{
-			ID:      "u-bot",
-			Type:    model.RoomMemberIndividual,
-			Account: "weather.bot",
-			Name:    "Weather App",
+			ID:          "u-bot",
+			Type:        model.RoomMemberIndividual,
+			Account:     "weather.bot",
+			Name:        "Weather App",
+			AccountName: "WEATHER.BOT",
 		}
 		data, err := json.Marshal(&entry)
 		require.NoError(t, err)
@@ -1635,7 +1640,7 @@ func TestRoomMemberEntry_BotName_RoundTrip(t *testing.T) {
 		var raw map[string]any
 		require.NoError(t, json.Unmarshal(data, &raw))
 		assert.Equal(t, "Weather App", raw["name"])
-		// Human display fields must be absent for a bot entry.
+		assert.Equal(t, "WEATHER.BOT", raw["accountName"])
 		_, hasEngName := raw["engName"]
 		assert.False(t, hasEngName, "engName must be absent for bot entry")
 		_, hasChineseName := raw["chineseName"]
@@ -1661,19 +1666,21 @@ func TestRoomMemberEntry_BotName_RoundTrip(t *testing.T) {
 		assert.False(t, hasName, "name must not be persisted to BSON")
 	})
 
-	t.Run("orgName round-trips via JSON", func(t *testing.T) {
+	t.Run("orgName and orgDescription round-trip via JSON", func(t *testing.T) {
 		entry := model.RoomMemberEntry{
-			ID:      "sect-eng",
-			Type:    model.RoomMemberOrg,
-			OrgName: "Engineering",
+			ID:             "sect-eng",
+			Type:           model.RoomMemberOrg,
+			OrgName:        "Engineering",
+			OrgDescription: "Eng dept",
 		}
 		data, err := json.Marshal(&entry)
 		require.NoError(t, err)
 		var raw map[string]any
 		require.NoError(t, json.Unmarshal(data, &raw))
 		assert.Equal(t, "Engineering", raw["orgName"])
+		assert.Equal(t, "Eng dept", raw["orgDescription"])
 		_, hasSectName := raw["sectName"]
-		assert.False(t, hasSectName, "sectName key must not appear (renamed to orgName)")
+		assert.False(t, hasSectName, "sectName absent on an org entry")
 
 		var dst model.RoomMemberEntry
 		require.NoError(t, json.Unmarshal(data, &dst))
