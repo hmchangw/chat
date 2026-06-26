@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -563,6 +564,10 @@ func (s *MongoStore) getRoomMembers(ctx context.Context, roomID string, limit, o
 		rm.Member.IsOwner = d.IsOwner
 		if rm.Member.Type == model.RoomMemberOrg {
 			orgIDs = append(orgIDs, rm.Member.ID)
+		} else {
+			rm.Member.SectName = d.SectName
+			rm.Member.EmployeeID = d.EmployeeID
+			rm.Member.AccountName = strings.ToUpper(rm.Member.Account)
 		}
 		members[i] = rm
 	}
@@ -650,6 +655,8 @@ type roomMemberEnrichedDisplay struct {
 	EngName     string `bson:"engName,omitempty"`
 	ChineseName string `bson:"chineseName,omitempty"`
 	IsOwner     bool   `bson:"isOwner,omitempty"`
+	SectName    string `bson:"sectName,omitempty"`
+	EmployeeID  string `bson:"employeeId,omitempty"`
 }
 
 // enrichRoomMembersStages returns the $lookup + $set stages appended to the
@@ -673,7 +680,7 @@ func enrichRoomMembersStages(roomID string) []bson.D {
 					bson.M{"$eq": bson.A{"$account", "$$acct"}},
 				}}}},
 				bson.M{"$limit": 1},
-				bson.M{"$project": bson.M{"engName": 1, "chineseName": 1, "_id": 0}},
+				bson.M{"$project": bson.M{"engName": 1, "chineseName": 1, "sectName": 1, "employeeId": 1, "_id": 0}},
 			},
 			"as": "_userMatch",
 		}}},
@@ -700,6 +707,8 @@ func enrichRoomMembersStages(roomID string) []bson.D {
 			"display": bson.M{
 				"engName":     bson.M{"$arrayElemAt": bson.A{"$_userMatch.engName", 0}},
 				"chineseName": bson.M{"$arrayElemAt": bson.A{"$_userMatch.chineseName", 0}},
+				"sectName":    bson.M{"$arrayElemAt": bson.A{"$_userMatch.sectName", 0}},
+				"employeeId":  bson.M{"$arrayElemAt": bson.A{"$_userMatch.employeeId", 0}},
 				"isOwner": bson.M{"$in": bson.A{
 					"owner",
 					bson.M{"$ifNull": bson.A{

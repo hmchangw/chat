@@ -653,6 +653,7 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
 		insertUser(t, db, model.User{
 			ID: "u-alice", Account: "alice", SiteID: "site-a",
 			EngName: "Alice Wang", ChineseName: "愛麗絲",
+			SectName: "Cardiology", EmployeeID: "E10293",
 		})
 		insertSub(t, db, model.Subscription{
 			ID: "sub-alice", User: model.SubscriptionUser{ID: "u-alice", Account: "alice"},
@@ -671,6 +672,9 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
 		assert.Equal(t, "Alice Wang", m.EngName)
 		assert.Equal(t, "愛麗絲", m.ChineseName)
 		assert.True(t, m.IsOwner)
+		assert.Equal(t, "Cardiology", m.SectName)
+		assert.Equal(t, "ALICE", m.AccountName)
+		assert.Equal(t, "E10293", m.EmployeeID)
 		assert.Empty(t, m.OrgName)
 		assert.Zero(t, m.MemberCount)
 	})
