@@ -836,7 +836,7 @@ func TestHandler_processMessage_RejectsInvalidThreadParentMessageID(t *testing.T
 		return &jetstream.PubAck{}, nil
 	}
 	reply := func(ctx context.Context, msg *nats.Msg) error { return nil }
-	h := NewHandler(store, nil, pub, reply, "site1", nil, 500)
+	h := NewHandler(store, nil, pub, reply, "site1", nil, 500, "")
 
 	req := model.SendMessageRequest{
 		ID:                    idgen.GenerateMessageID(),
@@ -864,7 +864,7 @@ func TestHandler_processMessage_PropagatesRequestIDOnCanonicalPublish(t *testing
 	}
 	reply := func(ctx context.Context, msg *nats.Msg) error { return nil }
 
-	h := NewHandler(store, nil, pub, reply, "site1", nil, 500)
+	h := NewHandler(store, nil, pub, reply, "site1", nil, 500, "")
 
 	// The JSON-payload requestId is the canonical source — it wins over any
 	// header-derived value already in ctx. Seed ctx with a stale "header" value
@@ -899,7 +899,7 @@ func TestHandler_processMessage_BridgesPayloadRequestIDWhenCtxHasNone(t *testing
 	}
 	reply := func(ctx context.Context, msg *nats.Msg) error { return nil }
 
-	h := NewHandler(store, nil, pub, reply, "site1", nil, 500)
+	h := NewHandler(store, nil, pub, reply, "site1", nil, 500, "")
 
 	const payloadReqID = "01970a4f-8c2d-7c9a-abcd-e0123456789f"
 	req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: "hello", RequestID: payloadReqID}
@@ -942,7 +942,7 @@ func TestHandler_processMessage_PopulatesUserDisplayName(t *testing.T) {
 		return &jetstream.PubAck{}, nil
 	}
 	reply := func(_ context.Context, _ *nats.Msg) error { return nil }
-	h := NewHandler(store, users, pub, reply, "site1", nil, 500)
+	h := NewHandler(store, users, pub, reply, "site1", nil, 500, "")
 
 	req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: "hi", RequestID: "01970a4f-8c2d-7c9a-abcd-e0123456789f"}
 	_, err := h.processMessage(context.Background(), "alice", "room-1", "site1", &req)
@@ -970,7 +970,7 @@ func TestHandler_processMessage_FallsBackToAccountWhenUserLookupFails(t *testing
 		return &jetstream.PubAck{}, nil
 	}
 	reply := func(_ context.Context, _ *nats.Msg) error { return nil }
-	h := NewHandler(store, users, pub, reply, "site1", nil, 500)
+	h := NewHandler(store, users, pub, reply, "site1", nil, 500, "")
 
 	req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: "hi", RequestID: "01970a4f-8c2d-7c9a-abcd-e0123456789f"}
 	_, err := h.processMessage(context.Background(), "alice", "room-1", "site1", &req)
@@ -1350,6 +1350,209 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 	}
 }
 
+func TestHandler_resolveQuoteSnapshot_Fallback(t *testing.T) {
+	const (
+		account     = "alice"
+		roomID      = "room-1"
+		siteID      = "site-a"
+		chatBaseURL = "http://chat.example"
+	)
+	quotedID := idgen.GenerateMessageID()
+
+	// clientFallback is what a well-behaved client sends: a snapshot it already
+	// built for optimistic rendering. The identity/link fields here are
+	// deliberately "wrong" so the test can prove the gatekeeper overwrites them
+	// with trusted values.
+	clientFallback := func() *cassandra.QuotedParentMessage {
+		return &cassandra.QuotedParentMessage{
+			MessageID:   "client-claimed-id",
+			RoomID:      "client-claimed-room",
+			Sender:      cassandra.Participant{ID: "u-bob", Account: "bob", EngName: "Bob Chen"},
+			CreatedAt:   time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC),
+			Msg:         "the original message",
+			MessageLink: "http://evil/forged",
+		}
+	}
+
+	transientErrcode := errcode.Unavailable("history down")
+	internalErrcode := errcode.Internal("boom")
+	bareInfraErr := fmt.Errorf("history request: %w", errors.New("no responders"))
+
+	tests := []struct {
+		name           string
+		quotedID       string
+		threadID       string
+		fallback       *cassandra.QuotedParentMessage
+		setupFetcher   func(f *MockParentMessageFetcher)
+		wantSnap       bool // expect a non-nil snapshot returned
+		wantUnverified bool
+		wantErr        bool
+		assertErr      func(t *testing.T, err error)
+		assertSnap     func(t *testing.T, snap *cassandra.QuotedParentMessage)
+	}{
+		{
+			name:     "empty quotedId — no fetch, no snapshot",
+			quotedID: "",
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				// no EXPECT — fetcher must not be called
+			},
+		},
+		{
+			name:     "authoritative fetch succeeds — snapshot used, verified",
+			quotedID: quotedID,
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				f.EXPECT().FetchQuotedParent(gomock.Any(), account, roomID, siteID, quotedID).
+					Return(&cassandra.QuotedParentMessage{MessageID: quotedID, RoomID: roomID, Msg: "authoritative"}, nil)
+			},
+			wantSnap: true,
+			assertSnap: func(t *testing.T, snap *cassandra.QuotedParentMessage) {
+				assert.Equal(t, "authoritative", snap.Msg)
+			},
+		},
+		{
+			name:     "transient bare-infra error + fallback — unverified fallback, identity fields sanitized",
+			quotedID: quotedID,
+			fallback: clientFallback(),
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				f.EXPECT().FetchQuotedParent(gomock.Any(), account, roomID, siteID, quotedID).
+					Return(nil, bareInfraErr)
+			},
+			wantSnap:       true,
+			wantUnverified: true,
+			assertSnap: func(t *testing.T, snap *cassandra.QuotedParentMessage) {
+				// Trusted overwrites.
+				assert.Equal(t, quotedID, snap.MessageID)
+				assert.Equal(t, roomID, snap.RoomID)
+				assert.Equal(t, chatBaseURL+"/"+roomID+"/"+quotedID, snap.MessageLink)
+				// Client-supplied content preserved for the degraded live render.
+				assert.Equal(t, "bob", snap.Sender.Account)
+				assert.Equal(t, "the original message", snap.Msg)
+			},
+		},
+		{
+			name:     "transient unavailable errcode + fallback — unverified",
+			quotedID: quotedID,
+			fallback: clientFallback(),
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				f.EXPECT().FetchQuotedParent(gomock.Any(), account, roomID, siteID, quotedID).Return(nil, transientErrcode)
+			},
+			wantSnap:       true,
+			wantUnverified: true,
+		},
+		{
+			name:     "internal errcode (history's Cassandra failure) + fallback — unverified",
+			quotedID: quotedID,
+			fallback: clientFallback(),
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				f.EXPECT().FetchQuotedParent(gomock.Any(), account, roomID, siteID, quotedID).Return(nil, internalErrcode)
+			},
+			wantSnap:       true,
+			wantUnverified: true,
+		},
+		{
+			name:     "nil snapshot, nil error + fallback — treated transient, unverified",
+			quotedID: quotedID,
+			fallback: clientFallback(),
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				f.EXPECT().FetchQuotedParent(gomock.Any(), account, roomID, siteID, quotedID).Return(nil, nil)
+			},
+			wantSnap:       true,
+			wantUnverified: true,
+		},
+		{
+			name:     "transient error, no fallback — bare error so handler NAKs (not dropped)",
+			quotedID: quotedID,
+			fallback: nil,
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				f.EXPECT().FetchQuotedParent(gomock.Any(), account, roomID, siteID, quotedID).Return(nil, bareInfraErr)
+			},
+			wantErr: true,
+			assertErr: func(t *testing.T, err error) {
+				var ee *errcode.Error
+				assert.False(t, errors.As(err, &ee), "no-fallback transient must be a bare error (NAK), not a typed errcode (Ack)")
+			},
+		},
+		{
+			name:     "genuine not_found + fallback — terminal, fallback ignored",
+			quotedID: quotedID,
+			fallback: clientFallback(),
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				f.EXPECT().FetchQuotedParent(gomock.Any(), account, roomID, siteID, quotedID).
+					Return(nil, errcode.NotFound("parent gone"))
+			},
+			wantErr: true,
+			assertErr: func(t *testing.T, err error) {
+				var ee *errcode.Error
+				require.True(t, errors.As(err, &ee))
+				assert.Equal(t, errcode.CodeNotFound, ee.Code)
+			},
+		},
+		{
+			name:     "forbidden + fallback — terminal (no access-control bypass), fallback ignored",
+			quotedID: quotedID,
+			fallback: clientFallback(),
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				f.EXPECT().FetchQuotedParent(gomock.Any(), account, roomID, siteID, quotedID).
+					Return(nil, errcode.Forbidden("no access"))
+			},
+			wantErr: true,
+			assertErr: func(t *testing.T, err error) {
+				var ee *errcode.Error
+				require.True(t, errors.As(err, &ee))
+				assert.Equal(t, errcode.CodeForbidden, ee.Code)
+			},
+		},
+		{
+			name:     "fallback fails same-conversation check — rejected",
+			quotedID: quotedID,
+			threadID: "thread-X",
+			fallback: func() *cassandra.QuotedParentMessage {
+				fb := clientFallback()
+				fb.ThreadParentID = "thread-Y" // different thread than the quoting message
+				return fb
+			}(),
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				f.EXPECT().FetchQuotedParent(gomock.Any(), account, roomID, siteID, quotedID).Return(nil, bareInfraErr)
+			},
+			wantErr: true,
+			assertErr: func(t *testing.T, err error) {
+				var ee *errcode.Error
+				require.True(t, errors.As(err, &ee))
+				assert.Equal(t, errcode.CodeBadRequest, ee.Code)
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			fetcher := NewMockParentMessageFetcher(ctrl)
+			tc.setupFetcher(fetcher)
+			h := &Handler{parentFetcher: fetcher, chatBaseURL: chatBaseURL}
+
+			snap, unverified, err := h.resolveQuoteSnapshot(context.Background(), account, roomID, siteID, tc.quotedID, tc.threadID, tc.fallback)
+
+			if tc.wantErr {
+				require.Error(t, err)
+				if tc.assertErr != nil {
+					tc.assertErr(t, err)
+				}
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantUnverified, unverified)
+			if tc.wantSnap {
+				require.NotNil(t, snap)
+				if tc.assertSnap != nil {
+					tc.assertSnap(t, snap)
+				}
+			} else {
+				assert.Nil(t, snap)
+			}
+		})
+	}
+}
+
 func TestIsBot(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -1458,7 +1661,7 @@ func TestHandler_sendReply(t *testing.T) {
 			*captured = append(*captured, msg)
 			return nil
 		}
-		return NewHandler(nil, nil, nil, reply, "site-a", nil, 500)
+		return NewHandler(nil, nil, nil, reply, "site-a", nil, 500, "")
 	}
 
 	mk := func(requestID string) *model.SendMessageRequest {
@@ -1526,7 +1729,7 @@ func TestHandleJetStreamMsg_MalformedBody_Acks(t *testing.T) {
 		captured = append(captured, m)
 		return nil
 	}
-	h := NewHandler(nil, nil, nil, reply, "site-A", nil, 500)
+	h := NewHandler(nil, nil, nil, reply, "site-A", nil, 500, "")
 
 	msg := &fakeJSMsg{
 		subject: "chat.user.alice.room.r1.site-A.msg.send",
@@ -1541,7 +1744,7 @@ func TestHandleJetStreamMsg_MalformedBody_Acks(t *testing.T) {
 
 // Invalid subject Acks (not retryable) and sends a best-effort reply.
 func TestHandleJetStreamMsg_InvalidSubject_Acks(t *testing.T) {
-	h := NewHandler(nil, nil, nil, func(context.Context, *nats.Msg) error { return nil }, "site-A", nil, 500)
+	h := NewHandler(nil, nil, nil, func(context.Context, *nats.Msg) error { return nil }, "site-A", nil, 500, "")
 	msg := &fakeJSMsg{
 		subject: "chat.garbage",
 		data:    []byte(`{}`),
@@ -1573,7 +1776,7 @@ func TestHandler_processMessage_RequestTShowMapsToTShow(t *testing.T) {
 			Return(&cassandra.QuotedParentMessage{MessageID: parentID, RoomID: "room-1", CreatedAt: parentCreatedAt}, nil)
 
 		var published []publishedMsg
-		h := NewHandler(store, nil, makePublishFunc(&published, nil), replyFn, "site1", fetcher, 500)
+		h := NewHandler(store, nil, makePublishFunc(&published, nil), replyFn, "site1", fetcher, 500, "")
 
 		req := model.SendMessageRequest{
 			ID:                    idgen.GenerateMessageID(),
@@ -1607,7 +1810,7 @@ func TestHandler_processMessage_RequestTShowMapsToTShow(t *testing.T) {
 			Return(&cassandra.QuotedParentMessage{MessageID: parentID, RoomID: "room-1", CreatedAt: parentCreatedAt}, nil)
 
 		var published []publishedMsg
-		h := NewHandler(store, nil, makePublishFunc(&published, nil), replyFn, "site1", fetcher, 500)
+		h := NewHandler(store, nil, makePublishFunc(&published, nil), replyFn, "site1", fetcher, 500, "")
 
 		req := model.SendMessageRequest{
 			ID:                    idgen.GenerateMessageID(),
@@ -1633,7 +1836,7 @@ func TestHandler_processMessage_RequestTShowMapsToTShow(t *testing.T) {
 			Return(roommetacache.Meta{ID: "room-1", UserCount: 1}, nil)
 
 		var published []publishedMsg
-		h := NewHandler(store, nil, makePublishFunc(&published, nil), replyFn, "site1", nil, 500)
+		h := NewHandler(store, nil, makePublishFunc(&published, nil), replyFn, "site1", nil, 500, "")
 
 		req := model.SendMessageRequest{
 			ID:        idgen.GenerateMessageID(),
@@ -1666,7 +1869,7 @@ func TestHandler_processMessage_CarriesAttachments(t *testing.T) {
 	var published []publishedMsg
 	pub := makePublishFunc(&published, nil)
 	reply := func(ctx context.Context, msg *nats.Msg) error { return nil }
-	h := NewHandler(store, nil, pub, reply, "site-a", nil, 500)
+	h := NewHandler(store, nil, pub, reply, "site-a", nil, 500, "")
 
 	att := []byte(`{"id":"f1","title":"a.png","type":"file"}`)
 	req := model.SendMessageRequest{
@@ -1692,7 +1895,7 @@ func TestHandler_processMessage_EmptyContentRejectedWithoutAttachments(t *testin
 	store := NewMockStore(ctrl)
 	pub := makePublishFunc(nil, nil)
 	reply := func(ctx context.Context, msg *nats.Msg) error { return nil }
-	h := NewHandler(store, nil, pub, reply, "site-a", nil, 500)
+	h := NewHandler(store, nil, pub, reply, "site-a", nil, 500, "")
 	req := model.SendMessageRequest{ID: idgen.GenerateMessageID(), Content: "", RequestID: "01970a4f-8c2d-7c9a-abcd-e0123456789f"}
 	_, err := h.processMessage(context.Background(), "alice", "room-1", "site-a", &req)
 	var ee *errcode.Error
@@ -1704,7 +1907,7 @@ func TestHandler_processMessage_RejectsTooManyAttachments(t *testing.T) {
 	store := NewMockStore(ctrl)
 	pub := makePublishFunc(nil, nil)
 	reply := func(ctx context.Context, msg *nats.Msg) error { return nil }
-	h := NewHandler(store, nil, pub, reply, "site-a", nil, 500)
+	h := NewHandler(store, nil, pub, reply, "site-a", nil, 500, "")
 	req := model.SendMessageRequest{
 		ID: idgen.GenerateMessageID(), Content: "hi", RequestID: "01970a4f-8c2d-7c9a-abcd-e0123456789f",
 		Attachments: [][]byte{[]byte("a"), []byte("b")},
