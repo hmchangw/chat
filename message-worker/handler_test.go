@@ -668,6 +668,18 @@ func TestHandler_ProcessMessage_ThreadReply_AdvancesReplierLastSeen(t *testing.T
 		h := NewHandler(store, us, ts, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil })
 		require.NoError(t, h.processMessage(context.Background(), data, true))
 	})
+
+	t.Run("advance failure is swallowed — reply still persists (best-effort)", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		store, us, ts := NewMockStore(ctrl), NewMockUserStore(ctrl), NewMockThreadStore(ctrl)
+		setupSubsequentReply(store, us, ts, false)
+		// AdvanceThreadSubscriptionLastSeen errors → logged + swallowed; SaveThreadMessage
+		// in setupSubsequentReply still runs and processMessage returns nil (#398 CodeRabbit).
+		ts.EXPECT().AdvanceThreadSubscriptionLastSeen(gomock.Any(), "tr-77", "alice", now).Return(errors.New("mongo down"))
+
+		h := NewHandler(store, us, ts, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil })
+		require.NoError(t, h.processMessage(context.Background(), data, false))
+	})
 }
 
 func TestHandler_HandleThreadRoomAndSubscriptions(t *testing.T) {

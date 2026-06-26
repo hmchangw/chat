@@ -2583,3 +2583,22 @@ func TestHandleCreated_AdvancesSenderLastSeen(t *testing.T) {
 	h := NewHandler(store, us, pub, keyStore, false)
 	require.NoError(t, h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime)))
 }
+
+// Advance failure is best-effort: logged + swallowed, the broadcast still proceeds.
+func TestHandleCreated_AdvanceSenderLastSeen_FailureSwallowed(t *testing.T) {
+	msgTime := time.Date(2026, 6, 17, 11, 0, 0, 0, time.UTC)
+	ctrl := gomock.NewController(t)
+	store := NewMockStore(ctrl)
+	us := NewMockUserStore(ctrl)
+	pub := &mockPublisher{}
+	keyStore := NewMockRoomKeyProvider(ctrl)
+
+	store.EXPECT().UpdateRoomLastMessage(gomock.Any(), "room-1", "msg-1", msgTime, false).Return(nil)
+	store.EXPECT().AdvanceSubscriptionLastSeen(gomock.Any(), "room-1", "sender", msgTime).Return(errors.New("mongo down"))
+	// Fan-out still runs after the swallowed advance error.
+	store.EXPECT().GetRoomMeta(gomock.Any(), "room-1").Return(metaOf(testChannelRoom), nil)
+	us.EXPECT().FindUsersByAccounts(gomock.Any(), []string{"sender"}).Return(nil, nil)
+
+	h := NewHandler(store, us, pub, keyStore, false)
+	require.NoError(t, h.HandleMessage(context.Background(), makeMessageEvent("room-1", "hello", msgTime)))
+}
