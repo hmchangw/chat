@@ -84,15 +84,7 @@ func (s *HistoryService) LoadHistory(c *natsrouter.Context, req models.LoadHisto
 		}
 		return pErr
 	})
-	g.Go(func() error {
-		t, rErr := s.rooms.GetMinUserLastSeenAt(gctx, roomID)
-		if rErr != nil {
-			slog.Warn("loading minUserLastSeenAt", "error", rErr, "room_id", roomID)
-			return nil
-		}
-		lastSeenFloor = t
-		return nil
-	})
+	g.Go(s.readFloorInto(gctx, roomID, &lastSeenFloor))
 	if err := g.Wait(); err != nil {
 		return nil, fmt.Errorf("loading history: %w", err)
 	}
@@ -151,15 +143,7 @@ func (s *HistoryService) LoadNextMessages(c *natsrouter.Context, req models.Load
 		}
 		return pErr
 	})
-	g.Go(func() error {
-		t, rErr := s.rooms.GetMinUserLastSeenAt(gctx, roomID)
-		if rErr != nil {
-			slog.Warn("loading minUserLastSeenAt", "error", rErr, "room_id", roomID)
-			return nil
-		}
-		lastSeenFloor = t
-		return nil
-	})
+	g.Go(s.readFloorInto(gctx, roomID, &lastSeenFloor))
 	if err := g.Wait(); err != nil {
 		return nil, fmt.Errorf("loading next messages: %w", err)
 	}
@@ -258,15 +242,7 @@ func (s *HistoryService) LoadSurroundingMessages(c *natsrouter.Context, req mode
 		}
 		return nil
 	})
-	g.Go(func() error {
-		t, rErr := s.rooms.GetMinUserLastSeenAt(gctx, roomID)
-		if rErr != nil {
-			slog.Warn("loading minUserLastSeenAt", "error", rErr, "room_id", roomID)
-			return nil // non-fatal: messages still return
-		}
-		lastSeenFloor = t
-		return nil
-	})
+	g.Go(s.readFloorInto(gctx, roomID, &lastSeenFloor))
 	if err := g.Wait(); err != nil {
 		// errgroup error already carries the (before|after) direction.
 		return nil, err
@@ -301,13 +277,25 @@ func millisPtr(t *time.Time) *int64 {
 	return &ms
 }
 
-// minUserLastSeenMillis reads the room read-floor as UTC millis; best-effort — a read error logs and yields nil.
-func (s *HistoryService) minUserLastSeenMillis(ctx context.Context, roomID string) *int64 {
-	t, err := s.rooms.GetMinUserLastSeenAt(ctx, roomID)
-	if err != nil {
-		slog.Warn("loading minUserLastSeenAt", "error", err, "room_id", roomID)
+// readFloorInto returns an errgroup task that best-effort loads the room read-floor
+// into *dst. A read error logs and leaves *dst nil — messages still return.
+func (s *HistoryService) readFloorInto(ctx context.Context, roomID string, dst **time.Time) func() error {
+	return func() error {
+		t, err := s.rooms.GetMinUserLastSeenAt(ctx, roomID)
+		if err != nil {
+			slog.Warn("loading minUserLastSeenAt", "error", err, "room_id", roomID)
+			return nil
+		}
+		*dst = t
 		return nil
 	}
+}
+
+// minUserLastSeenMillis reads the room read-floor as UTC millis; best-effort — a read error logs and yields nil.
+// Serial counterpart to readFloorInto for paths with no page read to parallelise against.
+func (s *HistoryService) minUserLastSeenMillis(ctx context.Context, roomID string) *int64 {
+	var t *time.Time
+	_ = s.readFloorInto(ctx, roomID, &t)()
 	return millisPtr(t)
 }
 
