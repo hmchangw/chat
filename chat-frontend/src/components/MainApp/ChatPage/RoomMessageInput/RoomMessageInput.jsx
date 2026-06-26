@@ -49,12 +49,17 @@ export default function RoomMessageInput({ room, quotedTarget, onClearQuote }) {
       _local: true,
     }
     if (quotedTarget?.id) {
-      payload.quotedParentMessageId = quotedTarget.id
-      optimistic.quotedParentMessage = {
+      const snapshot = {
         messageId: quotedTarget.id,
         sender: { engName: quotedTarget.senderName, account: quotedTarget.senderName },
         msg: quotedTarget.content,
       }
+      payload.quotedParentMessageId = quotedTarget.id
+      // Also carry the snapshot the optimistic render already builds, as a
+      // server-side fallback so a transient history outage degrades the quote
+      // instead of dropping the whole message.
+      payload.quotedParentMessage = snapshot
+      optimistic.quotedParentMessage = snapshot
     }
     dispatch({ type: 'MESSAGE_SENT_LOCAL', roomId: room.id, message: optimistic })
     sendMessage(nats, { roomId: room.id, siteId: user.siteId, payload })
