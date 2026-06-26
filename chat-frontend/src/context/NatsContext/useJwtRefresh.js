@@ -26,8 +26,8 @@ const MAX_REFRESH_ATTEMPTS = RETRY_BACKOFF_MS.length + 1
  *    handshake. Schedules the next refresh when refreshable.
  *  - stop(): clear the timer and creds (call on disconnect).
  *
- * getAuthUrl is read at each refresh, so the target can be resolved after
- * mount (portal lookup).
+ * getAuthUrl returns the statically-configured auth-service URL, read at
+ * each refresh.
  */
 export function useJwtRefresh({ getAuthUrl, ncRef }) {
   const jwtRef = useRef(null)

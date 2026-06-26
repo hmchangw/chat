@@ -200,7 +200,7 @@ describe('useJwtRefresh', () => {
     const { result } = renderHook(() =>
       useJwtRefresh({ getAuthUrl: () => authUrl, ncRef: { current: null } }))
 
-    authUrl = 'http://auth.site-a' // resolved later, e.g. by the portal lookup
+    authUrl = 'http://auth.site-a' // changed after mount; getAuthUrl is read lazily at refresh
     act(() => {
       result.current.setCredentials({ jwt: makeJwt(100), seed: new Uint8Array([9]), natsPublicKey: 'UPUB', refreshable: true })
     })

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -10,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/hmchangw/chat/pkg/errcode"
 	"github.com/hmchangw/chat/pkg/errcode/errtest"
@@ -53,15 +55,15 @@ func cacheWith(emps ...employee) *directoryCache {
 // testSites is the per-site URL registry used by the handler tests, with a
 // distinct domain per site to prove URLs are looked up, not templated.
 var testSites = map[string]siteURL{
-	"site-a":     {AuthServiceURL: "https://auth.site-a.example.com", BaseURL: "https://site-a.example.com"},
-	"site-b":     {AuthServiceURL: "https://auth.site-b.example.com", BaseURL: "https://site-b.example.com"},
-	"site-local": {AuthServiceURL: "https://auth.site-local.example.com", BaseURL: "http://localhost:3000"},
+	"site-a":     {BaseURL: "https://site-a.example.com"},
+	"site-b":     {BaseURL: "https://site-b.example.com"},
+	"site-local": {BaseURL: "http://localhost:3000"},
 }
 
 // newTestHandler builds a PortalHandler with the test site registry and the
-// local dev-fallback coordinates.
+// local dev-fallback site ID.
 func newTestHandler(cache *directoryCache, devMode bool) *PortalHandler {
-	return NewPortalHandler(cache, devMode, "site-local", "ws://localhost:9222", testSites)
+	return NewPortalHandler(cache, devMode, "site-local", testSites, nil, false)
 }
 
 func TestHandleUserInfo_HappyPath(t *testing.T) {
@@ -72,33 +74,29 @@ func TestHandleUserInfo_HappyPath(t *testing.T) {
 	var resp userInfoResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, userInfoResponse{
-		Account:        "alice",
-		EmployeeID:     "E001",
-		AuthServiceURL: "https://auth.site-a.example.com",
-		BaseURL:        "https://site-a.example.com",
-		NATSURL:        "wss://nats-3.site-a.example.com",
-		SiteID:         "site-a",
+		Account:    "alice",
+		EmployeeID: "E001",
+		SiteID:     "site-a",
+		BaseURL:    "https://site-a.example.com",
 	}, resp)
 }
 
 func TestHandleUserInfo_PerSiteURLs(t *testing.T) {
-	t.Run("each site resolves its own auth and base URL from the registry", func(t *testing.T) {
+	t.Run("each site resolves its own base URL from the registry", func(t *testing.T) {
 		h := newTestHandler(cacheWith(aliceEmployee, bobEmployee), false)
 		r := setupRouter(t, h)
 
 		var alice userInfoResponse
 		require.NoError(t, json.Unmarshal(getUserInfo(t, r, "alice").Body.Bytes(), &alice))
-		assert.Equal(t, "https://auth.site-a.example.com", alice.AuthServiceURL)
 		assert.Equal(t, "https://site-a.example.com", alice.BaseURL)
 
 		var bob userInfoResponse
 		require.NoError(t, json.Unmarshal(getUserInfo(t, r, "bob").Body.Bytes(), &bob))
-		assert.Equal(t, "https://auth.site-b.example.com", bob.AuthServiceURL)
 		assert.Equal(t, "https://site-b.example.com", bob.BaseURL)
 	})
 
 	t.Run("a site missing from the registry is a server error, not a client error", func(t *testing.T) {
-		orphan := employee{Account: "carol", EmployeeID: "E003", SiteID: "site-unknown", NATSURL: "wss://nats.example.com"}
+		orphan := employee{Account: "carol", EmployeeID: "E003", SiteID: "site-unknown"}
 		h := newTestHandler(cacheWith(orphan), false)
 		w := getUserInfo(t, setupRouter(t, h), "carol")
 		assert.Equal(t, http.StatusInternalServerError, w.Code)
@@ -168,9 +166,7 @@ func TestHandleUserInfo_DevMode(t *testing.T) {
 		var resp userInfoResponse
 		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 		assert.Equal(t, userInfoResponse{
-			Account: "newdev", EmployeeID: "",
-			AuthServiceURL: "https://auth.site-local.example.com", BaseURL: "http://localhost:3000",
-			NATSURL: "ws://localhost:9222", SiteID: "site-local",
+			Account: "newdev", EmployeeID: "", SiteID: "site-local", BaseURL: "http://localhost:3000",
 		}, resp)
 	})
 
@@ -228,21 +224,213 @@ func TestHandleReady(t *testing.T) {
 
 func TestParseSiteURLs(t *testing.T) {
 	t.Run("valid registry decodes per-site URLs", func(t *testing.T) {
-		sites, err := parseSiteURLs(`{"site-a":{"authServiceUrl":"https://auth.a.com","baseUrl":"https://a.com"},"site-b":{"authServiceUrl":"https://auth.b.com","baseUrl":"https://b.com"}}`)
+		sites, err := parseSiteURLs(`{"site-a":{"baseUrl":"https://a.com"},"site-b":{"baseUrl":"https://b.com"}}`)
 		require.NoError(t, err)
-		assert.Equal(t, siteURL{AuthServiceURL: "https://auth.a.com", BaseURL: "https://a.com"}, sites["site-a"])
-		assert.Equal(t, siteURL{AuthServiceURL: "https://auth.b.com", BaseURL: "https://b.com"}, sites["site-b"])
+		assert.Equal(t, siteURL{BaseURL: "https://a.com"}, sites["site-a"])
+		assert.Equal(t, siteURL{BaseURL: "https://b.com"}, sites["site-b"])
 	})
 
 	for _, tt := range []struct{ name, raw string }{
 		{"not JSON", "site-a=https://auth.a.com"},
 		{"empty object", "{}"},
-		{"missing baseUrl", `{"site-a":{"authServiceUrl":"https://auth.a.com"}}`},
-		{"missing authServiceUrl", `{"site-a":{"baseUrl":"https://a.com"}}`},
+		{"missing baseUrl", `{"site-a":{}}`},
 	} {
 		t.Run(tt.name+" is rejected", func(t *testing.T) {
 			_, err := parseSiteURLs(tt.raw)
 			assert.Error(t, err)
 		})
 	}
+}
+
+func TestHandshakeCookie_RoundTrip(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &PortalHandler{cookieSecure: true}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/login", nil)
+	h.setHandshake(c, "st", "no")
+
+	res := w.Result()
+	require.Len(t, res.Cookies(), 1)
+	ck := res.Cookies()[0]
+	assert.Equal(t, handshakeCookie, ck.Name)
+	assert.True(t, ck.HttpOnly)
+	assert.True(t, ck.Secure)
+	assert.Equal(t, http.SameSiteLaxMode, ck.SameSite)
+
+	// Read it back from a fresh request that carries the cookie.
+	w2 := httptest.NewRecorder()
+	c2, _ := gin.CreateTestContext(w2)
+	c2.Request = httptest.NewRequest(http.MethodGet, "/auth/callback", nil)
+	c2.Request.AddCookie(ck)
+	st, no, ok := readHandshake(c2)
+	assert.True(t, ok)
+	assert.Equal(t, "st", st)
+	assert.Equal(t, "no", no)
+}
+
+func TestReadHandshake_Missing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/auth/callback", nil)
+	_, _, ok := readHandshake(c)
+	assert.False(t, ok)
+}
+
+func TestParseSiteURLs_BaseURLOnly(t *testing.T) {
+	sites, err := parseSiteURLs(`{"site-a":{"baseUrl":"https://a.example.com"}}`)
+	require.NoError(t, err)
+	assert.Equal(t, "https://a.example.com", sites["site-a"].BaseURL)
+
+	_, err = parseSiteURLs(`{"site-a":{}}`)
+	require.Error(t, err) // baseUrl required
+}
+
+func TestResolveSite(t *testing.T) {
+	h := &PortalHandler{
+		cache: cacheWith(employee{Account: "alice", EmployeeID: "E1", SiteID: "site-a"}),
+		sites: map[string]siteURL{"site-a": {BaseURL: "https://a.example.com"}},
+	}
+	e, site, err := h.resolveSite("alice")
+	require.NoError(t, err)
+	assert.Equal(t, "E1", e.EmployeeID)
+	assert.Equal(t, "https://a.example.com", site.BaseURL)
+
+	_, _, err = h.resolveSite("ghost")
+	assert.ErrorIs(t, err, errAccountNotReady)
+
+	// account in cache but its site is absent from the registry
+	h2 := &PortalHandler{
+		cache: cacheWith(employee{Account: "dave", EmployeeID: "E2", SiteID: "site-x"}),
+		sites: map[string]siteURL{"site-a": {BaseURL: "https://a.example.com"}},
+	}
+	_, _, err = h2.resolveSite("dave")
+	assert.ErrorIs(t, err, errSiteMissing)
+}
+
+func TestHandleLogin_Prod(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctrl := gomock.NewController(t)
+	auth := NewMockloginAuthenticator(ctrl)
+	auth.EXPECT().AuthCodeURL(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(state, nonce string) string {
+			return "http://kc/auth?state=" + state + "&nonce=" + nonce
+		})
+	h := &PortalHandler{auth: auth, cookieSecure: true}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/login", nil)
+	h.HandleLogin(c)
+
+	assert.Equal(t, http.StatusFound, w.Code)
+	assert.Contains(t, w.Header().Get("Location"), "state=")
+	require.Len(t, w.Result().Cookies(), 1)
+	assert.Equal(t, handshakeCookie, w.Result().Cookies()[0].Name)
+}
+
+func TestHandleLogin_DevMissingSite(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &PortalHandler{devMode: true, devFallbackSiteID: "nope", sites: map[string]siteURL{}}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/login", nil)
+	h.HandleLogin(c)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestHandleLogin_Dev(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &PortalHandler{devMode: true, devFallbackSiteID: "site-local",
+		sites: map[string]siteURL{"site-local": {BaseURL: "http://localhost:3000"}}}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/login", nil)
+	h.HandleLogin(c)
+	assert.Equal(t, http.StatusFound, w.Code)
+	assert.Equal(t, "http://localhost:3000", w.Header().Get("Location"))
+}
+
+func callbackCtx(t *testing.T, query, cookieValue string) (*gin.Context, *httptest.ResponseRecorder) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/auth/callback?"+query, nil)
+	if cookieValue != "" {
+		c.Request.Header.Set("Cookie", handshakeCookie+"="+cookieValue)
+	}
+	return c, w
+}
+
+func TestHandleAuthCallback_Success(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctrl := gomock.NewController(t)
+	auth := NewMockloginAuthenticator(ctrl)
+	auth.EXPECT().ExchangeAndVerify(gomock.Any(), "thecode", "no").Return("alice", nil)
+	h := &PortalHandler{
+		auth:  auth,
+		cache: cacheWith(employee{Account: "alice", EmployeeID: "E1", SiteID: "site-a"}),
+		sites: map[string]siteURL{"site-a": {BaseURL: "https://a.example.com"}},
+	}
+	c, w := callbackCtx(t, "state=st&code=thecode", "st.no")
+	h.HandleAuthCallback(c)
+	assert.Equal(t, http.StatusFound, w.Code)
+	assert.Equal(t, "https://a.example.com", w.Header().Get("Location"))
+}
+
+func TestHandleAuthCallback_StateMismatch(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &PortalHandler{} // nil auth is intentional: a state mismatch must return before any auth call
+	c, w := callbackCtx(t, "state=WRONG&code=x", "st.no")
+	h.HandleAuthCallback(c)
+	assert.Equal(t, http.StatusFound, w.Code)
+	assert.Equal(t, "/login", w.Header().Get("Location"))
+}
+
+func TestHandleAuthCallback_NotProvisioned(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctrl := gomock.NewController(t)
+	auth := NewMockloginAuthenticator(ctrl)
+	auth.EXPECT().ExchangeAndVerify(gomock.Any(), "c", "no").Return("ghost", nil)
+	h := &PortalHandler{auth: auth, cache: cacheWith(), sites: map[string]siteURL{}}
+	c, w := callbackCtx(t, "state=st&code=c", "st.no")
+	h.HandleAuthCallback(c)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+func TestHandleAuthCallback_ExchangeError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctrl := gomock.NewController(t)
+	auth := NewMockloginAuthenticator(ctrl)
+	auth.EXPECT().ExchangeAndVerify(gomock.Any(), "c", "no").Return("", errors.New("exchange failed"))
+	h := &PortalHandler{auth: auth}
+	c, w := callbackCtx(t, "state=st&code=c", "st.no")
+	h.HandleAuthCallback(c)
+	assert.Equal(t, http.StatusFound, w.Code)
+	assert.Equal(t, "/login", w.Header().Get("Location"))
+}
+
+func TestHandleAuthCallback_SiteMissing(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctrl := gomock.NewController(t)
+	auth := NewMockloginAuthenticator(ctrl)
+	auth.EXPECT().ExchangeAndVerify(gomock.Any(), "c", "no").Return("dave", nil)
+	h := &PortalHandler{
+		auth:  auth,
+		cache: cacheWith(employee{Account: "dave", EmployeeID: "E2", SiteID: "site-x"}),
+		sites: map[string]siteURL{"site-a": {BaseURL: "https://a.example.com"}},
+	}
+	c, w := callbackCtx(t, "state=st&code=c", "st.no")
+	h.HandleAuthCallback(c)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestHandleAuthCallback_NoCookie(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := &PortalHandler{}
+	c, w := callbackCtx(t, "state=st&code=x", "")
+	h.HandleAuthCallback(c)
+	assert.Equal(t, http.StatusFound, w.Code)
+	assert.Equal(t, "/login", w.Header().Get("Location"))
 }

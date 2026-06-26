@@ -56,43 +56,49 @@ type Validator struct {
 
 const issuerDiscoveryTimeout = 10 * time.Second
 
-// NewValidator connects to the OIDC issuer and fetches its JWKS keys.
-func NewValidator(ctx context.Context, cfg Config) (*Validator, error) {
-	if len(cfg.Audiences) == 0 {
-		return nil, ErrNoAudiences
+// HTTPClient returns the HTTP client for reaching the OIDC issuer: nil (use the
+// default client) unless skipVerify is set, which disables TLS verification.
+func HTTPClient(skipVerify bool) *http.Client {
+	if !skipVerify {
+		return nil
 	}
+	return &http.Client{
+		// #nosec G402 -- InsecureSkipVerify is opt-in via TLS_SKIP_VERIFY for dev/staging only
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}}, //nolint:gosec
+		Timeout:   issuerDiscoveryTimeout,
+	}
+}
 
-	var httpClient *http.Client
-
-	if cfg.TLSSkipVerify {
-		transport := &http.Transport{
-			TLSClientConfig: &tls.Config{
-				// #nosec G402 -- InsecureSkipVerify is opt-in via TLSSkipVerify config for dev environments
-				InsecureSkipVerify: true, //nolint:gosec
-				MinVersion:         tls.VersionTLS12,
-			},
-		}
-		httpClient = &http.Client{
-			Transport: transport,
-			Timeout:   issuerDiscoveryTimeout,
-		}
+// DiscoverProvider performs OIDC discovery against issuerURL, using httpClient
+// when non-nil and bounding discovery by issuerDiscoveryTimeout if ctx has no deadline.
+func DiscoverProvider(ctx context.Context, issuerURL string, httpClient *http.Client) (*oidc.Provider, error) {
+	if httpClient != nil {
 		ctx = oidc.ClientContext(ctx, httpClient)
 	}
-
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, issuerDiscoveryTimeout)
 		defer cancel()
 	}
-
-	provider, err := oidc.NewProvider(ctx, cfg.IssuerURL)
+	provider, err := oidc.NewProvider(ctx, issuerURL)
 	if err != nil {
-		return nil, fmt.Errorf("connect to oidc issuer %q: %w", cfg.IssuerURL, err)
+		return nil, fmt.Errorf("connect to oidc issuer %q: %w", issuerURL, err)
 	}
+	return provider, nil
+}
 
+// NewValidator connects to the OIDC issuer and fetches its JWKS keys.
+func NewValidator(ctx context.Context, cfg Config) (*Validator, error) {
+	if len(cfg.Audiences) == 0 {
+		return nil, ErrNoAudiences
+	}
+	httpClient := HTTPClient(cfg.TLSSkipVerify)
+	provider, err := DiscoverProvider(ctx, cfg.IssuerURL, httpClient)
+	if err != nil {
+		return nil, err
+	}
 	// SkipClientIDCheck: we enforce a multi-audience allow-list ourselves below.
 	oidcConfig := &oidc.Config{SkipClientIDCheck: true}
-
 	return &Validator{
 		verifier:   provider.Verifier(oidcConfig),
 		httpClient: httpClient,

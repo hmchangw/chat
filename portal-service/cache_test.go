@@ -17,13 +17,11 @@ var (
 		Account:    "alice",
 		EmployeeID: "E001",
 		SiteID:     "site-a",
-		NATSURL:    "wss://nats-3.site-a.example.com",
 	}
 	bobEmployee = employee{
 		Account:    "bob",
 		EmployeeID: "E002",
 		SiteID:     "site-b",
-		NATSURL:    "wss://nats.site-b.example.com",
 	}
 )
 

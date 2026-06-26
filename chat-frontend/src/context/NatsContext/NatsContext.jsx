@@ -1,7 +1,7 @@
 import { createContext, useContext, useRef, useState, useCallback, useEffect, useMemo } from 'react'
 import { connect as natsConnect, StringCodec, headers as natsHeaders } from 'nats.ws'
 import { createUser } from 'nkeys.js'
-import { PORTAL_URL } from '@/lib/runtimeConfig'
+import { AUTH_URL, NATS_URL, SITE_ID } from '@/lib/runtimeConfig'
 import { useDebug } from '@/context/DebugContext'
 import { useJwtRefresh } from './useJwtRefresh'
 import {
@@ -36,10 +36,8 @@ export function NatsProvider({ children }) {
   const [user, setUser] = useState(null)
   const [error, setError] = useState(null)
 
-  // Resolved per user by the portal lookup at connect time; the JWT-refresh
-  // loop reads it through the getter so re-mints follow the resolved site.
-  const authUrlRef = useRef(null)
-  const getAuthUrl = useCallback(() => authUrlRef.current, [])
+  // Static per-site config: this frontend talks to exactly one auth-service.
+  const getAuthUrl = useCallback(() => AUTH_URL, [])
 
   // Keep the live debug settings in refs so the transport callbacks can read
   // them at send time without being recreated (and re-rendering consumers) on
@@ -66,86 +64,52 @@ export function NatsProvider({ children }) {
   const { authenticator, setCredentials, stop } = useJwtRefresh({ getAuthUrl, ncRef })
 
   /**
-   * Resolve the user's home site via the portal lookup, authenticate
-   * against that site's auth-service, and open the NATS WebSocket
-   * connection to that site. On success, `user`/`connected` flip true and
-   * any subsequent server-initiated close updates `error`.
+   * Authenticate against the statically-configured auth-service and open the
+   * NATS WebSocket to the statically-configured server. On success
+   * `user`/`connected` flip true; a later server-initiated close sets `error`.
    *
    * @param {Object} opts
    * @param {'dev'|'sso'} opts.mode
    * @param {string} [opts.account]   Dev mode: account name to log in as.
    * @param {string} [opts.ssoToken]  Production mode: OIDC access token.
-   * @throws if the portal lookup or auth-service rejects, or the NATS
-   *   handshake fails.
+   * @throws if auth-service rejects or the NATS handshake fails.
    */
   const connectToNats = useCallback(async (opts) => {
     const myGen = ++connectGenRef.current
     setError(null)
-
     const { mode, account, ssoToken } = opts || {}
 
-    // 1) Site discovery: which auth-service, which NATS, which siteId. Discovery
-    // only — the portal validates no token; the account (derived from the SSO
-    // token's preferred_username in prod) is the lookup key. auth-service is the
-    // real gate that re-validates the token before minting the JWT.
-    const lookupResp = await fetch(`${PORTAL_URL}/api/userInfo?account=${encodeURIComponent(account ?? '')}`)
-    if (!lookupResp.ok) {
-      await throwEnvelopeError(lookupResp, 'Portal lookup failed')
-    }
-    const portal = await lookupResp.json()
-    const nextAuthUrl = portal.authServiceUrl
-
-    // 2) Mint the NATS JWT at the resolved site's auth-service.
     const nkey = createUser()
     const natsPublicKey = nkey.getPublicKey()
+    const body = mode === 'sso' ? { ssoToken, natsPublicKey } : { account, natsPublicKey }
 
-    const body =
-      mode === 'sso'
-        ? { ssoToken, natsPublicKey }
-        : { account, natsPublicKey }
-
-    const authResp = await fetch(`${nextAuthUrl}/auth`, {
+    const authResp = await fetch(`${AUTH_URL}/auth`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
-
+    if (myGen !== connectGenRef.current) return
     if (!authResp.ok) {
       await throwEnvelopeError(authResp, 'Auth failed')
     }
-
     const { natsJwt, user: userInfo } = await authResp.json()
+    if (myGen !== connectGenRef.current) return
 
-    // A failed dial must roll back: stop() disarms the refresh loop the
-    // staged credentials armed, and the auth URL is committed only on success.
     try {
-      // Populate the credential refs BEFORE connecting so the dynamic
-      // authenticator's getters return the right values during the handshake.
-      setCredentials({
-        jwt: natsJwt,
-        seed: nkey.getSeed(),
-        natsPublicKey,
-        refreshable: mode === 'sso',
-      })
-
-      // 3) Dial the resolved site's NATS.
-      const nc = await natsConnect({
-        servers: portal.natsUrl,
-        authenticator,
-      })
-
-      authUrlRef.current = nextAuthUrl
+      setCredentials({ jwt: natsJwt, seed: nkey.getSeed(), natsPublicKey, refreshable: mode === 'sso' })
+      const nc = await natsConnect({ servers: NATS_URL, authenticator })
+      // A newer connect()/disconnect() won the race while we dialed — tear down
+      // this orphan link instead of clobbering the live connection's state.
+      if (myGen !== connectGenRef.current) {
+        await nc.drain().catch(() => {})
+        return
+      }
       ncRef.current = nc
-      setUser({ ...userInfo, siteId: portal.siteId })
+      setUser({ ...userInfo, siteId: SITE_ID })
       setConnected(true)
-
       nc.closed().then((err) => {
-        // A newer connect or a disconnect bumped the generation; this old
-        // link's close must not clobber the live session's state.
         if (myGen !== connectGenRef.current) return
-        if (err) {
-          setError(`Disconnected: ${err.message}`)
-        }
+        if (err) setError(`Disconnected: ${err.message}`)
         setConnected(false)
       })
     } catch (err) {

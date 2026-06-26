@@ -31,18 +31,10 @@ function wrapper({ children }) {
   )
 }
 
-// The provider hands its authUrlRef getter to useJwtRefresh; reading it back
-// through the mock observes when the resolved auth URL is committed.
+// The provider hands its getAuthUrl getter to useJwtRefresh; reading it back
+// through the mock observes what the static getter returns.
 function lastGetAuthUrl() {
   return useJwtRefresh.mock.calls.at(-1)[0].getAuthUrl
-}
-
-const PORTAL_RESP = {
-  account: 'alice',
-  employeeId: 'E001',
-  authServiceUrl: 'http://auth.site-a',
-  natsUrl: 'ws://nats.site-a',
-  siteId: 'site-a',
 }
 
 describe('NatsProvider connect wiring', () => {
@@ -50,34 +42,25 @@ describe('NatsProvider connect wiring', () => {
     setCredentials.mockReset()
     stop.mockReset()
     natsConnect.mockReset().mockResolvedValue({ closed: () => new Promise(() => {}) })
-    global.fetch = vi.fn(async (url) => {
-      if (String(url).includes('/api/userInfo')) {
-        return { ok: true, json: async () => PORTAL_RESP }
-      }
-      return { ok: true, json: async () => ({ natsJwt: 'JWT123', user: { account: 'alice' } }) }
-    })
+    global.fetch = vi.fn(async () => ({ ok: true, json: async () => ({ natsJwt: 'JWT123', user: { account: 'alice' } }) }))
   })
   afterEach(() => { vi.restoreAllMocks() })
 
-  it('resolves the site via portal userInfo, then auths and connects with the resolved URLs', async () => {
+  it('auths at the static AUTH_URL and connects to the static NATS_URL', async () => {
     const { result } = renderHook(() => useNats(), { wrapper })
     await act(async () => {
       await result.current.connect({ mode: 'sso', ssoToken: 'tok', account: 'alice' })
     })
-
-    expect(global.fetch).toHaveBeenNthCalledWith(1, 'http://localhost:8081/api/userInfo?account=alice')
-    expect(global.fetch).toHaveBeenNthCalledWith(2, 'http://auth.site-a/auth', expect.anything())
+    expect(global.fetch).toHaveBeenCalledTimes(1)
+    expect(global.fetch).toHaveBeenCalledWith('http://localhost:8080/auth', expect.anything())
     expect(setCredentials).toHaveBeenCalledWith({
-      jwt: 'JWT123',
-      seed: new Uint8Array([7]),
-      natsPublicKey: 'UPUBKEY',
-      refreshable: true,
+      jwt: 'JWT123', seed: new Uint8Array([7]), natsPublicKey: 'UPUBKEY', refreshable: true,
     })
     expect(natsConnect).toHaveBeenCalledWith(
-      expect.objectContaining({ servers: 'ws://nats.site-a', authenticator: fakeAuthenticator }))
+      expect.objectContaining({ servers: 'ws://localhost:9222', authenticator: fakeAuthenticator }))
     await waitFor(() => expect(result.current.connected).toBe(true))
-    expect(result.current.user.siteId).toBe('site-a')
-    expect(lastGetAuthUrl()()).toBe('http://auth.site-a')
+    expect(result.current.user.siteId).toBe('site-local')
+    expect(lastGetAuthUrl()()).toBe('http://localhost:8080')
   })
 
   it('drops a stale nc.closed() callback from a superseded connection (generation guard)', async () => {
@@ -123,45 +106,24 @@ describe('NatsProvider connect wiring', () => {
     expect(setCredentials).toHaveBeenCalledTimes(1)
     expect(stop).toHaveBeenCalledTimes(1)
     expect(result.current.connected).toBe(false)
-    // The refresh loop must not be pointed at the new site by a failed connect.
-    expect(lastGetAuthUrl()()).toBeNull()
+    // getAuthUrl is static now; it always returns the configured AUTH_URL.
+    expect(lastGetAuthUrl()()).toBe('http://localhost:8080')
   })
 
-  it('dev mode looks up the account via userInfo and is non-refreshable', async () => {
+  it('dev mode auths at AUTH_URL and is non-refreshable', async () => {
     const { result } = renderHook(() => useNats(), { wrapper })
     await act(async () => {
       await result.current.connect({ mode: 'dev', account: 'alice' })
     })
-    expect(global.fetch).toHaveBeenNthCalledWith(1, 'http://localhost:8081/api/userInfo?account=alice')
+    expect(global.fetch).toHaveBeenCalledWith('http://localhost:8080/auth', expect.anything())
     expect(setCredentials).toHaveBeenCalledWith(expect.objectContaining({ refreshable: false }))
   })
 
-  it('propagates the portal error envelope and never dials auth or NATS', async () => {
+  it('propagates the auth error envelope and never dials NATS', async () => {
     global.fetch = vi.fn(async () => ({
       ok: false,
-      json: async () => ({ code: 'forbidden', reason: 'account_not_ready', error: 'account not ready for chat' }),
+      json: async () => ({ code: 'unauthenticated', reason: 'sso_token_expired', error: 'SSO token has expired, please re-login' }),
     }))
-    const { result } = renderHook(() => useNats(), { wrapper })
-    let thrown
-    await act(async () => {
-      try { await result.current.connect({ mode: 'sso', ssoToken: 'tok', account: 'alice' }) } catch (err) { thrown = err }
-    })
-    expect(thrown.reason).toBe('account_not_ready')
-    expect(thrown.code).toBe('forbidden')
-    expect(global.fetch).toHaveBeenCalledTimes(1)
-    expect(natsConnect).not.toHaveBeenCalled()
-  })
-
-  it('propagates the auth-step error envelope after a successful lookup', async () => {
-    global.fetch = vi.fn(async (url) => {
-      if (String(url).includes('/api/userInfo')) {
-        return { ok: true, json: async () => PORTAL_RESP }
-      }
-      return {
-        ok: false,
-        json: async () => ({ code: 'unauthenticated', reason: 'sso_token_expired', error: 'SSO token has expired, please re-login' }),
-      }
-    })
     const { result } = renderHook(() => useNats(), { wrapper })
     let thrown
     await act(async () => {
@@ -169,7 +131,7 @@ describe('NatsProvider connect wiring', () => {
     })
     expect(thrown.reason).toBe('sso_token_expired')
     expect(thrown.message).toBe('SSO token has expired, please re-login')
-    expect(global.fetch).toHaveBeenCalledTimes(2)
+    expect(global.fetch).toHaveBeenCalledTimes(1)
     expect(natsConnect).not.toHaveBeenCalled()
   })
 
@@ -184,7 +146,7 @@ describe('NatsProvider connect wiring', () => {
     await act(async () => {
       try { await result.current.connect({ mode: 'sso', ssoToken: 'tok', account: 'alice' }) } catch (err) { thrown = err }
     })
-    expect(thrown.message).toBe('Portal lookup failed: 502')
+    expect(thrown.message).toBe('Auth failed: 502')
     expect(thrown.code).toBeUndefined()
     expect(natsConnect).not.toHaveBeenCalled()
   })

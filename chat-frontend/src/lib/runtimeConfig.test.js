@@ -33,21 +33,23 @@ describe('runtimeConfig', () => {
     expect(OIDC_ISSUER_URL).toBe('https://custom-keycloak/realms/myrealm')
   })
 
-  it('PORTAL_URL defaults to localhost:8081', async () => {
-    const { PORTAL_URL } = await import('./runtimeConfig.js')
-    expect(PORTAL_URL).toBe('http://localhost:8081')
+  it('AUTH_URL/NATS_URL/SITE_ID default to the local stack', async () => {
+    const { AUTH_URL, NATS_URL, SITE_ID } = await import('./runtimeConfig.js')
+    expect(AUTH_URL).toBe('http://localhost:8080')
+    expect(NATS_URL).toBe('ws://localhost:9222')
+    expect(SITE_ID).toBe('site-local')
   })
 
-  it('PORTAL_URL reads from window.__APP_CONFIG__', async () => {
-    window.__APP_CONFIG__ = { PORTAL_URL: 'https://portal.example.com' }
-    const { PORTAL_URL } = await import('./runtimeConfig.js')
-    expect(PORTAL_URL).toBe('https://portal.example.com')
+  it('reads AUTH_URL/NATS_URL/SITE_ID from window.__APP_CONFIG__', async () => {
+    window.__APP_CONFIG__ = { AUTH_URL: 'https://auth.a.example.com', NATS_URL: 'wss://nats.a.example.com', SITE_ID: 'site-a' }
+    const { AUTH_URL, NATS_URL, SITE_ID } = await import('./runtimeConfig.js')
+    expect(AUTH_URL).toBe('https://auth.a.example.com')
+    expect(NATS_URL).toBe('wss://nats.a.example.com')
+    expect(SITE_ID).toBe('site-a')
   })
 
-  it('no longer exports the retired static connection vars', async () => {
+  it('no longer exports the retired PORTAL_URL', async () => {
     const mod = await import('./runtimeConfig.js')
-    expect(mod.AUTH_URL).toBeUndefined()
-    expect(mod.NATS_URL).toBeUndefined()
-    expect(mod.DEFAULT_SITE_ID).toBeUndefined()
+    expect(mod.PORTAL_URL).toBeUndefined()
   })
 })

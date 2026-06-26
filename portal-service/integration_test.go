@@ -22,10 +22,10 @@ func TestMongoDirectoryStore_ListEmployees(t *testing.T) {
 	ctx := context.Background()
 
 	for _, doc := range []bson.M{
-		{"account": "alice", "employeeId": "E001", "siteId": "site-a", "natsUrl": "wss://nats-3.site-a.example.com"},
-		{"account": "bob", "employeeId": "E002", "siteId": "site-b", "natsUrl": "wss://nats.site-b.example.com"},
-		{"account": "carol", "employeeId": "E003", "siteId": "site-a", "natsUrl": "wss://nats.site-a.example.com"},
-		{"account": "eve", "employeeId": "E004", "siteId": "site-a", "natsUrl": "wss://nats.site-a.example.com"},
+		{"account": "alice", "employeeId": "E001", "siteId": "site-a"},
+		{"account": "bob", "employeeId": "E002", "siteId": "site-b"},
+		{"account": "carol", "employeeId": "E003", "siteId": "site-a"},
+		{"account": "eve", "employeeId": "E004", "siteId": "site-a"},
 	} {
 		_, err := db.Collection("hr_employee").InsertOne(ctx, doc)
 		require.NoError(t, err)
@@ -50,12 +50,10 @@ func TestMongoDirectoryStore_ListEmployees(t *testing.T) {
 	// Only accounts present in BOTH collections for the same site survive the
 	// $lookup, with users._id projected as UserID.
 	assert.Equal(t, employee{
-		Account: "alice", EmployeeID: "E001", SiteID: "site-a",
-		NATSURL: "wss://nats-3.site-a.example.com", UserID: "u-alice",
+		Account: "alice", EmployeeID: "E001", SiteID: "site-a", UserID: "u-alice",
 	}, byAccount["alice"])
 	assert.Equal(t, employee{
-		Account: "bob", EmployeeID: "E002", SiteID: "site-b",
-		NATSURL: "wss://nats.site-b.example.com", UserID: "u-bob",
+		Account: "bob", EmployeeID: "E002", SiteID: "site-b", UserID: "u-bob",
 	}, byAccount["bob"])
 	require.Len(t, emps, 2, "carol (no users row), eve (site mismatch), and dave (users-only) must be excluded")
 }
@@ -78,14 +76,14 @@ func TestMongoDirectoryStore_EnsureIndexes_UniqueAccount(t *testing.T) {
 	require.NoError(t, store.EnsureIndexes(ctx), "EnsureIndexes must be idempotent")
 
 	coll := db.Collection("hr_employee")
-	_, err := coll.InsertOne(ctx, bson.M{"account": "alice", "employeeId": "E001", "siteId": "site-a", "natsUrl": "wss://nats.site-a.example.com"})
+	_, err := coll.InsertOne(ctx, bson.M{"account": "alice", "employeeId": "E001", "siteId": "site-a"})
 	require.NoError(t, err)
 
-	_, err = coll.InsertOne(ctx, bson.M{"account": "alice", "employeeId": "E099", "siteId": "site-b", "natsUrl": "wss://nats.site-b.example.com"})
+	_, err = coll.InsertOne(ctx, bson.M{"account": "alice", "employeeId": "E099", "siteId": "site-b"})
 	require.Error(t, err, "a second row for the same account must be rejected at write time")
 	assert.True(t, mongo.IsDuplicateKeyError(err))
 
 	// A distinct account is unaffected by the unique index.
-	_, err = coll.InsertOne(ctx, bson.M{"account": "bob", "employeeId": "E002", "siteId": "site-b", "natsUrl": "wss://nats.site-b.example.com"})
+	_, err = coll.InsertOne(ctx, bson.M{"account": "bob", "employeeId": "E002", "siteId": "site-b"})
 	require.NoError(t, err)
 }
