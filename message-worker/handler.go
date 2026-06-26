@@ -111,6 +111,25 @@ func (h *Handler) processMessage(ctx context.Context, data []byte, isMigration b
 		"request_id", natsutil.RequestIDFromContext(ctx), "has_sender", sender != nil)
 
 	if evt.Message.ThreadParentMessageID != "" {
+		// Resolve the parent's authoritative createdAt from messages_by_id before
+		// any partition-key-sensitive write (the parent-row stamp and tcount update
+		// derive their bucket from it). The canonical event carries no parent
+		// createdAt — the gatekeeper deliberately neither resolves it against
+		// Cassandra (a synchronous history read on the send path that turned a
+		// Cassandra outage into silently dropped thread replies) nor trusts a client
+		// value. Resolving here, after the durable canonical log, turns a Cassandra
+		// outage into a NAK-replay (below) instead. On a parent miss — its own
+		// canonical write hasn't landed yet — the value stays nil and the parent-row
+		// stamp is skipped, mirroring the parent-not-found handling in
+		// handleFirstThreadReply.
+		createdAt, found, err := h.store.GetMessageCreatedAt(ctx, evt.Message.ThreadParentMessageID)
+		if err != nil {
+			return fmt.Errorf("resolve thread parent createdAt: %w", err)
+		}
+		if found {
+			evt.Message.ThreadParentMessageCreatedAt = &createdAt
+		}
+
 		// Resolve (or create) the thread room first so we have the threadRoomID
 		// before persisting the message to Cassandra.
 		threadRoomID, err := h.handleThreadRoomAndSubscriptions(ctx, &evt.Message, evt.SiteID, user, isMigration)

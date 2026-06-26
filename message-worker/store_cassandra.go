@@ -412,6 +412,26 @@ func (s *CassandraStore) UpdateParentMessageThreadRoomID(ctx context.Context, pa
 	return nil
 }
 
+// GetMessageCreatedAt reads created_at from messages_by_id for the given message
+// ID. messages_by_id is keyed by message_id alone, so this is a single-partition
+// point read — no bucket required. Returns (zero, false, nil) when the row is
+// absent so a thread-reply caller can fall back to the client-supplied value
+// instead of blocking; a genuine Cassandra failure returns a wrapped error so
+// the worker NAKs and JetStream replays once Cassandra recovers.
+func (s *CassandraStore) GetMessageCreatedAt(ctx context.Context, messageID string) (time.Time, bool, error) {
+	var createdAt time.Time
+	if err := s.cassSession.Query(
+		`SELECT created_at FROM messages_by_id WHERE message_id = ? LIMIT 1`,
+		messageID,
+	).WithContext(ctx).Scan(&createdAt); err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return time.Time{}, false, nil
+		}
+		return time.Time{}, false, fmt.Errorf("get createdAt for message %s: %w", messageID, err)
+	}
+	return createdAt, true, nil
+}
+
 // GetMessageSender reads the sender UDT from messages_by_id for the given message ID.
 // Returns an error if the message does not exist.
 func (s *CassandraStore) GetMessageSender(ctx context.Context, messageID string) (*cassParticipant, error) {

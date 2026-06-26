@@ -15,6 +15,9 @@ type Store interface {
 	SaveMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string) error
 	SaveThreadMessage(ctx context.Context, msg *model.Message, sender *cassParticipant, siteID string, threadRoomID string) (*int, error)
 	GetMessageSender(ctx context.Context, messageID string) (*cassParticipant, error)
+	// GetMessageCreatedAt returns the authoritative createdAt for a message from
+	// messages_by_id. The bool is false (nil error) when the row is absent.
+	GetMessageCreatedAt(ctx context.Context, messageID string) (time.Time, bool, error)
 	UpdateParentMessageThreadRoomID(ctx context.Context, parentMessageID, roomID string, parentCreatedAt time.Time, threadRoomID string) error
 }
 
