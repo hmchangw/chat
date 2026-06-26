@@ -32,8 +32,8 @@ func TestUserJSON(t *testing.T) {
 func TestUserJSON_WithSectAndDept(t *testing.T) {
 	u := model.User{
 		ID: "u1", Account: "alice", SiteID: "site-a",
-		SectID: "S", SectName: "Sect", SectTCName: "部",
-		DeptID: "D", DeptName: "Dept", DeptTCName: "處",
+		SectID: "S", SectName: "Sect", SectTCName: "部", SectDescription: "Sect desc",
+		DeptID: "D", DeptName: "Dept", DeptTCName: "處", DeptDescription: "Dept desc",
 		EngName: "Alice", ChineseName: "爱丽丝",
 	}
 	roundTrip(t, &u, &model.User{})
