@@ -61,3 +61,11 @@ Verified correct:
 
 - `[low]` `orgDisplayDescription` dimension mismatch (orgdisplay.go:103-126) — in a contrived shape (an org id is one user's `deptId` with empty dept names but a non-empty `deptDescription`, AND another user's `sectId`), `orgName` could render the sect while `orgDescription` returns the dept's. Self-consistent with the documented "dept description preferred" rule; reachable only in that edge shape.
 - `[nitpick]` `AccountName` set without `Account != ""` check — harmless (`omitempty`).
+
+## Performance
+**"No new index, no new round-trip" — HOLDS at all three sites.** Added fields ride existing queries: the `$limit:1` `_userMatch` sub-pipeline `$project` (store_mongo.go:684), the `findUsersForDisplay` `$in` batch projection, and the `fetchOrgDisplayUsers` `$in` batch projection. No new Find/aggregate.
+
+- `[medium → addressed]` description lex-max tiebreak is arbitrary for differing prose across an org's users — but it mirrors the name rollup and descriptions are org-uniform in practice; now documented (commit 12b5fb3).
+- `[low]` `strings.ToUpper` — the two call sites are mutually-exclusive code paths (aggregation vs fallback); called once per row on an in-memory field. No double work.
+- `[low]` rollup string copies — single O(N) linear pass; negligible.
+- `[nitpick]` `$limit:1` + `_id:0` still present; projection narrow.
