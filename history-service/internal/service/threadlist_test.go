@@ -105,11 +105,11 @@ func TestHistoryService_ListThreadSubscriptions_MissingAccount(t *testing.T) {
 	assert.Equal(t, errcode.CodeBadRequest, ec.Code)
 }
 
-// Access is no longer re-checked at read time: every thread subscription the
-// user holds on this site is returned, regardless of current room membership.
-// (Stale subscriptions left by a room departure are cleaned up on the write
-// path; see ListThreadSubscriptions.) The list must not call GetHistorySharedSince
-// — the subs mock has no expectations, so any such call fails the test.
+// The handler does no per-room access lookup: room membership is enforced inside
+// the aggregation pipeline (the subscriptions $lookup — see mongorepo), so the
+// handler simply returns whatever rows the repository yields. In particular it
+// must not call GetHistorySharedSince — the subs mock has no expectations, so any
+// such call fails the test.
 func TestHistoryService_ListThreadSubscriptions_ReturnsAllRowsNoAccessCheck(t *testing.T) {
 	svc, msgs, _, _, threadSubs := newThreadListService(t)
 	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)

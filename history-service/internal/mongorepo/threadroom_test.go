@@ -27,6 +27,19 @@ func insertThreadSubscription(t *testing.T, db *mongo.Database, ts model.ThreadS
 	require.NoError(t, err)
 }
 
+// insertSubscription seeds a minimal room subscription so the thread-list
+// membership $lookup treats account as still a member of roomID.
+func insertSubscription(t *testing.T, db *mongo.Database, account, roomID string) {
+	t.Helper()
+	_, err := db.Collection("subscriptions").InsertOne(context.Background(), model.Subscription{
+		ID:     account + ":" + roomID,
+		User:   model.SubscriptionUser{Account: account},
+		RoomID: roomID,
+		SiteID: "site-a",
+	})
+	require.NoError(t, err)
+}
+
 func timePtr(t time.Time) *time.Time { return &t }
 
 func TestThreadRoomRepo_GetThreadRooms(t *testing.T) {

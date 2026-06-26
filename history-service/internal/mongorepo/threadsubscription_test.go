@@ -31,6 +31,15 @@ func TestThreadSubscriptionRepo_ListUserThreadSubscriptions(t *testing.T) {
 	insertThreadSubscription(t, db, model.ThreadSubscription{ID: "ts-bob", ThreadRoomID: "tr-1", RoomID: "r1", ParentMessageID: "p1", UserAccount: "bob", SiteID: "site-a", CreatedAt: base, UpdatedAt: base})
 	// orphan sub — thread_room missing, $unwind drops it.
 	insertThreadSubscription(t, db, model.ThreadSubscription{ID: "ts-orphan", ThreadRoomID: "tr-gone", RoomID: "r1", ParentMessageID: "p9", UserAccount: "alice", SiteID: "site-a", CreatedAt: base, UpdatedAt: base})
+	// left-room sub — alice holds a thread subscription in r-left (e.g. left the
+	// room) but has no room subscription there, so the membership join drops it.
+	insertThreadRoom(t, db, model.ThreadRoom{ID: "tr-left", RoomID: "r-left", ParentMessageID: "p-left", LastMsgID: "m-left", SiteID: "site-a", LastMsgAt: base.Add(9 * time.Hour), CreatedAt: base, UpdatedAt: base})
+	insertThreadSubscription(t, db, model.ThreadSubscription{ID: "ts-left", ThreadRoomID: "tr-left", RoomID: "r-left", ParentMessageID: "p-left", UserAccount: "alice", SiteID: "site-a", CreatedAt: base, UpdatedAt: base})
+
+	// alice's room subscriptions — the membership $lookup keeps only threads whose
+	// room she is still subscribed to. She is in r1 and r2, but not r-left.
+	insertSubscription(t, db, "alice", "r1")
+	insertSubscription(t, db, "alice", "r2")
 
 	// rooms feed the name/type $lookup; r2 is intentionally unseeded to exercise
 	// the missing-room degrade (empty name/type, row still returned).
@@ -74,6 +83,15 @@ func TestThreadSubscriptionRepo_ListUserThreadSubscriptions(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, hasMoreNone)
 	assert.Empty(t, none)
+
+	// Membership filter: tr-left has the newest activity (9h) but lives in r-left,
+	// where alice holds no room subscription, so it never appears.
+	all, _, err := repo.ListUserThreadSubscriptions(ctx, "alice", nil, "", 10)
+	require.NoError(t, err)
+	require.Len(t, all, 3) // tr-1, tr-2, tr-3 — not tr-left, not the orphan
+	for _, r := range all {
+		assert.NotEqual(t, "tr-left", r.ThreadRoomID, "thread in a left room must be filtered")
+	}
 }
 
 // Equal lastMsgAt across threads is fully ordered by threadRoomId DESC, so a
@@ -89,6 +107,7 @@ func TestThreadSubscriptionRepo_ListUserThreadSubscriptions_Tiebreak(t *testing.
 		insertThreadRoom(t, db, model.ThreadRoom{ID: id, RoomID: "r1", ParentMessageID: "p-" + id, SiteID: "site-a", LastMsgAt: same, CreatedAt: base, UpdatedAt: base})
 		insertThreadSubscription(t, db, model.ThreadSubscription{ID: "ts-" + id, ThreadRoomID: id, RoomID: "r1", ParentMessageID: "p-" + id, UserAccount: "alice", SiteID: "site-a", CreatedAt: base, UpdatedAt: base})
 	}
+	insertSubscription(t, db, "alice", "r1") // membership for the room all threads live in
 
 	// threadRoomId DESC ⇒ tr-c, tr-b, tr-a.
 	rows, hasMore, err := repo.ListUserThreadSubscriptions(ctx, "alice", nil, "", 2)

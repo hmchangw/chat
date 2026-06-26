@@ -28,18 +28,21 @@ func countStages(t *testing.T, pipeline bson.A, op string) int {
 
 func TestUserThreadSubscriptionsPipeline_FirstPageHasNoCursorMatch(t *testing.T) {
 	p := userThreadSubscriptionsPipeline("alice", nil, "", 20)
-	// First page: only the userAccount $match, no value-cursor $match.
-	assert.Equal(t, 1, countStages(t, p, "$match"))
-	// Two joins: thread_rooms (sort/cursor) and rooms (name/type), each unwound.
-	assert.Equal(t, 2, countStages(t, p, "$lookup"))
+	// First page: userAccount $match + membership $match (sub != []), no value-cursor $match.
+	assert.Equal(t, 2, countStages(t, p, "$match"))
+	// Three joins: thread_rooms (sort/cursor), subscriptions (membership), rooms (name/type).
+	assert.Equal(t, 3, countStages(t, p, "$lookup"))
+	// thread_rooms and rooms are unwound; the membership join uses {$ne: []}, not $unwind.
 	assert.Equal(t, 2, countStages(t, p, "$unwind"))
 	assert.Equal(t, 1, countStages(t, p, "$sort"))
+	// Only the outer page $limit is top-level; the membership join's inner $limit:1
+	// is nested inside the $lookup pipeline and not counted here.
 	assert.Equal(t, 1, countStages(t, p, "$limit"))
 }
 
 func TestUserThreadSubscriptionsPipeline_NextPageAddsCursorMatch(t *testing.T) {
 	ts := time.Date(2026, 1, 1, 5, 0, 0, 0, time.UTC)
 	p := userThreadSubscriptionsPipeline("alice", &ts, "thr-9", 20)
-	// Next page: userAccount $match + value-cursor $match.
-	assert.Equal(t, 2, countStages(t, p, "$match"))
+	// Next page: userAccount $match + value-cursor $match + membership $match.
+	assert.Equal(t, 3, countStages(t, p, "$match"))
 }

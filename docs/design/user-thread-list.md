@@ -258,12 +258,15 @@ Aggregation pipeline on `thread_subscriptions`:
   resolution (counterpart/app name, as `user-service.buildListItems` does for the
   subscription list) is **out of scope for v1** — surface the raw `rooms.name`;
   revisit if DM threads need a friendly name.
-- **No read-time access re-check** — the leaf returns every thread subscription
-  the user holds on this site as-is; it does **not** call `getAccessSince` or
-  apply a `historySharedSince` window. Each row is the user's own thread
-  subscription, and stale rows left behind when a user leaves a room are removed
-  on the write path (the leave/remove flow), not filtered here. Because nothing
-  is dropped post-fetch, the page is a **single keyset fetch** — no fill loop —
+- **Membership filter (in-pipeline)** — the leaf keeps only threads whose room
+  the user is still subscribed to, via a correlated `subscriptions` `$lookup`
+  (`u.account` + `roomId`) with a `{$ne: []}` existence match. The room
+  subscription is the source of truth for membership: it is purged when the user
+  leaves the room, whereas the `thread_subscriptions` rows are not — so this join
+  is what makes a departed member's threads disappear. It is **not** a
+  `getAccessSince` call and applies **no** `historySharedSince` window — it is a
+  pure still-a-member check. Because the join runs **before** `$sort`/`$limit`,
+  the page stays a **single keyset fetch** — no post-fetch drops, no fill loop —
   and `HasMore` comes straight from the repository's `limit+1` probe.
 
 **Leaf request / response:**
@@ -367,7 +370,8 @@ and surface to the aggregator as a failed site, not a client error.
   - history-service: leaf handler tests over the `$lookup` pipeline (cursor
     filter, limit/`N+1` HasMore, body enrichment incl. missing parent/room
     degradation) with mocked stores; an integration test for the aggregation
-    against real Mongo and the `messages_by_id` batch enrichment.
+    against real Mongo and the `messages_by_id` batch enrichment, incl. the
+    membership filter (threads in a room the user has left are excluded).
   - `pkg/model`: round-trip `ThreadListItem` / `ThreadListResponse` in
     `model_test.go`.
   - `pkg/subject`: tests for the new builders.
@@ -378,7 +382,8 @@ and surface to the aggregator as a failed site, not a client error.
 
 1. `pkg/subject` builders + `pkg/model` types (+ round-trip tests).
 2. history-service leaf RPC `chat.server.request.thread.{siteID}.subscription.list`
-   — `$lookup` pipeline (with justification comment) + Cassandra enrichment.
+   — `$lookup` pipeline (with justification comment) + membership filter +
+   Cassandra enrichment.
 3. user-service aggregator: site-set derivation, bounded fan-out, k-way merge,
    composite cursor, `chat.user.{account}.request.thread.list` handler.
 4. `docs/client-api.md` update in the same PR as step 3 (client-facing handler).
