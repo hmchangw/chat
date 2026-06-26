@@ -2139,6 +2139,84 @@ func TestSendMessageRequest_QuotedParentMessageID_JSON(t *testing.T) {
 		_, present := raw["quotedParentMessageId"]
 		assert.False(t, present, "quotedParentMessageId should be omitted when empty")
 	})
+
+	t.Run("client fallback quotedParentMessage round-trips", func(t *testing.T) {
+		parentTS := time.Date(2026, 1, 1, 11, 0, 0, 0, time.UTC)
+		r := model.SendMessageRequest{
+			ID:                    "msg-uuid-1",
+			Content:               "great point!",
+			RequestID:             "req-1",
+			QuotedParentMessageID: "parent-msg-uuid",
+			QuotedParentMessage: &cassandra.QuotedParentMessage{
+				MessageID: "parent-msg-uuid",
+				RoomID:    "r1",
+				Sender:    cassandra.Participant{ID: "u-bob", Account: "bob", EngName: "Bob Chen"},
+				CreatedAt: parentTS,
+				Msg:       "the original message",
+			},
+		}
+		data, err := json.Marshal(&r)
+		require.NoError(t, err)
+
+		var dst model.SendMessageRequest
+		require.NoError(t, json.Unmarshal(data, &dst))
+		require.NotNil(t, dst.QuotedParentMessage)
+		assert.Equal(t, "parent-msg-uuid", dst.QuotedParentMessage.MessageID)
+		assert.Equal(t, "bob", dst.QuotedParentMessage.Sender.Account)
+		assert.Equal(t, "the original message", dst.QuotedParentMessage.Msg)
+	})
+
+	t.Run("quotedParentMessage omitted when nil", func(t *testing.T) {
+		r := model.SendMessageRequest{
+			ID:                    "msg-uuid-1",
+			Content:               "hi",
+			RequestID:             "req-1",
+			QuotedParentMessageID: "parent-msg-uuid",
+		}
+		data, err := json.Marshal(&r)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, present := raw["quotedParentMessage"]
+		assert.False(t, present, "quotedParentMessage should be omitted when nil")
+	})
+}
+
+func TestMessageEvent_QuotedParentUnverified_JSON(t *testing.T) {
+	t.Run("flag round-trips when set", func(t *testing.T) {
+		evt := model.MessageEvent{
+			Event:                  model.EventCreated,
+			Message:                model.Message{ID: "m1", RoomID: "r1"},
+			SiteID:                 "site-a",
+			Timestamp:              123,
+			QuotedParentUnverified: true,
+		}
+		data, err := json.Marshal(&evt)
+		require.NoError(t, err)
+
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		assert.Equal(t, true, raw["quotedParentUnverified"])
+
+		var dst model.MessageEvent
+		require.NoError(t, json.Unmarshal(data, &dst))
+		assert.True(t, dst.QuotedParentUnverified)
+	})
+
+	t.Run("omitted when false", func(t *testing.T) {
+		evt := model.MessageEvent{
+			Event:     model.EventCreated,
+			Message:   model.Message{ID: "m1", RoomID: "r1"},
+			SiteID:    "site-a",
+			Timestamp: 123,
+		}
+		data, err := json.Marshal(&evt)
+		require.NoError(t, err)
+		var raw map[string]any
+		require.NoError(t, json.Unmarshal(data, &raw))
+		_, present := raw["quotedParentUnverified"]
+		assert.False(t, present, "quotedParentUnverified should be omitted when false")
+	})
 }
 
 func TestMessage_QuotedParentMessage_JSON(t *testing.T) {
