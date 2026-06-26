@@ -265,9 +265,12 @@ Aggregation pipeline on `thread_subscriptions`:
   leaves the room, whereas the `thread_subscriptions` rows are not — so this join
   is what makes a departed member's threads disappear. It is **not** a
   `getAccessSince` call and applies **no** `historySharedSince` window — it is a
-  pure still-a-member check. Because the join runs **before** `$sort`/`$limit`,
-  the page stays a **single keyset fetch** — no post-fetch drops, no fill loop —
-  and `HasMore` comes straight from the repository's `limit+1` probe.
+  pure still-a-member check. It is applied **first**, keyed on the
+  `thread_subscriptions` row's own `roomId`, so the `thread_rooms`/`rooms` joins
+  run only for threads the user can access; and because it runs **before**
+  `$sort`/`$limit`, the page stays a **single keyset fetch** — no post-fetch
+  drops, no fill loop — with `HasMore` straight from the repository's `limit+1`
+  probe.
 
 **Leaf request / response:**
 
