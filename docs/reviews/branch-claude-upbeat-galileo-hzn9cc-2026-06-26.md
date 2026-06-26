@@ -69,3 +69,10 @@ Verified correct:
 - `[low]` `strings.ToUpper` — the two call sites are mutually-exclusive code paths (aggregation vs fallback); called once per row on an in-memory field. No double work.
 - `[low]` rollup string copies — single O(N) linear pass; negligible.
 - `[nitpick]` `$limit:1` + `_id:0` still present; projection narrow.
+
+## Observability
+**Clean — no violations.** The diff adds NO logging (expected for field plumbing).
+- No new `slog`/`fmt.Println`/text loggers; the new PII-ish fields (`employeeId`, `accountName`) are never logged, used as span attributes, or placed in metrics.
+- `context.Context` threaded correctly through all new/modified helpers (`getRoomMembers`→`attachOrgDisplay`→`fetchOrgDisplayUsers`; `attachUserDisplayNames`→`findUsersForDisplay`).
+- No new handler → no new span/metric expected; the pre-existing absence of a `listMembers` span is not introduced by this change.
+- `[nitpick]` `AccountName` derivation duplicated across two sites (maintainability) — both now commented.
