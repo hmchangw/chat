@@ -76,3 +76,17 @@ Verified correct:
 - `context.Context` threaded correctly through all new/modified helpers (`getRoomMembers`→`attachOrgDisplay`→`fetchOrgDisplayUsers`; `attachUserDisplayNames`→`findUsersForDisplay`).
 - No new handler → no new span/metric expected; the pre-existing absence of a `listMembers` span is not introduced by this change.
 - `[nitpick]` `AccountName` derivation duplicated across two sites (maintainability) — both now commented.
+
+## Prioritized Action List
+| # | Sev | Item | Location | Status |
+|---|-----|------|----------|--------|
+| 1 | medium | Document description lex-max rollup | orgdisplay.go:74 | FIXED (12b5fb3) |
+| 2 | nitpick | Restore dropped fallback-path test note | integration_test.go:746 | FIXED (12b5fb3) |
+| 3 | medium | `orgDisplayDescription` dept-guard differs from `orgDisplaySectName` (name vs description dimension in an edge shape) | orgdisplay.go:118 | Accepted — intentional per spec, now documented; add a dept+sect-desc integration subcase if stricter regression wanted |
+| 4 | medium | Handler-layer enrich=false wire-absence not asserted | handler_test.go | Accepted — covered by model round-trip omitempty test; optional |
+| 5 | low | Add dept-branch lex-max unit subtest (symmetry) | orgdisplay_test.go | Optional |
+| 6 | low | Assert `OrgName` in dept-first integration subtest | integration_test.go | Optional |
+| 7 | low | else-after-org guard style | store_mongo.go:565 | Won't fix — correct as-is |
+| 8 | false+ | User struct tag alignment | user.go | No action — gofmt-canonical (verified) |
+
+**No critical/high findings. Branch is safe to proceed.**
