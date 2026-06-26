@@ -49,3 +49,15 @@ No correctness or security defects. gosec passes (govulncheck/semgrep blocked by
 - `[low]` orgdisplay_test lex-max tie-break tested only on the sect branch; dept branch is the symmetric mirror — optional dept subcase.
 - `[low]` integration dept-first subtest doesn't also assert `OrgName` — optional completeness.
 - `[nitpick]` OmittedWhenZero key-list order.
+
+## Bug & Security
+**gosec: exit 0, no findings.** (govulncheck/semgrep 403-blocked by proxy — environment limitation, run in CI.) No critical/high bugs.
+
+Verified correct:
+- BSON alignment — every projection key (`sectName`/`employeeId`/`deptDescription`/`sectDescription`) matches `model.User` bson tags and the decode structs across `fetchOrgDisplayUsers`, `findUsersForDisplay`, the `_userMatch` `$project`, the `$arrayElemAt` paths, and `roomMemberEnrichedDisplay`/`orgDisplayUser`.
+- `getRoomMembers` loop (store_mongo.go:565) — org rows skip the individual branch (no `AccountName`); individuals get all three; `attachOrgDisplay` fills org fields.
+- Bot `AccountName` set; `SectName`/`EmployeeID` empty (no user doc) — confirmed by integration test.
+- PII: `employeeId`/`accountName` returned only under `enrich=true`, consistent with existing enrich fields; no new leak; nothing logged.
+
+- `[low]` `orgDisplayDescription` dimension mismatch (orgdisplay.go:103-126) — in a contrived shape (an org id is one user's `deptId` with empty dept names but a non-empty `deptDescription`, AND another user's `sectId`), `orgName` could render the sect while `orgDescription` returns the dept's. Self-consistent with the documented "dept description preferred" rule; reachable only in that edge shape.
+- `[nitpick]` `AccountName` set without `Account != ""` check — harmless (`omitempty`).
