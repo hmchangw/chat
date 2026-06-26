@@ -164,8 +164,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	msgColl := newMessageCollection(cfg.MsgIndexPrefix, syncMessagesFrom)
+	// Re-resolve a thread reply's authoritative parent createdAt before indexing
+	// via an ES self-lookup of the parent's own (server-stamped) createdAt.
+	// search-service uses threadParentMessageCreatedAt for restricted-room access
+	// control, so the client-supplied value on the canonical event can't be
+	// trusted. A miss (parent not indexed yet) keeps the client value; resolution
+	// never blocks indexing.
+	msgColl.parentResolver = newESParentResolver(engine, cfg.MsgIndexPrefix)
+
 	collections := []Collection{
-		newMessageCollection(cfg.MsgIndexPrefix, syncMessagesFrom),
+		msgColl,
 		newSpotlightCollection(cfg.SpotlightIndex),
 		newUserRoomCollection(cfg.UserRoomIndex),
 	}
