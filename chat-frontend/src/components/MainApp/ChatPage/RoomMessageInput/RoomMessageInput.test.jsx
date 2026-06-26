@@ -63,7 +63,7 @@ describe('RoomMessageInput', () => {
     expect(onClearQuote).toHaveBeenCalled()
   })
 
-  it('includes quotedParentMessageId in the publish payload when quotedTarget is set', () => {
+  it('includes quotedParentMessageId and the fallback snapshot in the publish payload when quotedTarget is set', () => {
     render(
       <RoomMessageInput
         room={room}
@@ -76,7 +76,17 @@ describe('RoomMessageInput', () => {
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(publish).toHaveBeenCalledWith(
       'chat.user.alice.room.r1.s1.msg.send',
-      { id: '12345678901234567890', content: 'reply', requestId: 'req-uuid', quotedParentMessageId: 'q123' }
+      {
+        id: '12345678901234567890',
+        content: 'reply',
+        requestId: 'req-uuid',
+        quotedParentMessageId: 'q123',
+        quotedParentMessage: {
+          messageId: 'q123',
+          sender: { engName: 'bob', account: 'bob' },
+          msg: 'orig',
+        },
+      }
     )
   })
 

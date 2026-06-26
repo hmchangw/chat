@@ -129,13 +129,14 @@ describe('ThreadEventsContext', () => {
     )
   })
 
-  it('sendReply with quotedParentMessageId carries the field in the payload', async () => {
+  it('sendReply with quotedParentMessageId carries the id and fallback snapshot in the payload', async () => {
     request.mockResolvedValue({ messages: [], hasNext: false, nextCursor: null })
     setup()
     await act(async () => { screen.getByText('open').click() })
     await act(async () => { screen.getByText('send-quote').click() })
     const call = publish.mock.calls[0]
     expect(call[1].quotedParentMessageId).toBe('q-id')
+    expect(call[1].quotedParentMessage).toEqual(expect.objectContaining({ messageId: 'q-id' }))
   })
 
   it('sendReply publish failure (sync throw) tags _status=failed on the optimistic row', async () => {
