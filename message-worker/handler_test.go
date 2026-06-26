@@ -443,6 +443,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				// No InsertThreadSubscription / owner-site lookup / MarkThreadSubscriptionMention — all suppressed for migrated events.
 				store.EXPECT().SaveThreadMessage(gomock.Any(), &threadMsg, &expectedSender, "site-a", gomock.Any()).
 					Return((*int)(nil), nil)
+				ts.EXPECT().AdvanceThreadSubscriptionLastSeen(gomock.Any(), gomock.Any(), "alice", now).Return(nil)
 			},
 		},
 		{
@@ -460,6 +461,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				ts.EXPECT().UpdateThreadRoomLastMessage(gomock.Any(), "tr-1", "msg-2", []string{"alice", "parent-user"}, now).Return(nil)
 				store.EXPECT().SaveThreadMessage(gomock.Any(), &threadMsg, &expectedSender, "site-a", "tr-1").
 					Return((*int)(nil), nil)
+				ts.EXPECT().AdvanceThreadSubscriptionLastSeen(gomock.Any(), "tr-1", "alice", now).Return(nil)
 			},
 		},
 		{
@@ -476,6 +478,7 @@ func TestHandler_ProcessMessage(t *testing.T) {
 				// MarkThreadSubscriptionMention + InsertThreadSubscription must NOT be called.
 				store.EXPECT().SaveThreadMessage(gomock.Any(), gomock.Any(), gomock.Any(), "site-a", gomock.Any()).
 					Return((*int)(nil), nil)
+				ts.EXPECT().AdvanceThreadSubscriptionLastSeen(gomock.Any(), gomock.Any(), "alice", now).Return(nil)
 			},
 		},
 	}
@@ -603,6 +606,7 @@ func TestHandler_ProcessMessage_MigratedThreadReply_SuppressesBadgeAndOutbox(t *
 	// SaveThreadMessage returns a non-nil tcount — in the live path this would trigger the badge.
 	mockStore.EXPECT().SaveThreadMessage(gomock.Any(), &threadMsg, &expectedSender, "site-a", "tr-99").
 		Return(&expectedTcount, nil)
+	mockThreadStore.EXPECT().AdvanceThreadSubscriptionLastSeen(gomock.Any(), "tr-99", "alice", now).Return(nil)
 
 	var publishCalled bool
 	h := NewHandler(mockStore, mockUserStore, mockThreadStore, "site-a",
@@ -618,8 +622,8 @@ func TestHandler_ProcessMessage_MigratedThreadReply_SuppressesBadgeAndOutbox(t *
 }
 
 // TestHandler_ProcessMessage_ThreadReply_AdvancesReplierLastSeen verifies the replier's
-// own thread lastSeenAt is advanced (threadRoomID, replierAccount, msg.CreatedAt) on a
-// normal reply, and is skipped on a migration replay (#396).
+// own thread lastSeenAt is advanced (threadRoomID, replierAccount, msg.CreatedAt) on
+// both a normal reply and a migration replay (#396; migration per mliu33 review on #398).
 func TestHandler_ProcessMessage_ThreadReply_AdvancesReplierLastSeen(t *testing.T) {
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	user := &model.User{ID: "u-1", Account: "alice", SiteID: "site-a", EngName: "Alice Wang", ChineseName: "愛麗絲"}
@@ -654,11 +658,12 @@ func TestHandler_ProcessMessage_ThreadReply_AdvancesReplierLastSeen(t *testing.T
 		require.NoError(t, h.processMessage(context.Background(), data, false))
 	})
 
-	t.Run("migration reply does not advance", func(t *testing.T) {
+	t.Run("migration reply also advances", func(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		store, us, ts := NewMockStore(ctrl), NewMockUserStore(ctrl), NewMockThreadStore(ctrl)
 		setupSubsequentReply(store, us, ts, true)
-		// No AdvanceThreadSubscriptionLastSeen EXPECT — gomock fails if the migration guard lets it through.
+		// Advance runs on migration too ($max only moves forward) — mliu33 review on #398.
+		ts.EXPECT().AdvanceThreadSubscriptionLastSeen(gomock.Any(), "tr-77", "alice", now).Return(nil)
 
 		h := NewHandler(store, us, ts, "site-a", func(_ context.Context, _ string, _ []byte, _ string) error { return nil })
 		require.NoError(t, h.processMessage(context.Background(), data, true))
