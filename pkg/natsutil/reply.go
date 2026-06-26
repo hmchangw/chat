@@ -14,8 +14,9 @@ import (
 )
 
 // oversizeEnvelope is the small fallback reply when a response exceeds max_payload —
-// it always fits, so the client gets an error instead of a silent timeout.
-const oversizeEnvelope = `{"code":"internal","error":"response payload exceeds maximum size"}`
+// it always fits, so the client gets an error instead of a silent timeout. The
+// stable reason lets clients branch on it without parsing the message text.
+const oversizeEnvelope = `{"code":"internal","reason":"response_too_large","error":"response payload exceeds maximum size"}`
 
 // MarshalResponse encodes a value as JSON for NATS responses.
 func MarshalResponse(v any) ([]byte, error) {

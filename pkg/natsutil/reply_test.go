@@ -68,7 +68,9 @@ func TestReplyJSON_OversizeReply(t *testing.T) {
 	reply, err := nc.Request(subj, []byte(`{}`), 2*time.Second)
 	require.NoError(t, err) // the bug: this used to time out (no reply at all)
 	body := string(reply.Data)
-	if !strings.Contains(body, `"code":"internal"`) || !strings.Contains(body, `"error":"response payload exceeds maximum size"`) {
+	if !strings.Contains(body, `"code":"internal"`) ||
+		!strings.Contains(body, `"reason":"response_too_large"`) ||
+		!strings.Contains(body, `"error":"response payload exceeds maximum size"`) {
 		t.Fatalf("expected oversize error envelope, got: %s", body)
 	}
 }
