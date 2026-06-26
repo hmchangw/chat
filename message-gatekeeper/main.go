@@ -138,7 +138,7 @@ func main() {
 		return nil
 	}
 	parentFetcher := newHistoryParentFetcher(nc, cfg.ChatBaseURL)
-	handler := NewHandler(store, users, pub, reply, cfg.SiteID, parentFetcher, cfg.LargeRoomThreshold)
+	handler := NewHandler(store, users, pub, reply, cfg.SiteID, parentFetcher, cfg.LargeRoomThreshold, cfg.ChatBaseURL)
 
 	if err := bootstrapStreams(ctx, js, cfg.SiteID, cfg.Bootstrap.Enabled); err != nil {
 		slog.Error("bootstrap streams failed", "error", err)
