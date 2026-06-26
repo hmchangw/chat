@@ -565,6 +565,7 @@ func (s *MongoStore) getRoomMembers(ctx context.Context, roomID string, limit, o
 		if rm.Member.Type == model.RoomMemberOrg {
 			orgIDs = append(orgIDs, rm.Member.ID)
 		} else {
+			// SectName/EmployeeID come from the user join; AccountName is derived.
 			rm.Member.SectName = d.SectName
 			rm.Member.EmployeeID = d.EmployeeID
 			rm.Member.AccountName = strings.ToUpper(rm.Member.Account)
@@ -817,6 +818,7 @@ func (s *MongoStore) attachUserDisplayNames(ctx context.Context, roomID string, 
 			continue
 		}
 		acct := members[i].Member.Account
+		// AccountName is derived from the account; set for every individual incl. bots.
 		members[i].Member.AccountName = strings.ToUpper(acct)
 		if u, ok := userByAccount[acct]; ok {
 			members[i].Member.EngName = u.EngName

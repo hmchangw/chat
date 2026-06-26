@@ -113,8 +113,8 @@ func orgDisplaySectName(a *orgDisplayAgg, orgID string) string {
 	return displayfmt.CombineWithFallback(name, tcName, orgID)
 }
 
-// orgDisplayDescription renders an org's description with the same dept-first
-// tiebreak as orgDisplaySectName, but with an empty fallback (omitted on the wire).
+// orgDisplayDescription returns the dept description when a dept match has one,
+// else the sect description, else "" (omitted on the wire — no orgID fallback).
 func orgDisplayDescription(a *orgDisplayAgg) string {
 	if a == nil {
 		return ""
