@@ -69,6 +69,19 @@ type SendMessageRequest struct {
 	RequestID             string `json:"requestId"`
 	ThreadParentMessageID string `json:"threadParentMessageId,omitempty"`
 	QuotedParentMessageID string `json:"quotedParentMessageId,omitempty"`
+	// QuotedParentMessage is the client-supplied snapshot of the quoted parent,
+	// used ONLY as a degraded-mode fallback: message-gatekeeper resolves the
+	// authoritative snapshot from history-service and ignores this field on the
+	// happy path. When that synchronous fetch fails transiently (history-service
+	// briefly unavailable), the gatekeeper falls back to this snapshot so a
+	// Cassandra/history blip does not drop the user's whole message — it only
+	// degrades the quote. The fallback is UNTRUSTED (the client could fabricate
+	// sender/text): the gatekeeper marks the canonical event
+	// QuotedParentUnverified, and message-worker re-projects the authoritative
+	// snapshot from Cassandra (dropping the quote if the parent can't be
+	// confirmed) before the durable write, so a fabricated snapshot never
+	// persists. Ignored when QuotedParentMessageID is empty.
+	QuotedParentMessage *cassandra.QuotedParentMessage `json:"quotedParentMessage,omitempty"`
 	// TShow requests that a thread reply also appear in the parent room's
 	// channel timeline (the "Also send to channel" option). Only meaningful
 	// when ThreadParentMessageID is set — message-gatekeeper normalizes it to

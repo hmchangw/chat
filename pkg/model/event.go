@@ -42,6 +42,15 @@ type MessageEvent struct {
 	// NewThreadLastMsgAt is the timestamp of the most recent surviving thread reply
 	// after this operation (nil when no replies remain).
 	NewThreadLastMsgAt *time.Time `json:"newThreadLastMsgAt,omitempty" bson:"newThreadLastMsgAt,omitempty"`
+	// QuotedParentUnverified marks Message.QuotedParentMessage as a client-supplied
+	// fallback snapshot (see SendMessageRequest.QuotedParentMessage): message-gatekeeper
+	// sets it when its authoritative history-service fetch failed transiently and it
+	// fell back to the client snapshot. message-worker treats a set flag as "untrusted —
+	// must verify": it re-projects the authoritative snapshot from Cassandra and clears
+	// the flag, or drops the quote when the parent can't be confirmed. Never persisted
+	// (envelope-only) and never reaches clients. Always false on the happy path, where
+	// the gatekeeper-resolved snapshot is already authoritative.
+	QuotedParentUnverified bool `json:"quotedParentUnverified,omitempty"`
 }
 
 // ReactionAction is the toggle direction on ReactionDelta.Action; defined
