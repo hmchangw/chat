@@ -41,13 +41,14 @@ func newThreadListService(t *testing.T) (
 }
 
 func TestHistoryService_ListThreadSubscriptions_Success(t *testing.T) {
-	svc, msgs, subs, _, threadSubs := newThreadListService(t)
+	svc, msgs, _, _, threadSubs := newThreadListService(t)
 	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 
 	rows := []mongorepo.ThreadSubRow{
 		{ThreadRoomID: "tr-1", RoomID: "r1", SiteID: "site-a", RoomName: "general", RoomType: pkgmodel.RoomTypeChannel, ParentMessageID: "p1", LastMsgID: "m1", LastMsgAt: base.Add(5 * time.Hour), LastSeenAt: ptrTime(base.Add(2 * time.Hour)), HasMention: true},
 		{ThreadRoomID: "tr-2", RoomID: "r1", SiteID: "site-a", RoomName: "general", RoomType: pkgmodel.RoomTypeChannel, ParentMessageID: "p2", LastMsgID: "m2", LastMsgAt: base.Add(3 * time.Hour), LastSeenAt: nil},
 	}
+	// Single keyset fetch; hasMore rides through from the repository.
 	threadSubs.EXPECT().ListUserThreadSubscriptions(gomock.Any(), "alice", gomock.Any(), gomock.Any(), gomock.Any()).Return(rows, true, nil)
 	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return([]models.Message{
 		{MessageID: "p1", RoomID: "r1", Msg: "parent 1", TCount: intPtr(4)},
@@ -55,9 +56,7 @@ func TestHistoryService_ListThreadSubscriptions_Success(t *testing.T) {
 		{MessageID: "p2", RoomID: "r1", Msg: "parent 2"},
 		{MessageID: "m2", RoomID: "r1", Msg: "last 2"},
 	}, nil)
-	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "alice", "r1").Return(nil, true, nil)
 
-	// limit 2: the batch fills the page, so the fill loop stops after one fetch.
 	resp, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice", Limit: 2})
 	require.NoError(t, err)
 	require.Len(t, resp.Items, 2)
@@ -87,7 +86,7 @@ func TestHistoryService_ListThreadSubscriptions_Success(t *testing.T) {
 
 func TestHistoryService_ListThreadSubscriptions_Empty(t *testing.T) {
 	svc, _, _, _, threadSubs := newThreadListService(t)
-	// No rows ⇒ no message/room/access lookups at all.
+	// No rows ⇒ no message/room lookups at all.
 	threadSubs.EXPECT().ListUserThreadSubscriptions(gomock.Any(), "alice", gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, false, nil)
 
 	resp, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice"})
@@ -106,170 +105,59 @@ func TestHistoryService_ListThreadSubscriptions_MissingAccount(t *testing.T) {
 	assert.Equal(t, errcode.CodeBadRequest, ec.Code)
 }
 
-func TestHistoryService_ListThreadSubscriptions_AccessWindowDropsParent(t *testing.T) {
-	svc, msgs, subs, _, threadSubs := newThreadListService(t)
+// Access is no longer re-checked at read time: every thread subscription the
+// user holds on this site is returned, regardless of current room membership.
+// (Stale subscriptions left by a room departure are cleaned up on the write
+// path; see ListThreadSubscriptions.) The list must not call GetHistorySharedSince
+// — the subs mock has no expectations, so any such call fails the test.
+func TestHistoryService_ListThreadSubscriptions_ReturnsAllRowsNoAccessCheck(t *testing.T) {
+	svc, msgs, _, _, threadSubs := newThreadListService(t)
 	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
-	since := base.Add(4 * time.Hour)
 
 	rows := []mongorepo.ThreadSubRow{
-		{ThreadRoomID: "tr-old", RoomID: "r1", SiteID: "site-a", ParentMessageID: "p-old", LastMsgID: "m-old", LastMsgAt: base.Add(5 * time.Hour)},
+		{ThreadRoomID: "tr-1", RoomID: "r1", SiteID: "site-a", ParentMessageID: "p1", LastMsgID: "m1", LastMsgAt: base.Add(5 * time.Hour)},
+		{ThreadRoomID: "tr-2", RoomID: "r2", SiteID: "site-a", ParentMessageID: "p2", LastMsgID: "m2", LastMsgAt: base.Add(3 * time.Hour)},
 	}
 	threadSubs.EXPECT().ListUserThreadSubscriptions(gomock.Any(), "alice", gomock.Any(), gomock.Any(), gomock.Any()).Return(rows, false, nil)
-	// Parent created before the access window.
 	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return([]models.Message{
-		{MessageID: "p-old", RoomID: "r1", CreatedAt: base.Add(1 * time.Hour)},
+		{MessageID: "p1", RoomID: "r1"}, {MessageID: "m1", RoomID: "r1"},
+		{MessageID: "p2", RoomID: "r2"}, {MessageID: "m2", RoomID: "r2"},
 	}, nil)
-	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "alice", "r1").Return(&since, true, nil)
 
-	resp, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice"})
+	resp, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice", Limit: 10})
 	require.NoError(t, err)
-	assert.Empty(t, resp.Items) // dropped — parent predates access window
+	require.Len(t, resp.Items, 2)
+	assert.Equal(t, "tr-1", resp.Items[0].ThreadRoomID)
+	assert.Equal(t, "tr-2", resp.Items[1].ThreadRoomID)
 }
 
-func TestHistoryService_ListThreadSubscriptions_AccessWindowDropsDeletedParent(t *testing.T) {
-	svc, msgs, subs, _, threadSubs := newThreadListService(t)
-	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
-	since := base.Add(4 * time.Hour)
-
-	rows := []mongorepo.ThreadSubRow{
-		{ThreadRoomID: "tr-gone", RoomID: "r1", SiteID: "site-a", ParentMessageID: "p-gone", LastMsgID: "m-gone", LastMsgAt: base.Add(5 * time.Hour)},
-	}
-	threadSubs.EXPECT().ListUserThreadSubscriptions(gomock.Any(), "alice", gomock.Any(), gomock.Any(), gomock.Any()).Return(rows, false, nil)
-	// Parent absent from hydration (deleted / not replicated) — its creation time
-	// cannot be verified against the access window, so the thread must be dropped.
-	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return([]models.Message{
-		{MessageID: "m-gone", RoomID: "r1", CreatedAt: base.Add(5 * time.Hour)},
-	}, nil)
-	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "alice", "r1").Return(&since, true, nil)
-
-	resp, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice"})
-	require.NoError(t, err)
-	assert.Empty(t, resp.Items) // dropped — parent unverifiable within a restricted access window
-}
-
-func TestHistoryService_ListThreadSubscriptions_FullAccessKeepsDeletedParent(t *testing.T) {
-	svc, msgs, subs, _, threadSubs := newThreadListService(t)
+// A thread whose parent is old (or whose parent was deleted and is absent from
+// hydration) is still returned — there is no access window to filter against.
+// A missing parent simply yields a nil ParentMessage.
+func TestHistoryService_ListThreadSubscriptions_KeepsThreadWithDeletedParent(t *testing.T) {
+	svc, msgs, _, _, threadSubs := newThreadListService(t)
 	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 
 	rows := []mongorepo.ThreadSubRow{
 		{ThreadRoomID: "tr-gone", RoomID: "r1", SiteID: "site-a", ParentMessageID: "p-gone", LastMsgID: "m-gone", LastMsgAt: base.Add(5 * time.Hour)},
 	}
 	threadSubs.EXPECT().ListUserThreadSubscriptions(gomock.Any(), "alice", gomock.Any(), gomock.Any(), gomock.Any()).Return(rows, false, nil)
+	// Parent absent from hydration (deleted); last message present.
 	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return([]models.Message{
 		{MessageID: "m-gone", RoomID: "r1", CreatedAt: base.Add(5 * time.Hour)},
 	}, nil)
-	// Full history access (since == nil): a missing parent does not drop the thread.
-	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "alice", "r1").Return(nil, true, nil)
 
 	resp, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice", Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, resp.Items, 1)
 	assert.Equal(t, "tr-gone", resp.Items[0].ThreadRoomID)
 	assert.Nil(t, resp.Items[0].ParentMessage)
-}
-
-func TestHistoryService_ListThreadSubscriptions_NotSubscribedRoomDropped(t *testing.T) {
-	svc, msgs, subs, _, threadSubs := newThreadListService(t)
-	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
-
-	rows := []mongorepo.ThreadSubRow{
-		{ThreadRoomID: "tr-1", RoomID: "r1", SiteID: "site-a", ParentMessageID: "p1", LastMsgID: "m1", LastMsgAt: base.Add(5 * time.Hour)},
-		{ThreadRoomID: "tr-2", RoomID: "r2", SiteID: "site-a", ParentMessageID: "p2", LastMsgID: "m2", LastMsgAt: base.Add(3 * time.Hour)},
-	}
-	threadSubs.EXPECT().ListUserThreadSubscriptions(gomock.Any(), "alice", gomock.Any(), gomock.Any(), gomock.Any()).Return(rows, false, nil)
-	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return([]models.Message{
-		{MessageID: "p1", RoomID: "r1"}, {MessageID: "m1", RoomID: "r1"},
-		{MessageID: "p2", RoomID: "r2"}, {MessageID: "m2", RoomID: "r2"},
-	}, nil)
-	// r1 subscribed; r2 not subscribed ⇒ r2's threads are dropped, r1's kept.
-	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "alice", "r1").Return(nil, true, nil)
-	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "alice", "r2").Return(nil, false, nil)
-
-	resp, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice", Limit: 10})
-	require.NoError(t, err)
-	require.Len(t, resp.Items, 1)
-	assert.Equal(t, "tr-1", resp.Items[0].ThreadRoomID)
-	assert.Equal(t, "r1", resp.Items[0].RoomID)
-}
-
-func TestHistoryService_ListThreadSubscriptions_AccessErrorDegrades(t *testing.T) {
-	svc, msgs, subs, _, threadSubs := newThreadListService(t)
-	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
-
-	rows := []mongorepo.ThreadSubRow{
-		{ThreadRoomID: "tr-1", RoomID: "r1", SiteID: "site-a", ParentMessageID: "p1", LastMsgID: "m1", LastMsgAt: base.Add(5 * time.Hour)},
-		{ThreadRoomID: "tr-2", RoomID: "r2", SiteID: "site-a", ParentMessageID: "p2", LastMsgID: "m2", LastMsgAt: base.Add(3 * time.Hour)},
-	}
-	threadSubs.EXPECT().ListUserThreadSubscriptions(gomock.Any(), "alice", gomock.Any(), gomock.Any(), gomock.Any()).Return(rows, false, nil)
-	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return([]models.Message{
-		{MessageID: "p1", RoomID: "r1"}, {MessageID: "m1", RoomID: "r1"},
-		{MessageID: "p2", RoomID: "r2"}, {MessageID: "m2", RoomID: "r2"},
-	}, nil)
-	// r2's access lookup fails ⇒ log + continue: r2 dropped, the page still succeeds.
-	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "alice", "r1").Return(nil, true, nil)
-	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "alice", "r2").Return(nil, false, errors.New("mongo timeout"))
-
-	resp, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice", Limit: 10})
-	require.NoError(t, err)
-	require.Len(t, resp.Items, 1)
-	assert.Equal(t, "r1", resp.Items[0].RoomID)
-}
-
-func TestHistoryService_ListThreadSubscriptions_FillsPageAcrossFilteredBatch(t *testing.T) {
-	svc, msgs, subs, _, threadSubs := newThreadListService(t)
-	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
-
-	// Batch 1 is entirely a room the user isn't subscribed to (filtered out) with
-	// more pending; batch 2 has the visible item. The leaf must keep scanning and
-	// return batch 2's item rather than an empty page with HasMore.
-	batch1 := []mongorepo.ThreadSubRow{
-		{ThreadRoomID: "tr-1", RoomID: "r-denied", SiteID: "site-a", ParentMessageID: "p1", LastMsgID: "m1", LastMsgAt: base.Add(5 * time.Hour)},
-	}
-	batch2 := []mongorepo.ThreadSubRow{
-		{ThreadRoomID: "tr-2", RoomID: "r-ok", SiteID: "site-a", ParentMessageID: "p2", LastMsgID: "m2", LastMsgAt: base.Add(3 * time.Hour)},
-	}
-	gomock.InOrder(
-		threadSubs.EXPECT().ListUserThreadSubscriptions(gomock.Any(), "alice", gomock.Nil(), "", gomock.Any()).Return(batch1, true, nil),
-		// Second fetch resumes at batch 1's last scanned position.
-		threadSubs.EXPECT().ListUserThreadSubscriptions(gomock.Any(), "alice", gomock.Not(gomock.Nil()), "tr-1", gomock.Any()).Return(batch2, false, nil),
-	)
-	gomock.InOrder(
-		msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return([]models.Message{{MessageID: "p1", RoomID: "r-denied"}, {MessageID: "m1", RoomID: "r-denied"}}, nil),
-		msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return([]models.Message{{MessageID: "p2", RoomID: "r-ok"}, {MessageID: "m2", RoomID: "r-ok"}}, nil),
-	)
-	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "alice", "r-denied").Return(nil, false, nil)
-	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "alice", "r-ok").Return(nil, true, nil)
-
-	resp, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice", Limit: 1})
-	require.NoError(t, err)
-	require.Len(t, resp.Items, 1)
-	assert.Equal(t, "tr-2", resp.Items[0].ThreadRoomID)
-	assert.False(t, resp.HasMore) // batch 2 exhausted the source
-}
-
-func TestHistoryService_ListThreadSubscriptions_FillLoopBounded(t *testing.T) {
-	svc, msgs, subs, _, threadSubs := newThreadListService(t)
-	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
-
-	// Every scan returns a filtered (not-subscribed) batch with more still
-	// pending. The loop is bounded, so after maxThreadListScans it returns an
-	// empty page that still reports HasMore — the accepted residual of option B.
-	row := []mongorepo.ThreadSubRow{
-		{ThreadRoomID: "tr-x", RoomID: "r-denied", SiteID: "site-a", ParentMessageID: "px", LastMsgID: "mx", LastMsgAt: base.Add(time.Hour)},
-	}
-	const maxScans = 5 // keep in sync with maxThreadListScans
-	threadSubs.EXPECT().ListUserThreadSubscriptions(gomock.Any(), "alice", gomock.Any(), gomock.Any(), gomock.Any()).Return(row, true, nil).Times(maxScans)
-	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return([]models.Message{{MessageID: "px", RoomID: "r-denied"}, {MessageID: "mx", RoomID: "r-denied"}}, nil).Times(maxScans)
-	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "alice", "r-denied").Return(nil, false, nil) // memoized ⇒ once
-
-	resp, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice", Limit: 1})
-	require.NoError(t, err)
-	assert.Empty(t, resp.Items)
-	assert.True(t, resp.HasMore)
+	require.NotNil(t, resp.Items[0].LastMessage)
+	assert.Equal(t, "m-gone", resp.Items[0].LastMessage.MessageID)
 }
 
 func TestHistoryService_ListThreadSubscriptions_MissingRoomMetaDegrades(t *testing.T) {
-	svc, msgs, subs, _, threadSubs := newThreadListService(t)
+	svc, msgs, _, _, threadSubs := newThreadListService(t)
 	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 
 	// Row with no room name/type — the pipeline's rooms $lookup found no doc.
@@ -280,7 +168,6 @@ func TestHistoryService_ListThreadSubscriptions_MissingRoomMetaDegrades(t *testi
 	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return([]models.Message{
 		{MessageID: "p1", RoomID: "r1"},
 	}, nil)
-	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "alice", "r1").Return(nil, true, nil)
 
 	resp, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice"})
 	require.NoError(t, err)
@@ -292,6 +179,23 @@ func TestHistoryService_ListThreadSubscriptions_MissingRoomMetaDegrades(t *testi
 func TestHistoryService_ListThreadSubscriptions_RepoError(t *testing.T) {
 	svc, _, _, _, threadSubs := newThreadListService(t)
 	threadSubs.EXPECT().ListUserThreadSubscriptions(gomock.Any(), "alice", gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, false, errors.New("mongo down"))
+
+	_, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice"})
+	require.Error(t, err)
+	ec := errcode.Classify(context.Background(), err)
+	require.NotNil(t, ec)
+	assert.Equal(t, errcode.CodeInternal, ec.Code)
+}
+
+func TestHistoryService_ListThreadSubscriptions_HydrationError(t *testing.T) {
+	svc, msgs, _, _, threadSubs := newThreadListService(t)
+	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	rows := []mongorepo.ThreadSubRow{
+		{ThreadRoomID: "tr-1", RoomID: "r1", SiteID: "site-a", ParentMessageID: "p1", LastMsgID: "m1", LastMsgAt: base.Add(1 * time.Hour)},
+	}
+	threadSubs.EXPECT().ListUserThreadSubscriptions(gomock.Any(), "alice", gomock.Any(), gomock.Any(), gomock.Any()).Return(rows, false, nil)
+	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return(nil, errors.New("cassandra timeout"))
 
 	_, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice"})
 	require.Error(t, err)

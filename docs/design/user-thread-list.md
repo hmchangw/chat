@@ -258,19 +258,13 @@ Aggregation pipeline on `thread_subscriptions`:
   resolution (counterpart/app name, as `user-service.buildListItems` does for the
   subscription list) is **out of scope for v1** — surface the raw `rooms.name`;
   revisit if DM threads need a friendly name.
-- **Subscription + access window** — each distinct room is resolved through
-  `getAccessSince` (the shared helper that rejects a non-subscribed room with
-  `Forbidden`): a room the user isn't subscribed to, or whose lookup errors, is
-  logged and dropped — never failing the page. For subscribed rooms, honor
-  `threadParentCreatedAt` / `historySharedSince` exactly as
-  `GetThreadMessages`/`GetThreadParentMessages` do, so a user can't see a parent
-  older than their access.
-- **Fill loop** — both filters run **post-fetch**, so a fetched page can come
-  back fully filtered while more rows remain. The leaf keeps scanning
-  newer→older (bounded by `maxThreadListScans`) until it has a full page of
-  visible items or the source is exhausted, so it never returns an empty page
-  that still reports `HasMore` — which would leave the aggregator with `hasNext`
-  set but no cursor to advance.
+- **No read-time access re-check** — the leaf returns every thread subscription
+  the user holds on this site as-is; it does **not** call `getAccessSince` or
+  apply a `historySharedSince` window. Each row is the user's own thread
+  subscription, and stale rows left behind when a user leaves a room are removed
+  on the write path (the leave/remove flow), not filtered here. Because nothing
+  is dropped post-fetch, the page is a **single keyset fetch** — no fill loop —
+  and `HasMore` comes straight from the repository's `limit+1` probe.
 
 **Leaf request / response:**
 
@@ -309,7 +303,7 @@ type ThreadListItem struct {
     // thread activity
     LastMsgAt int64 `json:"lastMsgAt" bson:"lastMsgAt"` // UTC ms — the global sort key
 
-    // enriched bodies (subject to access window)
+    // enriched bodies
     ParentMessage *Message `json:"parentMessage,omitempty" bson:"parentMessage,omitempty"`
     LastMessage   *Message `json:"lastMessage,omitempty"   bson:"lastMessage,omitempty"`
 }
@@ -371,9 +365,9 @@ and surface to the aggregator as a failed site, not a client error.
     Inject the per-site client as an interface (`HistoryClient`) so the merge
     logic is tested with fakes — no real NATS.
   - history-service: leaf handler tests over the `$lookup` pipeline (cursor
-    filter, limit/`N+1` HasMore, access-window enforcement) with mocked stores;
-    an integration test for the aggregation against real Mongo and the
-    `messages_by_id` batch enrichment.
+    filter, limit/`N+1` HasMore, body enrichment incl. missing parent/room
+    degradation) with mocked stores; an integration test for the aggregation
+    against real Mongo and the `messages_by_id` batch enrichment.
   - `pkg/model`: round-trip `ThreadListItem` / `ThreadListResponse` in
     `model_test.go`.
   - `pkg/subject`: tests for the new builders.
@@ -384,8 +378,7 @@ and surface to the aggregator as a failed site, not a client error.
 
 1. `pkg/subject` builders + `pkg/model` types (+ round-trip tests).
 2. history-service leaf RPC `chat.server.request.thread.{siteID}.subscription.list`
-   — `$lookup` pipeline (with justification comment) + Cassandra enrichment +
-   access window.
+   — `$lookup` pipeline (with justification comment) + Cassandra enrichment.
 3. user-service aggregator: site-set derivation, bounded fan-out, k-way merge,
    composite cursor, `chat.user.{account}.request.thread.list` handler.
 4. `docs/client-api.md` update in the same PR as step 3 (client-facing handler).
