@@ -744,6 +744,7 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
 			RoomID: "r1", Roles: []model.Role{model.RoleMember}, JoinedAt: base.Add(20 * time.Second),
 		})
 
+		// NO room_members docs inserted — exercises the subscriptions fallback path.
 		got, err := store.ListRoomMembers(ctx, "r1", nil, nil, true)
 		require.NoError(t, err)
 		require.Len(t, got, 2)
