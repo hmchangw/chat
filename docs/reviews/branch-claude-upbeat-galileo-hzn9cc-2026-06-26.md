@@ -39,3 +39,13 @@ No correctness or security defects. gosec passes (govulncheck/semgrep blocked by
 - `[nitpick]` key-order / trailing spaces — gofmt-canonical; no action.
 
 **Summary:** `bson:"-"`+`omitempty` matches existing neighbors; error wrapping clean; no premature abstraction. No critical/high.
+
+## Test Automation
+- `store.go` interface UNCHANGED → mocks not stale (no `make generate` needed). Confirmed.
+- TDD satisfied — `orgDisplayDescription` (only new func, unexported) has `TestOrgDisplayDescription` (nil / dept-wins / dept-empty-fallback / sect-only / all-empty); model field changes covered in model_test (JSON present, BSON absent, omitted-when-zero, bot accountName, org orgDescription).
+- Integration tests would correctly assert intended behavior in CI: both store paths exercised; `OrgDescription` dept-first / sect-only / missing isolated. (Docker unavailable locally → compile-checked via `go vet -tags integration`.)
+- `[medium]` handler enrich=false wire-absence not asserted at the handler layer — LOW real risk: the model round-trip test already verifies `omitempty` JSON omission. Optional follow-up.
+- `[medium → addressed]` deleted fallback comment — FIXED.
+- `[low]` orgdisplay_test lex-max tie-break tested only on the sect branch; dept branch is the symmetric mirror — optional dept subcase.
+- `[low]` integration dept-first subtest doesn't also assert `OrgName` — optional completeness.
+- `[nitpick]` OmittedWhenZero key-list order.
