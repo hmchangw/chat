@@ -1821,7 +1821,7 @@ func TestHandler_ListMembers(t *testing.T) {
 							Member: model.RoomMemberEntry{
 								ID: "alice", Type: model.RoomMemberIndividual, Account: "alice",
 								EngName: "Alice Wang", ChineseName: "愛麗絲", IsOwner: true,
-								SectName: "Cardiology", AccountName: "ALICE", EmployeeID: "E10293",
+								SectName: "Cardiology", EmployeeID: "E10293",
 							},
 						},
 						{
@@ -1839,7 +1839,7 @@ func TestHandler_ListMembers(t *testing.T) {
 					Member: model.RoomMemberEntry{
 						ID: "alice", Type: model.RoomMemberIndividual, Account: "alice",
 						EngName: "Alice Wang", ChineseName: "愛麗絲", IsOwner: true,
-						SectName: "Cardiology", AccountName: "ALICE", EmployeeID: "E10293",
+						SectName: "Cardiology", EmployeeID: "E10293",
 					},
 				},
 				{

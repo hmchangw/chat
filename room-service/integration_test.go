@@ -673,7 +673,6 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
 		assert.Equal(t, "愛麗絲", m.ChineseName)
 		assert.True(t, m.IsOwner)
 		assert.Equal(t, "Cardiology", m.SectName)
-		assert.Equal(t, "ALICE", m.AccountName)
 		assert.Equal(t, "E10293", m.EmployeeID)
 		assert.Empty(t, m.OrgName)
 		assert.Zero(t, m.MemberCount)
@@ -754,12 +753,10 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
 		assert.Equal(t, "Alice Wang", alice.EngName)
 		assert.True(t, alice.IsOwner)
 		assert.Equal(t, "Cardiology", alice.SectName)
-		assert.Equal(t, "ALICE", alice.AccountName)
 		assert.Equal(t, "E10293", alice.EmployeeID)
 		assert.Equal(t, "bob", bob.Account)
 		assert.Equal(t, "Bob", bob.EngName)
 		assert.False(t, bob.IsOwner)
-		assert.Equal(t, "BOB", bob.AccountName)
 		assert.Empty(t, bob.SectName)
 	})
 
@@ -788,7 +785,6 @@ func TestMongoStore_ListRoomMembers_Enrich_Integration(t *testing.T) {
 		assert.Empty(t, m.OrgName)
 		assert.Zero(t, m.MemberCount)
 		assert.Empty(t, m.SectName)
-		assert.Empty(t, m.AccountName)
 		assert.Empty(t, m.EmployeeID)
 		assert.Empty(t, m.OrgDescription)
 	})
@@ -1004,9 +1000,7 @@ func TestMongoStore_ListRoomMembers_BotEnrichment_Integration(t *testing.T) {
 
 		bot := byAccount["weather.bot"]
 		assert.Equal(t, "Weather App", bot.Name, "bot member must have Name from apps")
-		assert.Equal(t, "WEATHER.BOT", bot.AccountName, "bot gets uppercased account")
 		assert.Empty(t, bot.SectName, "bot has no user doc → no sectName")
-		assert.Equal(t, "ALICE", human.AccountName)
 		assert.Empty(t, bot.EngName, "bot member must NOT have EngName")
 		assert.Empty(t, bot.ChineseName, "bot member must NOT have ChineseName")
 	})

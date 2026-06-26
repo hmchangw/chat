@@ -1265,7 +1265,7 @@ When the synchronous reply is an error envelope, the request was rejected before
 |---|---|---|---|
 | `limit` | number | no | If set, must be `> 0`. Caps the number of members returned. |
 | `offset` | number | no | If set, must be `>= 0`. For pagination. |
-| `enrich` | boolean | no | When `true`, populates the display fields (`engName`, `chineseName`, `name`, `isOwner`, `sectName`, `accountName`, `employeeId`, `orgName`, `memberCount`, `orgDescription`) on each entry. Omitted-or-`false` returns the lean record only. |
+| `enrich` | boolean | no | When `true`, populates the display fields (`engName`, `chineseName`, `name`, `isOwner`, `sectName`, `employeeId`, `orgName`, `memberCount`, `orgDescription`) on each entry. Omitted-or-`false` returns the lean record only. |
 
 ```json
 { "limit": 50, "enrich": true }
@@ -1296,7 +1296,6 @@ When the synchronous reply is an error envelope, the request was rejected before
 | `engName` | string | Optional. Populated only when request had `enrich: true`. |
 | `chineseName` | string | Optional. Populated only when `enrich: true`. |
 | `sectName` | string | Optional. The member's section name. Populated only when `enrich: true` and entry is an individual. |
-| `accountName` | string | Optional. The account in capital letters (e.g. `alice` → `ALICE`). Populated only when `enrich: true` and entry is an individual (including bots). |
 | `employeeId` | string | Optional. The member's employee ID. Populated only when `enrich: true` and entry is an individual. |
 | `name` | string | Optional. Bot/app display name from `apps.name` when the member's account ends with `.bot`. Mutually exclusive with `engName`/`chineseName`. |
 | `isOwner` | boolean | Optional. Populated only when `enrich: true`. |
@@ -1319,7 +1318,6 @@ When the synchronous reply is an error envelope, the request was rejected before
         "chineseName": "愛麗絲",
         "isOwner": true,
         "sectName": "Cardiology",
-        "accountName": "ALICE",
         "employeeId": "E10293"
       }
     },

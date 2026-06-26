@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
-	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -567,7 +566,6 @@ func (s *MongoStore) getRoomMembers(ctx context.Context, roomID string, limit, o
 		} else {
 			rm.Member.SectName = d.SectName
 			rm.Member.EmployeeID = d.EmployeeID
-			rm.Member.AccountName = strings.ToUpper(rm.Member.Account)
 		}
 		members[i] = rm
 	}
@@ -817,8 +815,6 @@ func (s *MongoStore) attachUserDisplayNames(ctx context.Context, roomID string, 
 			continue
 		}
 		acct := members[i].Member.Account
-		// AccountName is derived from the account; set for every individual incl. bots.
-		members[i].Member.AccountName = strings.ToUpper(acct)
 		if u, ok := userByAccount[acct]; ok {
 			members[i].Member.EngName = u.EngName
 			members[i].Member.ChineseName = u.ChineseName

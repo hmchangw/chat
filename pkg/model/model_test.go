@@ -1574,7 +1574,7 @@ func TestRoomMemberEntry_DisplayFields_JSON(t *testing.T) {
 	entry := model.RoomMemberEntry{
 		ID: "u1", Type: model.RoomMemberIndividual, Account: "alice",
 		EngName: "Alice Wang", ChineseName: "愛麗絲", IsOwner: true,
-		SectName: "Cardiology", AccountName: "ALICE", EmployeeID: "E10293",
+		SectName: "Cardiology", EmployeeID: "E10293",
 	}
 	data, err := json.Marshal(&entry)
 	require.NoError(t, err)
@@ -1588,7 +1588,6 @@ func TestRoomMemberEntry_DisplayFields_JSON(t *testing.T) {
 	assert.Equal(t, "愛麗絲", got["chineseName"])
 	assert.Equal(t, true, got["isOwner"])
 	assert.Equal(t, "Cardiology", got["sectName"])
-	assert.Equal(t, "ALICE", got["accountName"])
 	assert.Equal(t, "E10293", got["employeeId"])
 }
 
@@ -1600,7 +1599,7 @@ func TestRoomMemberEntry_DisplayFields_OmittedWhenZero(t *testing.T) {
 	require.NoError(t, err)
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(data, &got))
-	for _, k := range []string{"engName", "chineseName", "name", "isOwner", "orgName", "memberCount", "sectName", "accountName", "employeeId", "orgDescription"} {
+	for _, k := range []string{"engName", "chineseName", "name", "isOwner", "orgName", "memberCount", "sectName", "employeeId", "orgDescription"} {
 		_, present := got[k]
 		assert.False(t, present, "display field %q should be omitted when zero", k)
 	}
@@ -1610,7 +1609,7 @@ func TestRoomMemberEntry_DisplayFields_NotPersistedToBSON(t *testing.T) {
 	entry := model.RoomMemberEntry{
 		ID: "org-1", Type: model.RoomMemberOrg,
 		OrgName: "Engineering", MemberCount: 42, OrgDescription: "Eng dept",
-		SectName: "Cardiology", AccountName: "ALICE", EmployeeID: "E10293",
+		SectName: "Cardiology", EmployeeID: "E10293",
 	}
 	data, err := bson.Marshal(&entry)
 	require.NoError(t, err)
@@ -1619,7 +1618,7 @@ func TestRoomMemberEntry_DisplayFields_NotPersistedToBSON(t *testing.T) {
 	require.NoError(t, bson.Unmarshal(data, &got))
 	assert.Equal(t, "org-1", got["id"])
 	assert.Equal(t, "org", got["type"])
-	for _, k := range []string{"engName", "chineseName", "name", "isOwner", "orgName", "memberCount", "sectName", "accountName", "employeeId", "orgDescription"} {
+	for _, k := range []string{"engName", "chineseName", "name", "isOwner", "orgName", "memberCount", "sectName", "employeeId", "orgDescription"} {
 		_, present := got[k]
 		assert.False(t, present, "display field %q must not be persisted to BSON", k)
 	}
@@ -1628,11 +1627,10 @@ func TestRoomMemberEntry_DisplayFields_NotPersistedToBSON(t *testing.T) {
 func TestRoomMemberEntry_BotName_RoundTrip(t *testing.T) {
 	t.Run("bot member name round-trips via JSON", func(t *testing.T) {
 		entry := model.RoomMemberEntry{
-			ID:          "u-bot",
-			Type:        model.RoomMemberIndividual,
-			Account:     "weather.bot",
-			Name:        "Weather App",
-			AccountName: "WEATHER.BOT",
+			ID:      "u-bot",
+			Type:    model.RoomMemberIndividual,
+			Account: "weather.bot",
+			Name:    "Weather App",
 		}
 		data, err := json.Marshal(&entry)
 		require.NoError(t, err)
@@ -1640,7 +1638,6 @@ func TestRoomMemberEntry_BotName_RoundTrip(t *testing.T) {
 		var raw map[string]any
 		require.NoError(t, json.Unmarshal(data, &raw))
 		assert.Equal(t, "Weather App", raw["name"])
-		assert.Equal(t, "WEATHER.BOT", raw["accountName"])
 		_, hasEngName := raw["engName"]
 		assert.False(t, hasEngName, "engName must be absent for bot entry")
 		_, hasChineseName := raw["chineseName"]
