@@ -71,7 +71,6 @@ func buildOrgDisplay(orgIDs []string, users []orgDisplayUser) map[string]*orgDis
 			if u.DeptTCName > a.deptTCName {
 				a.deptTCName = u.DeptTCName
 			}
-			// Descriptions roll up by lex-max like names; expected org-uniform in practice.
 			if u.DeptDescription > a.deptDescription {
 				a.deptDescription = u.DeptDescription
 			}

@@ -565,7 +565,6 @@ func (s *MongoStore) getRoomMembers(ctx context.Context, roomID string, limit, o
 		if rm.Member.Type == model.RoomMemberOrg {
 			orgIDs = append(orgIDs, rm.Member.ID)
 		} else {
-			// SectName/EmployeeID come from the user join; AccountName is derived.
 			rm.Member.SectName = d.SectName
 			rm.Member.EmployeeID = d.EmployeeID
 			rm.Member.AccountName = strings.ToUpper(rm.Member.Account)
