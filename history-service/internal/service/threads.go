@@ -246,7 +246,7 @@ type threadRoomAccess struct {
 // loop; a not-subscribed or errored room is logged once and its threads dropped
 // rather than failing the page.
 func (s *HistoryService) buildThreadItems(c *natsrouter.Context, account string, rows []mongorepo.ThreadSubRow, access map[string]threadRoomAccess) ([]pkgmodel.ThreadListItem, error) {
-	msgIDs, _ := threadListLookupKeys(rows)
+	msgIDs := threadListLookupMsgIDs(rows)
 
 	// Hydrate message bodies from Cassandra (room name/type already rode in on
 	// the rows via the aggregation's rooms $lookup).
@@ -317,11 +317,12 @@ func (s *HistoryService) buildThreadItems(c *natsrouter.Context, account string,
 	return items, nil
 }
 
-// threadListLookupKeys collects the distinct message IDs (parents ∪ last) and
-// distinct room IDs the page needs hydrated.
-func threadListLookupKeys(rows []mongorepo.ThreadSubRow) (msgIDs, roomIDs []string) {
+// threadListLookupMsgIDs collects the distinct message IDs (parents ∪ last) the
+// page needs hydrated from Cassandra. Room name/type ride in on the rows via the
+// aggregation's rooms $lookup, so rooms need no separate hydration.
+func threadListLookupMsgIDs(rows []mongorepo.ThreadSubRow) []string {
 	msgSeen := make(map[string]struct{}, len(rows)*2)
-	roomSeen := make(map[string]struct{}, len(rows))
+	msgIDs := make([]string, 0, len(rows)*2)
 	addMsg := func(id string) {
 		if id == "" {
 			return
@@ -335,12 +336,8 @@ func threadListLookupKeys(rows []mongorepo.ThreadSubRow) (msgIDs, roomIDs []stri
 	for i := range rows {
 		addMsg(rows[i].ParentMessageID)
 		addMsg(rows[i].LastMsgID)
-		if _, dup := roomSeen[rows[i].RoomID]; !dup {
-			roomSeen[rows[i].RoomID] = struct{}{}
-			roomIDs = append(roomIDs, rows[i].RoomID)
-		}
 	}
-	return msgIDs, roomIDs
+	return msgIDs
 }
 
 // validateThreadFilter normalizes an empty filter to "all" so clients can omit the field.
