@@ -17,7 +17,7 @@ services:
         [['alice', 'E001'], ['bob', 'E002']].forEach(([account, employeeId]) => {
           p.hr_employee.replaceOne(
             { account: account },
-            { account: account, employeeId: employeeId, siteId: 'site-local', natsUrl: 'ws://localhost:9222' },
+            { account: account, employeeId: employeeId, siteId: 'site-local' },
             { upsert: true },
           );
           p.users.replaceOne(
@@ -48,12 +48,16 @@ services:
       # Dev fallback: accounts absent from the directory resolve to the local site.
       - DEV_MODE=${DEV_MODE:-true}
       - PORTAL_DEV_FALLBACK_SITE_ID=site-local
-      - PORTAL_DEV_FALLBACK_NATS_URL=ws://localhost:9222
-      # Per-site URL registry (JSON): siteId -> {authServiceUrl, baseUrl}.
-      # baseUrl is the site's own origin, distinct from the auth-service URL.
-      - 'PORTAL_SITE_URLS={"site-local":{"authServiceUrl":"http://localhost:8080","baseUrl":"http://localhost:3000"}}'
+      # Per-site URL registry (JSON): siteId -> {baseUrl}, the site's own origin.
+      - 'PORTAL_SITE_URLS={"site-local":{"baseUrl":"http://localhost:3000"}}'
       - MONGO_URI=mongodb://mongodb:27017
       - MONGO_DB=portal
+      # Flip DEV_MODE to "false" above to exercise real Keycloak login locally:
+      # - OIDC_ISSUER_URL=http://localhost:8180/realms/chatapp
+      # - OIDC_CLIENT_ID=portal
+      # - OIDC_CLIENT_SECRET=portal-dev-secret
+      # - OIDC_REDIRECT_URL=http://localhost:8081/auth/callback
+      # - PORTAL_COOKIE_SECURE=false
     networks:
       - chat-local
 

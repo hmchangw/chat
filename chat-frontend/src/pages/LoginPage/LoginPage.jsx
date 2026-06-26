@@ -54,7 +54,7 @@ export default function LoginPage() {
 
   // Production: a visitor who lands here has no live session, so send them
   // straight to Keycloak instead of making them click. After login the browser
-  // returns via /oidc-callback and connects through the portal. Fire once per
+  // returns via /oidc-callback and connects. Fire once per
   // mount; the ref survives a StrictMode double-invoke. Dev mode keeps the
   // account form (no IdP), so it never auto-redirects.
   useEffect(() => {

@@ -136,7 +136,7 @@ All event payloads carry a top-level `timestamp` field that is **milliseconds si
 
 ### 2.1 NATS connection
 
-Login is a three-step sequence: portal userInfo lookup (§2.3) resolves the user's home site → auth (§2.2) mints a NATS user JWT → the client connects to the resolved `natsUrl`. The auth-service base URL, the NATS WebSocket URL, and the user's `siteId` are not static client config — they come from the portal lookup. The JWT scopes the client's permissions to:
+Login is a two-step sequence: auth (§2.2) mints a NATS user JWT → the client connects to NATS. The auth-service base URL (`AUTH_URL`), the NATS WebSocket URL (`NATS_URL`), and the user's `siteId` (`SITE_ID`) are **static per-site client config** — each frontend is single-site, so there is no runtime site-discovery call. The JWT scopes the client's permissions to:
 
 | Permission | Subject pattern | Why |
 |---|---|---|
@@ -152,6 +152,8 @@ Login is a three-step sequence: portal userInfo lookup (§2.3) resolves the user
 - `chat.room.{roomID}.event` for each channel room in the user's sidebar — receives new messages plus edit/delete events for that channel.
 
 The exact event subjects a client may receive as a result of an RPC are listed under each method's "Triggered events" sections in §2.2, §3, and §4.
+
+**SSO front-door (browser entry point).** `portal-service` also serves a browser-facing `GET /login`: it signs the user in at Keycloak and 302-redirects to their home site's `baseUrl` (resolved in-process from the portal directory). This is a top-level browser redirect flow, **not** a JSON RPC; after the redirect the frontend completes the normal connect sequence above. The directory endpoint (§2.3) is retained but no longer on the connect path.
 
 ### 2.2 HTTP — POST /auth
 
@@ -240,9 +242,9 @@ The returned `natsJwt` has a server-configured lifetime (default 2h). Clients sh
 **Endpoint:** `GET /api/userInfo?account={account}`
 **Reply:** synchronous HTTP response
 
-Site discovery — called once per login, **before** §2.2. Looks the account up in the portal's in-memory directory (loaded from the HR employee feed at startup and refreshed daily), confirms the account is provisioned in the `users` collection (the canonical user record), and returns the home site's connection coordinates. The client then calls `POST {authServiceUrl}/auth` (§2.2) and connects to `natsUrl` (§2.1). JWT renewal does **not** re-query the portal — site assignment is stable within a session.
+Account directory lookup against the portal's in-memory directory (loaded from the HR employee feed at startup, refreshed daily, and intersected with the `users` collection so a hit means "provisioned"). Returns the account's home-site `baseUrl` and identifiers. **No longer on the login path:** the frontend uses static per-site config (§2.1), and the SSO front-door resolves `baseUrl` in-process — so this endpoint is retained for directory queries but is not called during connect.
 
-**Discovery only — no token is validated here.** The endpoint serves non-secret directory data keyed by `account`. The client supplies the account directly: derived from the SSO token's `preferred_username` claim in production, or the dev login form in dev mode. The authoritative check is auth-service (§2.2), which validates the SSO token before minting a JWT — an account that resolves here still cannot obtain a NATS JWT or connect without a valid token at that step.
+**Discovery only — no token is validated here.** The endpoint serves non-secret directory data keyed by `account`.
 
 #### Request
 
@@ -262,19 +264,15 @@ GET /api/userInfo?account=alice
 |---|---|---|
 | `account` | string | The `{account}` used in every NATS subject. |
 | `employeeId` | string | From the portal directory; informational. |
-| `authServiceUrl` | string | Base URL of the home site's auth-service — call `POST {authServiceUrl}/auth` next. |
-| `baseUrl` | string | Base URL of the user's home site itself (site-scoped HTTP origin) — a distinct URL, not the auth-service URL. |
-| `natsUrl` | string | WebSocket URL of the home site's NATS. |
 | `siteId` | string | The user's home site; scopes site-suffixed NATS subjects. |
+| `baseUrl` | string | Base URL of the user's home site (site-scoped HTTP origin). |
 
 ```json
 {
   "account": "alice",
   "employeeId": "E12345",
-  "authServiceUrl": "https://auth.site-a.example.com",
-  "baseUrl": "https://site-a.example.com",
-  "natsUrl": "wss://nats.site-a.example.com",
-  "siteId": "site-a"
+  "siteId": "site-a",
+  "baseUrl": "https://site-a.example.com"
 }
 ```
 

@@ -110,10 +110,16 @@ chmod 600 "$ENV_FILE"
 # left editable afterwards (e.g. point at staging) — new vars are appended.
 if [ ! -f "$FRONTEND_ENV_FILE" ]; then
   cat > "$FRONTEND_ENV_FILE" <<EOF
-VITE_PORTAL_URL=http://localhost:8081
+VITE_AUTH_URL=http://localhost:8080
+VITE_NATS_URL=ws://localhost:9222
+VITE_SITE_ID=site-local
 EOF
-elif ! grep -q '^VITE_PORTAL_URL=' "$FRONTEND_ENV_FILE"; then
-  printf '\nVITE_PORTAL_URL=http://localhost:8081\n' >> "$FRONTEND_ENV_FILE"
+else
+  # File predates one or more vars — append only the keys actually missing,
+  # each independently, so a customized value is never duplicated/overwritten.
+  grep -q '^VITE_AUTH_URL=' "$FRONTEND_ENV_FILE" || printf '\nVITE_AUTH_URL=http://localhost:8080\n' >> "$FRONTEND_ENV_FILE"
+  grep -q '^VITE_NATS_URL=' "$FRONTEND_ENV_FILE" || printf 'VITE_NATS_URL=ws://localhost:9222\n' >> "$FRONTEND_ENV_FILE"
+  grep -q '^VITE_SITE_ID=' "$FRONTEND_ENV_FILE" || printf 'VITE_SITE_ID=site-local\n' >> "$FRONTEND_ENV_FILE"
 fi
 
 cat > "$NATS_CONF" <<EOF

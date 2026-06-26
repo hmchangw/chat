@@ -60,7 +60,6 @@ func (s *mongoDirectoryStore) ListEmployees(ctx context.Context) ([]employee, er
 			{Key: "account", Value: 1},
 			{Key: "employeeId", Value: 1},
 			{Key: "siteId", Value: 1},
-			{Key: "natsUrl", Value: 1},
 			{Key: "userId", Value: bson.D{{Key: "$arrayElemAt", Value: bson.A{"$provisioned._id", 0}}}},
 		}}},
 	}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/hmchangw/chat/pkg/ginutil"
 	"github.com/hmchangw/chat/pkg/mongoutil"
+	pkgoidc "github.com/hmchangw/chat/pkg/oidc"
 	"github.com/hmchangw/chat/pkg/shutdown"
 )
 
@@ -23,14 +24,12 @@ import (
 const cacheRetryInterval = 30 * time.Second
 
 type config struct {
-	Port               string `env:"PORT"                         envDefault:"8081"`
-	DevMode            bool   `env:"DEV_MODE"                     envDefault:"false"`
-	DevFallbackSiteID  string `env:"PORTAL_DEV_FALLBACK_SITE_ID"  envDefault:"site-local"`
-	DevFallbackNatsURL string `env:"PORTAL_DEV_FALLBACK_NATS_URL" envDefault:"ws://localhost:9222"`
+	Port              string `env:"PORT"                         envDefault:"8081"`
+	DevMode           bool   `env:"DEV_MODE"                     envDefault:"false"`
+	DevFallbackSiteID string `env:"PORTAL_DEV_FALLBACK_SITE_ID"  envDefault:"site-local"`
 
 	// SiteURLs is the per-site URL registry: a JSON object mapping siteId to
-	// {authServiceUrl, baseUrl}. A single template can't express sites on
-	// different domains, so each site's URLs are listed explicitly.
+	// {baseUrl}, listed explicitly so sites on different domains each have one.
 	SiteURLs string `env:"PORTAL_SITE_URLS,required"`
 
 	// CacheRefreshInterval drives how often the directory is reloaded (the
@@ -42,6 +41,14 @@ type config struct {
 	MongoDB       string `env:"MONGO_DB"       envDefault:"portal"`
 	MongoUsername string `env:"MONGO_USERNAME" envDefault:""`
 	MongoPassword string `env:"MONGO_PASSWORD" envDefault:""`
+
+	OIDCIssuerURL    string   `env:"OIDC_ISSUER_URL"`
+	OIDCClientID     string   `env:"OIDC_CLIENT_ID"`
+	OIDCClientSecret string   `env:"OIDC_CLIENT_SECRET"`
+	OIDCRedirectURL  string   `env:"OIDC_REDIRECT_URL"`
+	OIDCScopes       []string `env:"OIDC_SCOPES" envSeparator:" " envDefault:"openid profile email"`
+	CookieSecure     bool     `env:"PORTAL_COOKIE_SECURE" envDefault:"true"`
+	TLSSkipVerify    bool     `env:"TLS_SKIP_VERIFY" envDefault:"false"`
 }
 
 func main() {
@@ -51,6 +58,31 @@ func main() {
 		slog.Error("fatal error", "error", err)
 		os.Exit(1)
 	}
+}
+
+// requireOIDCConfig fails fast when the prod OIDC fields are missing
+// (caarlos0/env can't express conditional-required).
+func requireOIDCConfig(cfg *config) error {
+	if cfg.DevMode {
+		return nil
+	}
+	var missing []string
+	if cfg.OIDCIssuerURL == "" {
+		missing = append(missing, "OIDC_ISSUER_URL")
+	}
+	if cfg.OIDCClientID == "" {
+		missing = append(missing, "OIDC_CLIENT_ID")
+	}
+	if cfg.OIDCClientSecret == "" {
+		missing = append(missing, "OIDC_CLIENT_SECRET")
+	}
+	if cfg.OIDCRedirectURL == "" {
+		missing = append(missing, "OIDC_REDIRECT_URL")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("missing required OIDC config when DEV_MODE=false: %v", missing)
+	}
+	return nil
 }
 
 func run() error {
@@ -65,6 +97,25 @@ func run() error {
 	}
 
 	ctx := context.Background()
+
+	if err := requireOIDCConfig(&cfg); err != nil {
+		return fmt.Errorf("check oidc config: %w", err)
+	}
+
+	var auth loginAuthenticator
+	if cfg.DevMode {
+		if _, ok := sites[cfg.DevFallbackSiteID]; !ok {
+			return fmt.Errorf("dev fallback site %q missing from PORTAL_SITE_URLS", cfg.DevFallbackSiteID)
+		}
+	} else {
+		httpClient := pkgoidc.HTTPClient(cfg.TLSSkipVerify)
+		oidcAuth, err := newOIDCLogin(ctx, cfg.OIDCIssuerURL, cfg.OIDCClientID,
+			cfg.OIDCClientSecret, cfg.OIDCRedirectURL, cfg.OIDCScopes, httpClient)
+		if err != nil {
+			return fmt.Errorf("init oidc login: %w", err)
+		}
+		auth = oidcAuth
+	}
 
 	mongoClient, err := mongoutil.Connect(ctx, cfg.MongoURI, cfg.MongoUsername, cfg.MongoPassword)
 	if err != nil {
@@ -88,8 +139,7 @@ func run() error {
 
 	slog.Info("directory config", "sites", len(sites), "refreshInterval", cfg.CacheRefreshInterval.String())
 
-	handler := NewPortalHandler(cache, cfg.DevMode,
-		cfg.DevFallbackSiteID, cfg.DevFallbackNatsURL, sites)
+	handler := NewPortalHandler(cache, cfg.DevMode, cfg.DevFallbackSiteID, sites, auth, cfg.CookieSecure)
 	if cfg.DevMode {
 		slog.Info("dev mode enabled — unknown accounts fall back to the dev site")
 	}

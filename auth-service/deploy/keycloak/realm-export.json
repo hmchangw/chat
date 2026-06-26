@@ -60,6 +60,19 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "portal",
+      "name": "Portal SSO Front-Door",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "portal-dev-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "redirectUris": ["http://localhost:8081/auth/callback"],
+      "webOrigins": ["http://localhost:8081"],
+      "protocol": "openid-connect"
     }
   ],
   "users": [
