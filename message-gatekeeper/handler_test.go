@@ -1036,13 +1036,14 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 	}
 
 	tests := []struct {
-		name          string
-		buildData     func() []byte
-		setupStore    func(s *MockStore)
-		setupFetcher  func(f *MockParentMessageFetcher)
-		setupPub      func() (publishFunc, *[]publishedMsg)
-		wantErr       bool
-		assertMessage func(t *testing.T, msg model.Message)
+		name             string
+		buildData        func() []byte
+		setupStore       func(s *MockStore)
+		setupFetcher     func(f *MockParentMessageFetcher)
+		setupPub         func() (publishFunc, *[]publishedMsg)
+		wantErr          bool
+		assertMessage    func(t *testing.T, msg model.Message)
+		assertUnverified bool // expect QuotedParentUnverified=true on the canonical event
 	}{
 		{
 			name: "main-room msg quoting main-room parent — snapshot embedded",
@@ -1079,7 +1080,10 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			},
 		},
 		{
-			name: "fetcher error — request fails",
+			// Terminal errcode (not_found): the parent genuinely can't be quoted, so
+			// the send is rejected — the placeholder/fallback path must never
+			// resurrect a missing parent.
+			name: "fetcher terminal not_found — request fails",
 			buildData: func() []byte {
 				req := model.SendMessageRequest{
 					ID:                    validID,
@@ -1097,7 +1101,7 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			setupFetcher: func(f *MockParentMessageFetcher) {
 				f.EXPECT().
 					FetchQuotedParent(gomock.Any(), validAccount, validRoomID, validSiteID, parentMessageID).
-					Return(nil, fmt.Errorf("history response error: not found"))
+					Return(nil, errcode.NotFound("parent gone"))
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
 				return makePublishFunc(nil, nil), nil
@@ -1275,7 +1279,10 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			},
 		},
 		{
-			name: "fetcher returns (nil, nil) — request fails (defensive guard)",
+			// (nil, nil) is a fetcher contract violation treated as transient; with
+			// no client fallback the quote degrades to the placeholder rather than
+			// failing the whole send. message-worker re-projects authoritatively.
+			name: "fetcher returns (nil, nil), no fallback — placeholder quote published",
 			buildData: func() []byte {
 				req := model.SendMessageRequest{
 					ID:                    validID,
@@ -1294,6 +1301,41 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 				f.EXPECT().
 					FetchQuotedParent(gomock.Any(), validAccount, validRoomID, validSiteID, parentMessageID).
 					Return(nil, nil)
+			},
+			setupPub: func() (publishFunc, *[]publishedMsg) {
+				var published []publishedMsg
+				return makePublishFunc(&published, nil), &published
+			},
+			assertMessage: func(t *testing.T, msg model.Message) {
+				require.NotNil(t, msg.QuotedParentMessage)
+				assert.Equal(t, parentMessageID, msg.QuotedParentMessage.MessageID)
+				assert.Equal(t, "Content temporarily unavailable", msg.QuotedParentMessage.Msg)
+			},
+			assertUnverified: true,
+		},
+		{
+			// Thread reply quoting its own thread parent during a transient outage
+			// with no fallback: the quote degrades to a placeholder, but the
+			// thread-parent createdAt (#322) must NOT reuse the placeholder's
+			// synthetic timestamp — it is fetched authoritatively, which fails on
+			// the same outage, so the whole send NAKs (bare error).
+			name: "thread reply quoting own parent, transient fetch, no fallback — NAKs (no synthetic createdAt)",
+			buildData: func() []byte {
+				return []byte(fmt.Sprintf(
+					`{"id":%q,"content":%q,"requestId":%q,"threadParentMessageId":%q,"quotedParentMessageId":%q}`,
+					validID, validContent, validRequestID, threadID, threadID,
+				))
+			},
+			setupStore: func(s *MockStore) {
+				s.EXPECT().GetSubscription(gomock.Any(), validAccount, validRoomID).Return(sub, nil)
+			},
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				// Quote resolution fetch (degrades to placeholder), then the
+				// thread-parent createdAt fetch — both hit the same outage.
+				f.EXPECT().
+					FetchQuotedParent(gomock.Any(), validAccount, validRoomID, validSiteID, threadID).
+					Return(nil, errcode.Internal("history down")).
+					Times(2)
 			},
 			setupPub: func() (publishFunc, *[]publishedMsg) {
 				return makePublishFunc(nil, nil), nil
@@ -1346,6 +1388,8 @@ func TestHandler_ProcessMessage_WithQuote(t *testing.T) {
 			} else {
 				assert.Nil(t, evt.Message.QuotedParentMessage)
 			}
+			assert.Equal(t, tc.assertUnverified, evt.QuotedParentUnverified,
+				"QuotedParentUnverified marks the message-worker re-projection path")
 		})
 	}
 }
@@ -1358,6 +1402,7 @@ func TestHandler_resolveQuoteSnapshot_Fallback(t *testing.T) {
 		chatBaseURL = "http://chat.example"
 	)
 	quotedID := idgen.GenerateMessageID()
+	fixedNow := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
 
 	// clientFallback is what a well-behaved client sends: a snapshot it already
 	// built for optimistic rendering. The identity/link fields here are
@@ -1460,16 +1505,42 @@ func TestHandler_resolveQuoteSnapshot_Fallback(t *testing.T) {
 			wantUnverified: true,
 		},
 		{
-			name:     "transient error, no fallback — bare error so handler NAKs (not dropped)",
+			name:     "transient error, no fallback — placeholder snapshot, unverified",
 			quotedID: quotedID,
 			fallback: nil,
 			setupFetcher: func(f *MockParentMessageFetcher) {
 				f.EXPECT().FetchQuotedParent(gomock.Any(), account, roomID, siteID, quotedID).Return(nil, bareInfraErr)
 			},
-			wantErr: true,
-			assertErr: func(t *testing.T, err error) {
-				var ee *errcode.Error
-				assert.False(t, errors.As(err, &ee), "no-fallback transient must be a bare error (NAK), not a typed errcode (Ack)")
+			wantSnap:       true,
+			wantUnverified: true,
+			assertSnap: func(t *testing.T, snap *cassandra.QuotedParentMessage) {
+				// Trusted identity/link fields are real; body is the placeholder.
+				assert.Equal(t, quotedID, snap.MessageID)
+				assert.Equal(t, roomID, snap.RoomID)
+				assert.Equal(t, chatBaseURL+"/"+roomID+"/"+quotedID, snap.MessageLink)
+				assert.Equal(t, "Content temporarily unavailable", snap.Msg)
+				assert.Equal(t, fixedNow, snap.CreatedAt.UTC())
+				// No sender/mentions/thread context fabricated for a main-room quote.
+				assert.Empty(t, snap.Sender.Account)
+				assert.Empty(t, snap.Mentions)
+				assert.Empty(t, snap.ThreadParentID)
+			},
+		},
+		{
+			name:     "transient error, no fallback, thread reply — placeholder same-conversation-consistent",
+			quotedID: quotedID,
+			threadID: "thread-X",
+			fallback: nil,
+			setupFetcher: func(f *MockParentMessageFetcher) {
+				f.EXPECT().FetchQuotedParent(gomock.Any(), account, roomID, siteID, quotedID).Return(nil, internalErrcode)
+			},
+			wantSnap:       true,
+			wantUnverified: true,
+			assertSnap: func(t *testing.T, snap *cassandra.QuotedParentMessage) {
+				assert.Equal(t, "Content temporarily unavailable", snap.Msg)
+				// ThreadParentID mirrors the quoting message's thread so the
+				// synthesized placeholder passes the same-conversation rule.
+				assert.Equal(t, "thread-X", snap.ThreadParentID)
 			},
 		},
 		{
@@ -1530,7 +1601,7 @@ func TestHandler_resolveQuoteSnapshot_Fallback(t *testing.T) {
 			tc.setupFetcher(fetcher)
 			h := &Handler{parentFetcher: fetcher, chatBaseURL: chatBaseURL}
 
-			snap, unverified, err := h.resolveQuoteSnapshot(context.Background(), account, roomID, siteID, tc.quotedID, tc.threadID, tc.fallback)
+			snap, unverified, err := h.resolveQuoteSnapshot(context.Background(), account, roomID, siteID, tc.quotedID, tc.threadID, tc.fallback, fixedNow)
 
 			if tc.wantErr {
 				require.Error(t, err)

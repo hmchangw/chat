@@ -32,6 +32,13 @@ const (
 	maxAttachmentBytes = 8 * 1024 // 8 KiB total; blobs are small JSON Attachment metadata
 )
 
+// quotedParentUnavailablePlaceholder is the degraded-mode body shown for a
+// quoted parent that could not be fetched during a transient history outage when
+// the client supplied no fallback snapshot. It never persists: message-worker
+// re-projects the authoritative snapshot (or drops the quote) before the durable
+// write — the placeholder only keeps the live message flowing through the blip.
+const quotedParentUnavailablePlaceholder = "Content temporarily unavailable"
+
 // replyFunc is the function signature for publishing a reply to a NATS subject.
 type replyFunc func(ctx context.Context, msg *nats.Msg) error
 
@@ -313,7 +320,7 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 	// Build Message
 	now := time.Now().UTC()
 
-	quotedSnapshot, quotedUnverified, err := h.resolveQuoteSnapshot(ctx, account, roomID, siteID, req.QuotedParentMessageID, req.ThreadParentMessageID, req.QuotedParentMessage)
+	quotedSnapshot, quotedUnverified, err := h.resolveQuoteSnapshot(ctx, account, roomID, siteID, req.QuotedParentMessageID, req.ThreadParentMessageID, req.QuotedParentMessage, now)
 	if err != nil {
 		return nil, err
 	}
@@ -326,7 +333,7 @@ func (h *Handler) processMessage(ctx context.Context, account, roomID, siteID st
 	// server-resolved value always wins over any client-sent value — a wrong
 	// client value must not corrupt downstream consumers. Done after the quote
 	// resolution so a quote-context failure short-circuits the extra fetch.
-	threadParentCreatedAt, err := h.resolveThreadParentCreatedAt(ctx, account, roomID, siteID, req.ThreadParentMessageID, req.QuotedParentMessageID, quotedSnapshot)
+	threadParentCreatedAt, err := h.resolveThreadParentCreatedAt(ctx, account, roomID, siteID, req.ThreadParentMessageID, req.QuotedParentMessageID, quotedSnapshot, quotedUnverified)
 	if err != nil {
 		return nil, err
 	}
@@ -400,13 +407,19 @@ func (h *Handler) resolveThreadParentCreatedAt(
 	ctx context.Context,
 	account, roomID, siteID, threadParentMessageID, quotedParentMessageID string,
 	quotedSnapshot *cassandra.QuotedParentMessage,
+	quotedUnverified bool,
 ) (*time.Time, error) {
 	if threadParentMessageID == "" {
 		return nil, nil
 	}
 
-	// Reuse the quote snapshot when the quoted parent is the thread parent.
-	if quotedSnapshot != nil && quotedParentMessageID == threadParentMessageID {
+	// Reuse the quote snapshot when the quoted parent is the thread parent — but
+	// only when it is authoritative. An unverified snapshot (client fallback or
+	// the synthesized placeholder) carries an untrusted or synthetic CreatedAt,
+	// and the thread parent's createdAt is correctness-critical (#322) and not
+	// re-resolved downstream, so fall through to the authoritative fetch instead
+	// (which NAKs for redelivery if history is still down).
+	if quotedSnapshot != nil && !quotedUnverified && quotedParentMessageID == threadParentMessageID {
 		t := quotedSnapshot.CreatedAt.UTC()
 		return &t, nil
 	}
@@ -442,19 +455,22 @@ func (h *Handler) resolveThreadParentCreatedAt(
 //     bad_request): reject with the typed errcode. The untrusted fallback must
 //     never resurrect a missing parent or bypass access control.
 //   - transient (history-service unavailable/internal, NATS timeout/no-responder):
-//     use the client fallback when present (marked unverified), so a Cassandra/
-//     history blip degrades only the quote, not the whole message. With no
-//     fallback (old clients), return a bare error so the handler NAKs and
-//     JetStream replays until history recovers — the message is delayed, not dropped.
-func (h *Handler) resolveQuoteSnapshot(ctx context.Context, account, roomID, siteID, quotedParentMessageID, newMessageThreadID string, fallback *cassandra.QuotedParentMessage) (*cassandra.QuotedParentMessage, bool, error) {
+//     degrade to an unverified snapshot so a Cassandra/history blip degrades only
+//     the quote, not the whole message. Prefer the client fallback when present;
+//     otherwise (the client attaches no snapshot) synthesize a
+//     "Content temporarily unavailable" placeholder. Either way the snapshot is
+//     marked unverified, and message-worker re-projects the authoritative copy
+//     (or drops the quote) from Cassandra before the durable write, so neither the
+//     client text nor the placeholder ever persists.
+func (h *Handler) resolveQuoteSnapshot(ctx context.Context, account, roomID, siteID, quotedParentMessageID, newMessageThreadID string, fallback *cassandra.QuotedParentMessage, now time.Time) (*cassandra.QuotedParentMessage, bool, error) {
 	if quotedParentMessageID == "" {
 		return nil, false, nil
 	}
 	snap, err := h.parentFetcher.FetchQuotedParent(ctx, account, roomID, siteID, quotedParentMessageID)
 	if err == nil && snap == nil {
 		// A nil snapshot with no error is a fetcher contract violation, not a
-		// genuine missing parent. Synthesize a transient error so we fall back /
-		// NAK rather than treating it as authoritative-empty.
+		// genuine missing parent. Synthesize a transient error so we degrade to the
+		// fallback/placeholder rather than treating it as authoritative-empty.
 		err = fmt.Errorf("fetch quoted parent %s: fetcher returned nil snapshot", quotedParentMessageID)
 	}
 	if err != nil {
@@ -474,7 +490,16 @@ func (h *Handler) resolveQuoteSnapshot(ctx context.Context, account, roomID, sit
 				"request_id", natsutil.RequestIDFromContext(ctx), "quoted_id", quotedParentMessageID, "error", err)
 			return fb, true, nil
 		}
-		return nil, false, fmt.Errorf("fetch quoted parent %s (no client fallback): %w", quotedParentMessageID, err)
+		// No client fallback (the client attaches no quoted-parent snapshot).
+		// Rather than NAK and delay the whole message until history recovers,
+		// degrade the quote to a "Content temporarily unavailable" placeholder
+		// marked unverified — message-worker re-projects the authoritative snapshot
+		// (or drops the quote) before the durable write, so the placeholder body
+		// never persists. Keeps the user's message flowing through the outage.
+		ph := h.placeholderQuoteSnapshot(roomID, quotedParentMessageID, newMessageThreadID, now)
+		slog.WarnContext(ctx, "quoted-parent fetch failed and no client fallback; using placeholder snapshot",
+			"request_id", natsutil.RequestIDFromContext(ctx), "quoted_id", quotedParentMessageID, "error", err)
+		return ph, true, nil
 	}
 	if cerr := checkQuoteThreadContext(snap, quotedParentMessageID, newMessageThreadID); cerr != nil {
 		return nil, false, cerr
@@ -514,6 +539,26 @@ func (h *Handler) sanitizeQuoteFallback(fb *cassandra.QuotedParentMessage, roomI
 	out.RoomID = roomID
 	out.MessageLink = messageLink(h.chatBaseURL, roomID, messageID)
 	return &out
+}
+
+// placeholderQuoteSnapshot builds the degraded-mode quoted-parent snapshot used
+// when the authoritative fetch fails transiently and the client supplied no
+// fallback. Only the trusted identity/link fields are real; the body is a fixed
+// placeholder, the sender and mentions are empty, and ThreadParentID is set to
+// the quoting message's thread so the snapshot is same-conversation-consistent.
+// CreatedAt is stamped with the send time as a cosmetic value for the live
+// render only. The caller marks it unverified: message-worker re-projects the
+// authoritative snapshot (or drops the quote) before the durable write, so the
+// placeholder never persists.
+func (h *Handler) placeholderQuoteSnapshot(roomID, messageID, newMessageThreadID string, now time.Time) *cassandra.QuotedParentMessage {
+	return &cassandra.QuotedParentMessage{
+		MessageID:      messageID,
+		RoomID:         roomID,
+		CreatedAt:      now,
+		Msg:            quotedParentUnavailablePlaceholder,
+		MessageLink:    messageLink(h.chatBaseURL, roomID, messageID),
+		ThreadParentID: newMessageThreadID,
+	}
 }
 
 // checkQuoteThreadContext enforces the same-conversation rule between the quoted
