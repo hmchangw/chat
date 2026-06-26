@@ -412,6 +412,64 @@ func (s *CassandraStore) UpdateParentMessageThreadRoomID(ctx context.Context, pa
 	return nil
 }
 
+// GetQuotedParentSnapshot re-projects the authoritative quoted-parent snapshot
+// for messageID from messages_by_id. The snapshot's metadata (room, sender,
+// createdAt, mentions, thread context) lives in plaintext columns; the body
+// (msg) is in the plaintext column when the store has no cipher and in
+// enc_payload otherwise, so it is decrypted in the cipher-enabled path. Returns
+// (nil, false, nil) when the row is absent (parent not yet persisted or deleted)
+// so the caller can drop an unverifiable quote. MessageLink and Attachments are
+// left to the caller — the gatekeeper-built link is trusted and preserved, and a
+// quoted snapshot carries no attachments on the fallback path.
+func (s *CassandraStore) GetQuotedParentSnapshot(ctx context.Context, messageID string) (*cassandra.QuotedParentMessage, bool, error) {
+	var (
+		roomID                string
+		sender                cassandra.Participant
+		createdAt             time.Time
+		mentions              []cassandra.Participant
+		threadParentID        string
+		threadParentCreatedAt *time.Time
+		msg                   string
+		encPayload            []byte
+		encMeta               *cassandra.EncMeta
+	)
+	if err := s.cassSession.Query(
+		`SELECT room_id, sender, created_at, mentions, thread_parent_id, thread_parent_created_at, msg, enc_payload, enc_meta
+		   FROM messages_by_id WHERE message_id = ? LIMIT 1`,
+		messageID,
+	).WithContext(ctx).Scan(
+		&roomID, &sender, &createdAt, &mentions, &threadParentID, &threadParentCreatedAt, &msg, &encPayload, &encMeta,
+	); err != nil {
+		if errors.Is(err, gocql.ErrNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("get quoted parent snapshot for message %s: %w", messageID, err)
+	}
+
+	if s.cipher != nil && len(encPayload) > 0 {
+		var nonce []byte
+		if encMeta != nil {
+			nonce = encMeta.Nonce
+		}
+		fields, err := s.cipher.Decrypt(ctx, roomID, encPayload, atrest.EncMeta{Nonce: nonce})
+		if err != nil {
+			return nil, false, fmt.Errorf("decrypt quoted parent %s: %w", messageID, err)
+		}
+		msg = fields.Msg
+	}
+
+	return &cassandra.QuotedParentMessage{
+		MessageID:             messageID,
+		RoomID:                roomID,
+		Sender:                sender,
+		CreatedAt:             createdAt,
+		Msg:                   msg,
+		Mentions:              mentions,
+		ThreadParentID:        threadParentID,
+		ThreadParentCreatedAt: threadParentCreatedAt,
+	}, true, nil
+}
+
 // GetMessageSender reads the sender UDT from messages_by_id for the given message ID.
 // Returns an error if the message does not exist.
 func (s *CassandraStore) GetMessageSender(ctx context.Context, messageID string) (*cassParticipant, error) {
