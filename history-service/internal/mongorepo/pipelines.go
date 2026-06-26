@@ -54,12 +54,8 @@ func followingThreadsPipeline(roomID, account string, accessSince *time.Time) bs
 func userThreadSubscriptionsPipeline(account string, cursorLastMsgAt *time.Time, cursorThreadRoomID string, limit int) bson.A {
 	pipeline := bson.A{
 		bson.D{{Key: "$match", Value: bson.M{"userAccount": account}}},
-		// Membership filter (applied first): keep only threads whose room the user
-		// is still subscribed to, keyed on the thread_subscription's own roomId so
-		// the thread_rooms/rooms joins below run only for accessible threads. The
-		// {$ne: []} existence match drops threads in rooms the user has left
-		// (their subscription is purged on leave; the thread_subscriptions row is
-		// not). Indexed point read on (u.account, roomId).
+		// Membership filter — join 1 above: keyed on the thread_subscription's own
+		// roomId so it runs before the thread_rooms/rooms joins.
 		bson.D{{Key: "$lookup", Value: bson.M{
 			"from": subscriptionsCollection,
 			"let":  bson.M{"rid": "$roomId"},
@@ -68,12 +64,13 @@ func userThreadSubscriptionsPipeline(account string, cursorLastMsgAt *time.Time,
 					"u.account": account,
 					"$expr":     bson.M{"$eq": bson.A{"$roomId", "$$rid"}},
 				}}},
-				bson.D{{Key: "$limit", Value: int64(1)}}, // existence only
 				bson.D{{Key: "$project", Value: bson.M{"_id": 1}}},
 			},
 			"as": "sub",
 		}}},
+		// {$ne: []} — $lookup sets "sub" to [] when no subscription matched; non-empty means subscribed.
 		bson.D{{Key: "$match", Value: bson.M{"sub": bson.M{"$ne": bson.A{}}}}},
+		bson.D{{Key: "$project", Value: bson.M{"sub": 0}}}, // drop before $sort — mirrors unreadThreadsPipeline
 		bson.D{{Key: "$lookup", Value: bson.M{
 			"from":         threadRoomsCollection,
 			"localField":   "threadRoomId",
