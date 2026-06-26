@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -12,6 +13,14 @@ import (
 	"github.com/hmchangw/chat/pkg/searchindex"
 	"github.com/hmchangw/chat/pkg/stream"
 )
+
+// parentCreatedAtResolver resolves a thread parent's authoritative createdAt.
+// ok=false means it couldn't (the caller keeps the client-supplied value). It
+// never errors — a resolution failure degrades the indexed field rather than
+// stalling indexing. Satisfied by *esParentResolver.
+type parentCreatedAtResolver interface {
+	ResolveParentCreatedAt(ctx context.Context, messageID string) (time.Time, bool)
+}
 
 // messageCollection implements Collection for message search sync.
 //
@@ -26,6 +35,12 @@ import (
 type messageCollection struct {
 	indexPrefix string
 	syncFrom    time.Time
+	// parentResolver re-resolves a thread reply's authoritative parent createdAt
+	// before indexing (search-service uses threadParentMessageCreatedAt for
+	// restricted-room access control), via an ES self-lookup of the parent's own
+	// server-stamped createdAt. nil disables it (used in tests) — the
+	// client-supplied value on the canonical event is then indexed as-is.
+	parentResolver parentCreatedAtResolver
 }
 
 func newMessageCollection(indexPrefix string, syncFrom time.Time) *messageCollection {
@@ -85,7 +100,24 @@ func (c *messageCollection) BuildAction(data []byte) ([]searchengine.BulkAction,
 	if evt.Event == model.EventReacted {
 		return nil, nil
 	}
+	c.resolveThreadParentCreatedAt(&evt)
 	return []searchengine.BulkAction{buildMessageAction(&evt, c.indexPrefix)}, nil
+}
+
+// resolveThreadParentCreatedAt stamps the event's ThreadParentMessageCreatedAt
+// with the parent's authoritative createdAt, re-resolved from the Elasticsearch
+// message index, before indexing. The canonical event no longer carries the
+// value, so this is the sole source for the indexed field. No-op when
+// re-resolution is disabled (nil resolver), for non-thread messages, and for
+// deletes (delete-by-id needs no parent stamp). On a miss it leaves the value
+// unset — resolution never fails the index action.
+func (c *messageCollection) resolveThreadParentCreatedAt(evt *model.MessageEvent) {
+	if c.parentResolver == nil || evt.Message.ThreadParentMessageID == "" || evt.Event == model.EventDeleted {
+		return
+	}
+	if createdAt, ok := c.parentResolver.ResolveParentCreatedAt(context.Background(), evt.Message.ThreadParentMessageID); ok {
+		evt.Message.ThreadParentMessageCreatedAt = &createdAt
+	}
 }
 
 // --- Message-specific internals ---
