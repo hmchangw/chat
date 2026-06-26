@@ -3680,7 +3680,7 @@ Additional legacy fields may be present, mirroring the `GET /api/v3/users` respo
 
 ### 3.4 user-service
 
-`user-service` exposes 10 NATS request/reply endpoints over **core NATS** (no JetStream consumers). All subjects follow the pattern `chat.user.{account}.request.user.{siteID}.<area>.<action>`.
+`user-service` exposes 11 NATS request/reply endpoints over **core NATS** (no JetStream consumers). All subjects follow the pattern `chat.user.{account}.request.user.{siteID}.<area>.<action>`.
 
 > **Events:** these endpoints emit no client-facing events. (`status.set` triggers a server-side cross-site federation update, which is internal and not delivered to clients.)
 
@@ -3696,6 +3696,7 @@ Additional legacy fields may be present, mirroring the `GET /api/v3/users` respo
 | `chat.user.{account}.request.user.{siteID}.subscription.count` | [`subscription.count`](#subscriptioncount) |
 | `chat.user.{account}.request.user.{siteID}.subscription.setAppSubscription` | [`subscription.setAppSubscription`](#subscriptionsetappsubscription) |
 | `chat.user.{account}.request.user.{siteID}.apps.list` | [`apps.list`](#appslist) |
+| `chat.user.{account}.request.user.{siteID}.thread.list` | [List User Threads](#list-user-threads) |
 
 #### status.getByName
 
@@ -4332,6 +4333,101 @@ Optional — an empty body returns the first page with defaults.
 | Condition | `code` | Notes |
 |-----------|--------|-------|
 | Internal failure | `internal` | — |
+
+---
+
+#### List User Threads
+
+**Subject:** `chat.user.{account}.request.user.{siteID}.thread.list`
+**Reply subject:** auto-generated `_INBOX.>` (NATS request/reply)
+
+- `{siteID}` is the **caller's own home site** — the site that holds the user's federated subscriptions and runs the aggregator.
+
+Returns the user's thread subscriptions across **all sites** as one globally-ordered "thread inbox", newest activity first. Each item carries the thread's parent and last message plus the owning room's name/type. `user-service` fans out a per-site query to **every configured federation site** (`ALL_SITE_IDS`, including the local site), and each site's `history-service` answers for its own threads; the results are merged into one ordered page.
+
+##### Request body
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `cursor` | string | no | Opaque pagination cursor from a previous response's `nextCursor`. Omit for the first page. |
+| `limit` | number | no | Page size. Default `20`, capped at `100`. |
+
+```json
+{
+  "limit": 20
+}
+```
+
+##### Success response
+
+| Field | Type | Notes |
+|---|---|---|
+| `items` | [ThreadListItem](#threadlistitem)[] | Thread subscriptions, ordered by last activity (newest first) across all sites. |
+| `nextCursor` | string | Optional. Opaque cursor for the next page; absent on the last page. |
+| `hasNext` | boolean | `true` if more threads exist beyond this page. |
+| `unavailableSites` | string[] | Optional. Sites that failed to respond for this page; their threads may appear on a later page once they recover. |
+
+###### ThreadListItem
+
+| Field | Type | Notes |
+|---|---|---|
+| `siteId` | string | The thread's owning site. |
+| `roomId` | string | The room the thread belongs to. |
+| `roomName` | string | The owning room's name (empty if the room doc is unavailable). |
+| `roomType` | string | The owning room's type (`channel`, `dm`, `botDM`, `discussion`). |
+| `threadRoomId` | string | The thread room ID. |
+| `parentMessageId` | string | The thread's parent (top-level) message ID. |
+| `lastSeenAt` | number | Optional. UTC ms the user last read the thread; absent if never opened. |
+| `hasMention` | boolean | The user was @-mentioned in the thread. |
+| `unread` | boolean | `true` when `lastMsgAt` is newer than `lastSeenAt` (or the thread was never opened). |
+| `lastMsgAt` | number | UTC ms of the thread's last activity — the global sort key. |
+| `parentMessage` | [Message](#message-schema) | Optional. The hydrated parent message; reply count rides on its `tcount`. |
+| `lastMessage` | [Message](#message-schema) | Optional. The hydrated last reply. |
+
+```json
+{
+  "items": [
+    {
+      "siteId": "site-a",
+      "roomId": "01970a4f8c2d7c9aQ",
+      "roomName": "rollout",
+      "roomType": "channel",
+      "threadRoomId": "01970a4f8c2d7c9aTHRD",
+      "parentMessageId": "01970a4f8c2d7c9aQRST",
+      "hasMention": true,
+      "unread": true,
+      "lastMsgAt": 1746518400000,
+      "parentMessage": {
+        "roomId": "01970a4f8c2d7c9aQ",
+        "messageId": "01970a4f8c2d7c9aQRST",
+        "sender": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9a", "account": "alice" },
+        "msg": "let's discuss the rollout",
+        "tcount": 3
+      },
+      "lastMessage": {
+        "roomId": "01970a4f8c2d7c9aQ",
+        "messageId": "01970a4f8c2d7c9aWXYZ",
+        "sender": { "id": "01970a4f8c2d7c9a01970a4f8c2d7c9b", "account": "bob" },
+        "msg": "shipping it"
+      }
+    }
+  ],
+  "nextCursor": "eyJsYXN0TXNnQXQiOjE3NDY1MTg0MDAwMDAsInRocmVhZFJvb21JZCI6IjAxOTcwYTRmOGMyZDdjOWFUSFJEIn0=",
+  "hasNext": true
+}
+```
+
+##### Error response
+
+See [Error envelope](#6-error-envelope-reference). A malformed `cursor` returns `bad_request`.
+
+##### Triggered events — success path
+
+`None — reply only.`
+
+##### Triggered events — error path
+
+`None — error returned only via the reply subject.`
 
 ---
 

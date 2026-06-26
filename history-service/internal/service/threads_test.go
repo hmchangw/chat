@@ -374,6 +374,7 @@ func TestHistoryService_GetThreadMessages_NoRoomTimesDependency(t *testing.T) {
 	rooms := mocks.NewMockRoomRepository(ctrl) // strict: any GetRoomTimes call fails
 	pub := mocks.NewMockEventPublisher(ctrl)
 	threadRooms := mocks.NewMockThreadRoomRepository(ctrl)
+	threadSubs := mocks.NewMockThreadSubscriptionRepository(ctrl)
 	users := mocks.NewMockUserStore(ctrl)
 	customEmojis := mocks.NewMockCustomEmojiStore(ctrl)
 	cfg := &config.Config{
@@ -382,7 +383,7 @@ func TestHistoryService_GetThreadMessages_NoRoomTimesDependency(t *testing.T) {
 		MaxPinnedPerRoom:        10,
 		PinEnabled:              true,
 	}
-	svc := service.New(msgs, subs, rooms, pub, threadRooms, users, customEmojis, cfg)
+	svc := service.New(msgs, subs, rooms, pub, threadRooms, threadSubs, users, customEmojis, cfg)
 	c := testContext()
 
 	parent := &models.Message{MessageID: "m-parent", RoomID: "r1", CreatedAt: joinTime.Add(5 * time.Minute), ThreadRoomID: "tr-1", TCount: intPtr(1)}

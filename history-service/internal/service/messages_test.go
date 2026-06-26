@@ -64,6 +64,7 @@ func newServiceWithRoomMock(t *testing.T) (*service.HistoryService, *mocks.MockM
 	rooms := mocks.NewMockRoomRepository(ctrl)
 	pub := mocks.NewMockEventPublisher(ctrl)
 	threadRooms := mocks.NewMockThreadRoomRepository(ctrl)
+	threadSubs := mocks.NewMockThreadSubscriptionRepository(ctrl)
 	users := mocks.NewMockUserStore(ctrl)
 	customEmojis := mocks.NewMockCustomEmojiStore(ctrl)
 	rooms.EXPECT().
@@ -80,7 +81,7 @@ func newServiceWithRoomMock(t *testing.T) (*service.HistoryService, *mocks.MockM
 		MaxPinnedPerRoom:        10,
 		PinEnabled:              true,
 	}
-	return service.New(msgs, subs, rooms, pub, threadRooms, users, customEmojis, cfg), msgs, subs, rooms, pub, threadRooms, users, customEmojis
+	return service.New(msgs, subs, rooms, pub, threadRooms, threadSubs, users, customEmojis, cfg), msgs, subs, rooms, pub, threadRooms, users, customEmojis
 }
 
 // assertInternalErr verifies err collapses to the generic "internal error" envelope at the
@@ -281,6 +282,7 @@ func TestHistoryService_LoadHistory_AccessErrorTakesPrecedence(t *testing.T) {
 	rooms := mocks.NewMockRoomRepository(ctrl)
 	pub := mocks.NewMockEventPublisher(ctrl)
 	threadRooms := mocks.NewMockThreadRoomRepository(ctrl)
+	threadSubs := mocks.NewMockThreadSubscriptionRepository(ctrl)
 	users := mocks.NewMockUserStore(ctrl)
 	customEmojis := mocks.NewMockCustomEmojiStore(ctrl)
 	cfg := &config.Config{
@@ -289,7 +291,7 @@ func TestHistoryService_LoadHistory_AccessErrorTakesPrecedence(t *testing.T) {
 		MaxPinnedPerRoom:        10,
 		PinEnabled:              true,
 	}
-	svc := service.New(msgs, subs, rooms, pub, threadRooms, users, customEmojis, cfg)
+	svc := service.New(msgs, subs, rooms, pub, threadRooms, threadSubs, users, customEmojis, cfg)
 	c := testContext()
 
 	subs.EXPECT().GetHistorySharedSince(gomock.Any(), "u1", "r1").Return(nil, false, errors.New("access db error"))
