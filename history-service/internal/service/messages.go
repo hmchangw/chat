@@ -279,6 +279,7 @@ func (s *HistoryService) GetMessageByID(c *natsrouter.Context, req models.GetMes
 	}
 
 	redactUnavailableQuote(msg, accessSince)
+	decodeMessageAttachments(c, msg)
 	return msg, nil
 }
 
@@ -322,6 +323,7 @@ func (s *HistoryService) GetMessagesByIDs(c *natsrouter.Context, req models.GetM
 	}
 
 	redactUnavailableQuotes(kept, accessSince)
+	setDecodedAttachments(c, kept)
 	return &models.GetMessagesByIDsResponse{Messages: kept}, nil
 }
 
