@@ -194,10 +194,11 @@ func (s *HistoryService) ListThreadSubscriptions(c *natsrouter.Context, req pkgm
 	return &pkgmodel.ThreadSubscriptionListResponse{Items: items, HasMore: hasMore}, nil
 }
 
-// buildThreadItems hydrates one page of thread rows into list items, attaching
-// each thread's parent and last message when present in Cassandra. Room access
-// is not re-checked here: every row is the user's own thread subscription on
-// this site, so all are returned.
+// buildThreadItems hydrates one page of thread rows into list items. A thread is
+// included only when BOTH its parent and last message hydrate from Cassandra; a
+// row missing either (hard-deleted, or not yet replicated) is skipped rather than
+// surfaced as a half-empty item. Room access is not re-checked here: every row is
+// the user's own thread subscription on this site.
 func (s *HistoryService) buildThreadItems(c *natsrouter.Context, rows []mongorepo.ThreadSubRow) ([]pkgmodel.ThreadListItem, error) {
 	items := make([]pkgmodel.ThreadListItem, 0, len(rows))
 	if len(rows) == 0 {
@@ -217,6 +218,11 @@ func (s *HistoryService) buildThreadItems(c *natsrouter.Context, rows []mongorep
 
 	for i := range rows {
 		row := rows[i]
+		parent, hasParent := msgByID[row.ParentMessageID]
+		last, hasLast := msgByID[row.LastMsgID]
+		if !hasParent || !hasLast {
+			continue // skip threads we can't fully hydrate
+		}
 		item := pkgmodel.ThreadListItem{
 			SiteID:          row.SiteID,
 			RoomID:          row.RoomID,
@@ -232,12 +238,8 @@ func (s *HistoryService) buildThreadItems(c *natsrouter.Context, rows []mongorep
 			ms := row.LastSeenAt.UTC().UnixMilli()
 			item.LastSeenAt = &ms
 		}
-		if parent, ok := msgByID[row.ParentMessageID]; ok {
-			item.ParentMessage = &parent
-		}
-		if last, ok := msgByID[row.LastMsgID]; ok {
-			item.LastMessage = &last
-		}
+		item.ParentMessage = &parent
+		item.LastMessage = &last
 		items = append(items, item)
 	}
 	return items, nil

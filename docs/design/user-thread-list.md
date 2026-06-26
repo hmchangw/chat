@@ -248,7 +248,14 @@ Aggregation pipeline on `thread_subscriptions`:
 - **Messages** — collect the page's distinct `parentMessageId` ∪ `lastMsgId` and
   hydrate with a **single** batched `GetMessagesByIDs` against `messages_by_id`
   (already exists), local to the site. Attach `parentMessage`/`lastMessage`; the
-  reply count rides on `parentMessage.TCount` (no separate item field).
+  reply count rides on `parentMessage.TCount` (no separate item field). A thread
+  is included only when **both** bodies hydrate — a row missing either (hard-
+  deleted, or not yet replicated) is dropped rather than surfaced half-empty.
+  (Edge case: a page whose rows are *all* unhydratable returns empty while
+  `HasMore` is set; the cross-site aggregator then has no item to derive
+  `NextCursor` from and reports `HasNext` without a cursor. Accepted given rarity
+  — it needs a whole contiguous page of hard-deleted parents/last-messages — but
+  if it ever bites, the leaf would need a fill/continuation step.)
 - **Room meta** — `roomName`/`roomType` ride in on the rows via a second
   `$lookup` (on `rooms`) **placed after `$limit`** in the aggregation, so it
   enriches only the ≤`limit+1` page rows with indexed `_id` point reads. This is

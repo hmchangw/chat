@@ -134,26 +134,63 @@ func TestHistoryService_ListThreadSubscriptions_ReturnsAllRowsNoAccessCheck(t *t
 // A thread whose parent is old (or whose parent was deleted and is absent from
 // hydration) is still returned — there is no access window to filter against.
 // A missing parent simply yields a nil ParentMessage.
-func TestHistoryService_ListThreadSubscriptions_KeepsThreadWithDeletedParent(t *testing.T) {
+// A thread whose parent or last message can't be hydrated (hard-deleted, or not
+// yet replicated) is dropped rather than surfaced as a half-empty item.
+func TestHistoryService_ListThreadSubscriptions_DropsUnhydratableThreads(t *testing.T) {
+	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name     string
+		returned []models.Message // what Cassandra hydration yields
+	}{
+		{
+			name:     "parent missing",
+			returned: []models.Message{{MessageID: "m1", RoomID: "r1", CreatedAt: base.Add(5 * time.Hour)}},
+		},
+		{
+			name:     "last message missing",
+			returned: []models.Message{{MessageID: "p1", RoomID: "r1", CreatedAt: base.Add(5 * time.Hour)}},
+		},
+		{
+			name:     "both missing",
+			returned: []models.Message{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc, msgs, _, _, threadSubs := newThreadListService(t)
+			rows := []mongorepo.ThreadSubRow{
+				{ThreadRoomID: "tr-1", RoomID: "r1", SiteID: "site-a", ParentMessageID: "p1", LastMsgID: "m1", LastMsgAt: base.Add(5 * time.Hour)},
+			}
+			threadSubs.EXPECT().ListUserThreadSubscriptions(gomock.Any(), "alice", gomock.Any(), gomock.Any(), gomock.Any()).Return(rows, false, nil)
+			msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return(tt.returned, nil)
+
+			resp, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice", Limit: 10})
+			require.NoError(t, err)
+			assert.Empty(t, resp.Items)
+		})
+	}
+}
+
+// A fully-hydratable thread is kept even when its room doc is missing — only the
+// message bodies gate inclusion, not the room name/type enrichment.
+func TestHistoryService_ListThreadSubscriptions_KeepsHydratableThread(t *testing.T) {
 	svc, msgs, _, _, threadSubs := newThreadListService(t)
 	base := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
 
 	rows := []mongorepo.ThreadSubRow{
-		{ThreadRoomID: "tr-gone", RoomID: "r1", SiteID: "site-a", ParentMessageID: "p-gone", LastMsgID: "m-gone", LastMsgAt: base.Add(5 * time.Hour)},
+		{ThreadRoomID: "tr-1", RoomID: "r1", SiteID: "site-a", ParentMessageID: "p1", LastMsgID: "m1", LastMsgAt: base.Add(5 * time.Hour)},
 	}
 	threadSubs.EXPECT().ListUserThreadSubscriptions(gomock.Any(), "alice", gomock.Any(), gomock.Any(), gomock.Any()).Return(rows, false, nil)
-	// Parent absent from hydration (deleted); last message present.
 	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return([]models.Message{
-		{MessageID: "m-gone", RoomID: "r1", CreatedAt: base.Add(5 * time.Hour)},
+		{MessageID: "p1", RoomID: "r1"}, {MessageID: "m1", RoomID: "r1"},
 	}, nil)
 
 	resp, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice", Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, resp.Items, 1)
-	assert.Equal(t, "tr-gone", resp.Items[0].ThreadRoomID)
-	assert.Nil(t, resp.Items[0].ParentMessage)
+	assert.Equal(t, "tr-1", resp.Items[0].ThreadRoomID)
+	require.NotNil(t, resp.Items[0].ParentMessage)
 	require.NotNil(t, resp.Items[0].LastMessage)
-	assert.Equal(t, "m-gone", resp.Items[0].LastMessage.MessageID)
 }
 
 func TestHistoryService_ListThreadSubscriptions_MissingRoomMetaDegrades(t *testing.T) {
@@ -166,7 +203,7 @@ func TestHistoryService_ListThreadSubscriptions_MissingRoomMetaDegrades(t *testi
 	}
 	threadSubs.EXPECT().ListUserThreadSubscriptions(gomock.Any(), "alice", gomock.Any(), gomock.Any(), gomock.Any()).Return(rows, false, nil)
 	msgs.EXPECT().GetMessagesByIDs(gomock.Any(), gomock.Any()).Return([]models.Message{
-		{MessageID: "p1", RoomID: "r1"},
+		{MessageID: "p1", RoomID: "r1"}, {MessageID: "m1", RoomID: "r1"},
 	}, nil)
 
 	resp, err := svc.ListThreadSubscriptions(testContext(), pkgmodel.ThreadSubscriptionListRequest{Account: "alice"})
