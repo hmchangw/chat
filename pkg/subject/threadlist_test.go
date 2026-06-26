@@ -20,8 +20,6 @@ func TestThreadListSubjectBuilders(t *testing.T) {
 			"chat.user.{account}.request.user.site-a.thread.list"},
 		{"ThreadSubscriptionList", subject.ThreadSubscriptionList("site-a"),
 			"chat.server.request.thread.site-a.subscription.list"},
-		{"ThreadSubscriptionListSubscribe", subject.ThreadSubscriptionListSubscribe("site-a"),
-			"chat.server.request.thread.site-a.subscription.list"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -248,14 +248,9 @@ func ThreadUnreadSummary(siteID string) string {
 
 // ThreadSubscriptionList is the server-to-server request subject for the per-site
 // leaf of the cross-site thread inbox: the user-service aggregator fans out one
-// request per candidate site to history-service. Mirrors RoomsInfoBatch.
+// request per candidate site to history-service, which subscribes on the same
+// subject. Mirrors RoomsInfoBatch.
 func ThreadSubscriptionList(siteID string) string {
-	return fmt.Sprintf("chat.server.request.thread.%s.subscription.list", siteID)
-}
-
-// ThreadSubscriptionListSubscribe is the per-site subscription subject
-// history-service uses to receive ThreadSubscriptionList requests.
-func ThreadSubscriptionListSubscribe(siteID string) string {
 	return fmt.Sprintf("chat.server.request.thread.%s.subscription.list", siteID)
 }
 

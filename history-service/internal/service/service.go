@@ -175,7 +175,7 @@ func (s *HistoryService) RegisterHandlers(r *natsrouter.Router, siteID string) {
 	natsrouter.Register(r, subject.MigrationInternalMsgDelete(siteID), func(c *natsrouter.Context, req pkgmodel.MigrationDeleteRequest) (*pkgmodel.MigrationAck, error) {
 		return s.MigrationDeleteMessage(c, siteID, req)
 	})
-	natsrouter.Register(r, subject.ThreadSubscriptionListSubscribe(siteID), s.ListThreadSubscriptions)
+	natsrouter.Register(r, subject.ThreadSubscriptionList(siteID), s.ListThreadSubscriptions)
 }
 
 // Compile-time checks.
