@@ -817,9 +817,12 @@ func (s *MongoStore) attachUserDisplayNames(ctx context.Context, roomID string, 
 			continue
 		}
 		acct := members[i].Member.Account
+		members[i].Member.AccountName = strings.ToUpper(acct)
 		if u, ok := userByAccount[acct]; ok {
 			members[i].Member.EngName = u.EngName
 			members[i].Member.ChineseName = u.ChineseName
+			members[i].Member.SectName = u.SectName
+			members[i].Member.EmployeeID = u.EmployeeID
 			continue
 		}
 		if name, ok := appByAssistant[acct]; ok {
@@ -835,7 +838,7 @@ func (s *MongoStore) attachUserDisplayNames(ctx context.Context, roomID string, 
 func (s *MongoStore) findUsersForDisplay(ctx context.Context, accounts []string) (map[string]*model.User, error) {
 	cursor, err := s.users.Find(ctx,
 		bson.M{"account": bson.M{"$in": accounts}},
-		options.Find().SetProjection(bson.M{"_id": 0, "account": 1, "engName": 1, "chineseName": 1}),
+		options.Find().SetProjection(bson.M{"_id": 0, "account": 1, "engName": 1, "chineseName": 1, "sectName": 1, "employeeId": 1}),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("find users for display: %w", err)
