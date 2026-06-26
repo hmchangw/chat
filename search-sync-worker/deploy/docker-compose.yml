@@ -23,6 +23,11 @@ services:
       # skipped — used during legacy-data migration. Leave unset/empty
       # in local dev so all messages get indexed.
       # - SYNC_MESSAGES_FROM=2026-01-01
+      # Optional: re-resolve a thread reply's authoritative parent createdAt from
+      # messages_by_id before indexing (search uses it for restricted-room access
+      # control). Off unless CASSANDRA_HOSTS is set; requires a reachable Cassandra.
+      # - CASSANDRA_HOSTS=cassandra
+      # - CASSANDRA_KEYSPACE=chat
     volumes:
       - ../../docker-local/backend.creds:/etc/nats/backend.creds:ro
     networks:

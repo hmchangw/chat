@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -12,6 +13,17 @@ import (
 	"github.com/hmchangw/chat/pkg/searchindex"
 	"github.com/hmchangw/chat/pkg/stream"
 )
+
+// parentResolveTimeout bounds the authoritative thread-parent createdAt lookup
+// so a slow history store can't stall the indexing path indefinitely.
+const parentResolveTimeout = 2 * time.Second
+
+// parentCreatedAtResolver resolves a message's authoritative createdAt by ID.
+// found=false with a nil error means no row matched. Mirrors message-worker's
+// GetMessageCreatedAt point read; satisfied by a Cassandra-backed reader.
+type parentCreatedAtResolver interface {
+	GetMessageCreatedAt(ctx context.Context, messageID string) (time.Time, bool, error)
+}
 
 // messageCollection implements Collection for message search sync.
 //
@@ -26,6 +38,11 @@ import (
 type messageCollection struct {
 	indexPrefix string
 	syncFrom    time.Time
+	// parentResolver re-resolves a thread reply's authoritative parent createdAt
+	// from message history before indexing. nil disables it (the indexed value
+	// stays the client-supplied one carried on the canonical event). Wired in
+	// main.go only when CASSANDRA_HOSTS is set.
+	parentResolver parentCreatedAtResolver
 }
 
 func newMessageCollection(indexPrefix string, syncFrom time.Time) *messageCollection {
@@ -85,7 +102,38 @@ func (c *messageCollection) BuildAction(data []byte) ([]searchengine.BulkAction,
 	if evt.Event == model.EventReacted {
 		return nil, nil
 	}
+	// Re-stamp the thread parent's createdAt from authoritative history before
+	// indexing. The canonical event carries the client-supplied value, and
+	// search-service uses threadParentMessageCreatedAt for restricted-room access
+	// control (query_messages.go restrictedRoomClauseB) — so an untrusted value
+	// could leak history a user never had access to.
+	if err := c.resolveThreadParentCreatedAt(&evt); err != nil {
+		return nil, err
+	}
 	return []searchengine.BulkAction{buildMessageAction(&evt, c.indexPrefix)}, nil
+}
+
+// resolveThreadParentCreatedAt overwrites the client-supplied
+// ThreadParentMessageCreatedAt with the authoritative value from history. It is
+// a no-op when re-resolution is disabled (nil resolver), for non-thread
+// messages, and for deletes (delete-by-id needs no parent stamp). On a miss it
+// keeps the client value as a best-effort fallback (the parent may not be
+// persisted yet — a later reindex/replay corrects it); a resolver error is
+// returned so the message NAKs and JetStream redelivers.
+func (c *messageCollection) resolveThreadParentCreatedAt(evt *model.MessageEvent) error {
+	if c.parentResolver == nil || evt.Message.ThreadParentMessageID == "" || evt.Event == model.EventDeleted {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), parentResolveTimeout)
+	defer cancel()
+	createdAt, found, err := c.parentResolver.GetMessageCreatedAt(ctx, evt.Message.ThreadParentMessageID)
+	if err != nil {
+		return fmt.Errorf("resolve thread parent createdAt for %s: %w", evt.Message.ThreadParentMessageID, err)
+	}
+	if found {
+		evt.Message.ThreadParentMessageCreatedAt = &createdAt
+	}
+	return nil
 }
 
 // --- Message-specific internals ---

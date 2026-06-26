@@ -8,10 +8,12 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
+	"github.com/gocql/gocql"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
 
+	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/health"
 	"github.com/hmchangw/chat/pkg/jobguard"
 	"github.com/hmchangw/chat/pkg/natsutil"
@@ -89,6 +91,19 @@ type config struct {
 	// idle / low-traffic periods.
 	BulkFlushInterval int `env:"BULK_FLUSH_INTERVAL" envDefault:"5"`
 
+	// Cassandra backs the optional thread-parent createdAt re-resolution. When
+	// CassandraHosts is empty the feature is disabled and the messages collection
+	// indexes the client-supplied threadParentMessageCreatedAt as-is; when set,
+	// thread replies are re-stamped with the authoritative value from
+	// messages_by_id before indexing (search uses it for restricted-room access
+	// control). Opt-in so search-sync-worker isn't forced into a Cassandra
+	// dependency where the feature isn't needed.
+	CassandraHosts    string `env:"CASSANDRA_HOSTS"     envDefault:""`
+	CassandraKeyspace string `env:"CASSANDRA_KEYSPACE"  envDefault:"chat"`
+	CassandraUsername string `env:"CASSANDRA_USERNAME"  envDefault:""`
+	CassandraPassword string `env:"CASSANDRA_PASSWORD"  envDefault:""`
+	CassandraNumConns int    `env:"CASSANDRA_NUM_CONNS" envDefault:"8"`
+
 	Consumer  stream.ConsumerSettings `envPrefix:"CONSUMER_"`
 	Bootstrap bootstrapConfig         `envPrefix:"BOOTSTRAP_"`
 }
@@ -164,8 +179,28 @@ func main() {
 		os.Exit(1)
 	}
 
+	msgColl := newMessageCollection(cfg.MsgIndexPrefix, syncMessagesFrom)
+	// Optional: re-resolve thread-parent createdAt from Cassandra before indexing.
+	// Disabled (and no Cassandra connection) when CASSANDRA_HOSTS is unset.
+	var cassSession *gocql.Session
+	if cfg.CassandraHosts != "" {
+		cassSession, err = cassutil.Connect(cassutil.Config{
+			Hosts:    cfg.CassandraHosts,
+			Keyspace: cfg.CassandraKeyspace,
+			Username: cfg.CassandraUsername,
+			Password: cfg.CassandraPassword,
+			NumConns: cfg.CassandraNumConns,
+		})
+		if err != nil {
+			slog.Error("cassandra connect failed", "error", err)
+			os.Exit(1)
+		}
+		msgColl.parentResolver = newCassParentResolver(cassSession)
+		slog.Info("thread-parent createdAt re-resolution enabled", "keyspace", cfg.CassandraKeyspace)
+	}
+
 	collections := []Collection{
-		newMessageCollection(cfg.MsgIndexPrefix, syncMessagesFrom),
+		msgColl,
 		newSpotlightCollection(cfg.SpotlightIndex),
 		newUserRoomCollection(cfg.UserRoomIndex),
 	}
@@ -292,6 +327,12 @@ func main() {
 				case <-ctx.Done():
 					return fmt.Errorf("consumer loop drain timed out: %w", ctx.Err())
 				}
+			}
+			return nil
+		},
+		func(context.Context) error {
+			if cassSession != nil {
+				cassSession.Close()
 			}
 			return nil
 		},
