@@ -594,6 +594,7 @@ func (s *MongoStore) attachOrgDisplay(ctx context.Context, roomID string, member
 			members[i].Member.MemberCount = a.memberCount
 		}
 		members[i].Member.OrgName = orgDisplaySectName(agg[id], id)
+		members[i].Member.OrgDescription = orgDisplayDescription(agg[id])
 	}
 	return nil
 }
@@ -610,13 +611,15 @@ func (s *MongoStore) fetchOrgDisplayUsers(ctx context.Context, orgIDs []string) 
 			{"sectId": bson.M{"$in": orgIDs}},
 		}},
 		options.Find().SetProjection(bson.M{
-			"_id":        0,
-			"deptId":     1,
-			"sectId":     1,
-			"deptName":   1,
-			"deptTCName": 1,
-			"sectName":   1,
-			"sectTCName": 1,
+			"_id":             0,
+			"deptId":          1,
+			"sectId":          1,
+			"deptName":        1,
+			"deptTCName":      1,
+			"sectName":        1,
+			"sectTCName":      1,
+			"deptDescription": 1,
+			"sectDescription": 1,
 		}),
 	)
 	if err != nil {

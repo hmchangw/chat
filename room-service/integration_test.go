@@ -2682,6 +2682,85 @@ func TestMongoStore_ListRoomMembers_OrgDisplay_FallbackToOrgId_Integration(t *te
 	assert.Equal(t, "Y", got[0].Member.OrgName, "no matching users → falls back to member.id")
 }
 
+func TestMongoStore_ListRoomMembers_OrgDescription_Integration(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("dept-first description wins", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		require.NoError(t, store.EnsureIndexes(ctx))
+
+		const roomID = "room-1"
+		_, err := db.Collection("users").InsertOne(ctx, model.User{
+			ID: "u_alice", Account: "alice", SiteID: "site-a",
+			DeptID: "X", DeptName: "Engineering", DeptDescription: "Dept desc",
+		})
+		require.NoError(t, err)
+		_, err = db.Collection("users").InsertOne(ctx, model.User{
+			ID: "u_bob", Account: "bob", SiteID: "site-a",
+			SectID: "X", SectName: "Sect", SectDescription: "Sect desc",
+		})
+		require.NoError(t, err)
+		_, err = db.Collection("room_members").InsertOne(ctx, model.RoomMember{
+			ID: idgen.GenerateUUIDv7(), RoomID: roomID,
+			Member: model.RoomMemberEntry{ID: "X", Type: model.RoomMemberOrg},
+		})
+		require.NoError(t, err)
+
+		got, err := store.ListRoomMembers(ctx, roomID, nil, nil, true)
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		assert.Equal(t, "Dept desc", got[0].Member.OrgDescription)
+	})
+
+	t.Run("sect-only org uses sect description", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		require.NoError(t, store.EnsureIndexes(ctx))
+
+		const roomID = "room-2"
+		_, err := db.Collection("users").InsertOne(ctx, model.User{
+			ID: "u_c", Account: "c", SiteID: "site-a",
+			SectID: "S", SectName: "Sect", SectDescription: "Sect desc",
+		})
+		require.NoError(t, err)
+		_, err = db.Collection("room_members").InsertOne(ctx, model.RoomMember{
+			ID: idgen.GenerateUUIDv7(), RoomID: roomID,
+			Member: model.RoomMemberEntry{ID: "S", Type: model.RoomMemberOrg},
+		})
+		require.NoError(t, err)
+
+		got, err := store.ListRoomMembers(ctx, roomID, nil, nil, true)
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		assert.Equal(t, "Sect desc", got[0].Member.OrgDescription)
+	})
+
+	t.Run("missing description omitted", func(t *testing.T) {
+		db := setupMongo(t)
+		store := NewMongoStore(db)
+		require.NoError(t, store.EnsureIndexes(ctx))
+
+		const roomID = "room-3"
+		_, err := db.Collection("users").InsertOne(ctx, model.User{
+			ID: "u_d", Account: "d", SiteID: "site-a",
+			SectID: "S2", SectName: "Sect2",
+		})
+		require.NoError(t, err)
+		_, err = db.Collection("room_members").InsertOne(ctx, model.RoomMember{
+			ID: idgen.GenerateUUIDv7(), RoomID: roomID,
+			Member: model.RoomMemberEntry{ID: "S2", Type: model.RoomMemberOrg},
+		})
+		require.NoError(t, err)
+
+		got, err := store.ListRoomMembers(ctx, roomID, nil, nil, true)
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		assert.Empty(t, got[0].Member.OrgDescription)
+		assert.Equal(t, "Sect2", got[0].Member.OrgName)
+	})
+}
+
 func TestMongoStore_ListDefaultChannelTabApps(t *testing.T) {
 	db := setupMongo(t)
 	store := NewMongoStore(db)

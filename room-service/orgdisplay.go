@@ -5,24 +5,28 @@ import "github.com/hmchangw/chat/pkg/displayfmt"
 // orgDisplayUser is the projected user row used to resolve org-member display
 // names. Only the dept/sect identity and name fields are read.
 type orgDisplayUser struct {
-	DeptID     string `bson:"deptId"`
-	SectID     string `bson:"sectId"`
-	DeptName   string `bson:"deptName"`
-	DeptTCName string `bson:"deptTCName"`
-	SectName   string `bson:"sectName"`
-	SectTCName string `bson:"sectTCName"`
+	DeptID          string `bson:"deptId"`
+	SectID          string `bson:"sectId"`
+	DeptName        string `bson:"deptName"`
+	DeptTCName      string `bson:"deptTCName"`
+	SectName        string `bson:"sectName"`
+	SectTCName      string `bson:"sectTCName"`
+	DeptDescription string `bson:"deptDescription"`
+	SectDescription string `bson:"sectDescription"`
 }
 
 // orgDisplayAgg is the per-org rollup that drives the member.sectName display
 // string and member.memberCount. It mirrors the fields the prior in-pipeline
 // $group produced.
 type orgDisplayAgg struct {
-	isDept      bool
-	deptName    string
-	deptTCName  string
-	sectName    string
-	sectTCName  string
-	memberCount int
+	isDept          bool
+	deptName        string
+	deptTCName      string
+	sectName        string
+	sectTCName      string
+	deptDescription string
+	sectDescription string
+	memberCount     int
 }
 
 // buildOrgDisplay rolls up the candidate users (those whose deptId or sectId
@@ -67,6 +71,9 @@ func buildOrgDisplay(orgIDs []string, users []orgDisplayUser) map[string]*orgDis
 			if u.DeptTCName > a.deptTCName {
 				a.deptTCName = u.DeptTCName
 			}
+			if u.DeptDescription > a.deptDescription {
+				a.deptDescription = u.DeptDescription
+			}
 		}
 		// Sect match only when sectId differs from a dept match on the same user,
 		// so a deptId == sectId user is not double-counted (dept takes precedence).
@@ -78,6 +85,9 @@ func buildOrgDisplay(orgIDs []string, users []orgDisplayUser) map[string]*orgDis
 			}
 			if u.SectTCName > a.sectTCName {
 				a.sectTCName = u.SectTCName
+			}
+			if u.SectDescription > a.sectDescription {
+				a.sectDescription = u.SectDescription
 			}
 		}
 	}
@@ -101,4 +111,16 @@ func orgDisplaySectName(a *orgDisplayAgg, orgID string) string {
 		}
 	}
 	return displayfmt.CombineWithFallback(name, tcName, orgID)
+}
+
+// orgDisplayDescription renders an org's description with the same dept-first
+// tiebreak as orgDisplaySectName, but with an empty fallback (omitted on the wire).
+func orgDisplayDescription(a *orgDisplayAgg) string {
+	if a == nil {
+		return ""
+	}
+	if a.isDept && a.deptDescription != "" {
+		return a.deptDescription
+	}
+	return a.sectDescription
 }
