@@ -28,6 +28,17 @@ type Client interface {
 	// concurrent or repeated calls with the same ExternalID return the same
 	// meeting — Graph itself is the idempotency source of truth.
 	CreateOnlineMeeting(ctx context.Context, req CreateOnlineMeetingRequest) (*OnlineMeeting, error)
+
+	// ListUsers returns all tenant users (id + mail + userPrincipalName),
+	// following @odata.nextLink paging. App-only (User.Read.All).
+	ListUsers(ctx context.Context) ([]GraphUser, error)
+}
+
+// GraphUser is the subset of a Graph user resource the presence sync needs.
+type GraphUser struct {
+	ID                string `json:"id"`
+	Mail              string `json:"mail"`
+	UserPrincipalName string `json:"userPrincipalName"`
 }
 
 // CreateOnlineMeetingRequest carries the attributes used to create a meeting.
@@ -184,6 +195,76 @@ func (g *graphClient) accessToken(ctx context.Context) (string, error) {
 	}
 	g.tokenAt = time.Now().Add(lifetime - tokenExpirySkew)
 	return g.token, nil
+}
+
+type graphUserPage struct {
+	Value    []GraphUser `json:"value"`
+	NextLink string      `json:"@odata.nextLink"`
+}
+
+// ListUsers returns all tenant users, following @odata.nextLink paging.
+func (g *graphClient) ListUsers(ctx context.Context) ([]GraphUser, error) {
+	token, err := g.accessToken(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("acquire graph token: %w", err)
+	}
+	base, err := url.Parse(g.baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse graph base url: %w", err)
+	}
+	next := g.baseURL + "/users?$select=id,mail,userPrincipalName&$top=999"
+	var out []GraphUser
+	for next != "" {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, next, nil)
+		if err != nil {
+			return nil, fmt.Errorf("build list-users request: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := g.httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("list users: %w", err)
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<22))
+		closeErr := resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("read list-users response: %w", err)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("close list-users response: %w", closeErr)
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("list users: graph returned status %d", resp.StatusCode)
+		}
+		var page graphUserPage
+		if err := json.Unmarshal(body, &page); err != nil {
+			return nil, fmt.Errorf("decode list-users response: %w", err)
+		}
+		out = append(out, page.Value...)
+		// Validate the server-supplied nextLink before re-sending the bearer
+		// token to it: a tampered/unexpected host would leak the token (SSRF).
+		next, err = sameOriginNextLink(base, page.NextLink)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// sameOriginNextLink returns nextLink only when its scheme+host match base;
+// "" terminates paging. Any other host is rejected so the bearer token is never
+// sent off-origin.
+func sameOriginNextLink(base *url.URL, nextLink string) (string, error) {
+	if nextLink == "" {
+		return "", nil
+	}
+	nl, err := url.Parse(nextLink)
+	if err != nil {
+		return "", fmt.Errorf("parse list-users nextLink: %w", err)
+	}
+	if !strings.EqualFold(nl.Scheme, base.Scheme) || !strings.EqualFold(nl.Host, base.Host) {
+		return "", fmt.Errorf("list users: unexpected nextLink host %q", nl.Host)
+	}
+	return nl.String(), nil
 }
 
 // onlineMeetingPayload is the Graph createOrGet-onlineMeeting request body.
