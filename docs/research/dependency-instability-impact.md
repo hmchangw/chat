@@ -15,7 +15,7 @@ to the automated fetcher; claims resting on search-summary extracts are flagged.
 
 | Rank | Risk | Why it matters here | Action |
 |------|------|--------------------|--------|
-| 1 | **Federation publish has no durable local buffer (no OUTBOX)** | Cross-site events are a blocking JetStream publish straight into the *remote* site's INBOX over a supercluster gateway. Streams never cross gateways, so a gateway partition or publisher crash drops the event — there is no origin-side retry/persistent queue in the code. | Add an origin-side durable retry/outbox-equivalent; keep INBOX consumers idempotent. |
+| 1 | **Federation durability is split: only consumer-originated events have an implicit outbox** | Cross-site events are a blocking JetStream publish into the *remote* site's INBOX over a gateway; streams never cross gateways. Events published from a **JetStream consumer** (messages, room membership) get a free outbox — a failed PubAck Naks the source message, which redelivers from the durable source stream. Events published from a **request/reply handler** (subscription read/mute/favorite, role_updated, room_restricted in room-service) have **no source stream to redeliver**: the local Mongo write commits, the inline publish fails, the client gets an error, and local/remote silently diverge. | Consumer paths: raise `MaxDeliver`+BackOff so a partition delays rather than drops (and pin source streams R3+file). Request/reply paths: route through a durable local stream + async federating consumer. |
 | 2 | **Stream replica count (R1 vs R3) is not set in code** | `pkg/stream/stream.go` defines only `Name + Subjects`. `MESSAGES_CANONICAL` (single source of truth) and `INBOX` (federation ingress) **must be R3 + file storage** in prod, but nothing in the repo enforces it — dev bootstrap is minimal (effectively R1). | Verify production IaC pins R3 + file storage for these streams; consider `sync_interval` posture. |
 | 3 | **MongoDB write/read concern uses driver defaults (untuned)** | Rooms/subscriptions are control-plane truth; a `w:1`-class write can be rolled back on primary stepdown. The code sets no explicit concern. | Pin `w:majority` + journaling as the connection-string default; use `majority` read concern on authz/membership reads. |
 | 4 | **Security patch hygiene** | 2024–2025 brought a critical NATS authz-bypass (CVSS 9.6), a critical Redis/Valkey Lua RCE (CVE-2025-49844), and an exploited MongoDB info-leak (MongoBleed). | Pin patched builds (versions below). |
@@ -36,10 +36,28 @@ Concrete, citable facts that ground the analysis below:
 - **Stream schema** (`pkg/stream/stream.go`) defines **only `Name + Subjects`** — Replicas/Storage/Retention/MaxAge
   are **ops/IaC-controlled, not in code**. Dev bootstrap (`<service>/bootstrap.go`) calls `CreateOrUpdateStream`
   with minimal config.
-- **Cross-site publish** is a JetStream publish to `chat.inbox.{destSiteID}.external.{eventType}` that **blocks on
-  PubAck** and carries `jetstream.WithMsgID(...)` for server-side dedup (`room-worker/main.go`,
-  `message-gatekeeper/handler.go`). Dedup keys are built by `pkg/natsutil/canonical_dedup.go` (`CanonicalDedupID`).
-  **No origin-side retry/persistent buffer** was found (confirmed under "Not Found: retry/backoff").
+- **Cross-site publish** is a synchronous JetStream publish to `chat.inbox.{destSiteID}.external.{eventType}` that
+  **blocks on PubAck** (`message-worker/main.go:161`) and carries `jetstream.WithMsgID(...)` for server-side dedup.
+  Dedup keys are built by `pkg/natsutil/canonical_dedup.go` (`CanonicalDedupID`) and `natsutil.InboxDedupID`.
+  **The origin-side durable buffer is the source stream itself** for events published inside a JetStream consumer:
+  a failed publish returns an error → the handler Naks → the message redelivers from the durable source stream and
+  the publish retries. This holds for `message-worker` (consumes `MESSAGES_CANONICAL`) and `room-worker` (consumes
+  `ROOMS`; external publish error returned at `room-worker/handler.go:514`). It does **not** hold for `room-service`
+  cross-site publishes (`subscription_read`, `thread_read`, `mute_toggled`, `favorite_toggled`, `role_updated`,
+  `room_restricted`), which are emitted inline from request/reply handlers (e.g. `room-service/handler.go:2035`):
+  the local Mongo write commits first, then the publish; on failure the handler returns the error to the client
+  (`...:2036`) with no durable source message to redeliver. `user-service` status publishes are best-effort by
+  design (`status.go:112` — logged, not returned; last-write-wins self-heals).
+
+#### Federation publisher map (who has an outbox)
+
+| Cross-site event | Publisher | Origin context | Implicit outbox? |
+|---|---|---|---|
+| message persist / thread-subscription | `message-worker` | consumes `MESSAGES_CANONICAL` (JS) | ✅ yes (Nak → redeliver) |
+| `member_added` / `member_removed` | `room-worker` | consumes `ROOMS` (JS) | ✅ yes |
+| `subscription_read`, `thread_read`, `mute_toggled`, `favorite_toggled` | `room-service` | request/reply handler | ❌ no — client-retry only |
+| `role_updated`, `room_restricted` | `room-service` | request/reply handler | ❌ no — client-retry only |
+| `user_status_updated` | `user-service` | request/reply, fire-and-forget | ❌ no — best-effort by design |
 - **MongoDB** (`pkg/mongoutil`): connects with driver defaults — **no explicit write/read concern, read preference,
   or pool tuning** anywhere. Federation upserts are guard-gated by `updatedAt` so out-of-order events can't regress
   state (`inbox-worker/main.go`).
@@ -110,12 +128,24 @@ Concrete, citable facts that ground the analysis below:
   `sync_interval` posture for them — `always` trades throughput for durability on the streams that must not lose
   data. Treat rolling restarts/multi-node kills as real data-loss risk given the open RAFT issues; pin nats-server
   ≥ 2.10.27 / ≥ 2.11.1 and vet the 2.12.x open issues before adopting 2.12 in prod.
-- **The no-OUTBOX federation design is the top architectural exposure.** Because the cross-site publish must reach
-  the *remote* cluster's INBOX leader across a gateway to get a PubAck, and nothing on the origin side durably
-  buffers it, a gateway partition or a publisher crash before the gateway heals **loses the event**. Hardening: (1)
-  origin-side retry-with-backoff + a local durable outbox-equivalent for undelivered cross-site events; (2) a
-  **per-site JetStream domain** so a remote outage can't strip the local meta leader (the #4502 mode); (3)
-  idempotent destination consumers (already the case).
+- **Federation durability is split, not uniformly absent (correction to an earlier draft of this report).** The
+  source stream *is* a durable origin-side buffer for any cross-site event published inside a JetStream consumer:
+  on a gateway partition the PubAck fails → the handler Naks → the durable source message redelivers and retries,
+  with `WithMsgID` + idempotent destination consumers absorbing duplicates. This covers `message-worker` (messages,
+  thread-subscriptions) and `room-worker` (room membership). The residual gap on these paths is narrow: (a) the
+  `MaxDeliver=5` × `AckWait=30s` ≈ 2.5-minute poison cap drops the event if the partition outlasts the redeliveries
+  — raise/unbound `MaxDeliver` and add a redelivery `BackOff` on these consumers, and alarm on the
+  `MAX_DELIVERIES` advisory; and (b) the source stream must be **R3 + file storage** or the un-acked message can
+  vanish (issue #2). A dedicated OUTBOX stream is **not** needed here.
+- **The genuinely exposed paths are the request/reply-originated `room-service` events** (`subscription_read`,
+  `thread_read`, `mute_toggled`, `favorite_toggled`, `role_updated`, `room_restricted`). These publish inline after
+  the local Mongo write has already committed; a failed cross-site publish returns an error to the client with no
+  durable source message to redeliver, so local and remote diverge and recovery depends on the client retrying.
+  `role_updated` (permissions) is the most consequential to lose. Fix: route these through a durable local stream +
+  async federating consumer (giving them the same implicit outbox), rather than publishing inline — a real refactor,
+  not a config change. `user_status_updated` is also no-outbox but acceptably best-effort (last-write-wins).
+- **Independently, run a per-site JetStream domain** so a remote-site outage can't strip the local meta leader (the
+  #4502 mode), and keep destination INBOX consumers idempotent (already the case).
 
 ---
 
@@ -283,9 +313,13 @@ Concrete, citable facts that ground the analysis below:
 
 ## Cross-cutting recommendations (prioritized)
 
-1. **Close the federation durability gap (no OUTBOX).** Add origin-side retry-with-backoff + a local durable buffer
-   for undelivered `chat.inbox.{destSiteID}.external.*` publishes; run a **per-site JetStream domain**. This is the
-   single highest-leverage change — it's the one place where instability causes *silent cross-site data loss*.
+1. **Close the federation durability gap — but only where it actually exists.** Consumer-originated cross-site
+   events (messages via `message-worker`, membership via `room-worker`) already self-retry via Nak/redelivery from
+   their durable source stream; for these, just raise/unbound `MaxDeliver` + add a redelivery `BackOff` and pin the
+   source streams R3+file. The real silent-loss exposure is the **request/reply-originated `room-service` events**
+   (`subscription_read`/`thread_read`/`mute`/`favorite`/`role_updated`/`room_restricted`), which publish inline
+   after the local Mongo commit with no source message to redeliver — route those through a durable local stream +
+   async federating consumer. Run a **per-site JetStream domain** regardless.
 2. **Pin durability in IaC, not hope:** `MESSAGES_CANONICAL` + `INBOX` at **R3 + file storage**, chosen
    `sync_interval` posture; MongoDB **`w:majority` + journaling** as the default; gocql **retry/speculative policy**;
    Valkey **client timeouts**. Today these all rely on unstated defaults.
