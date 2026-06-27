@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Marz32onE/instrumentation-go/otel-nats/oteljetstream"
+	"go.opentelemetry.io/otel"
 
 	"github.com/hmchangw/chat/history-service/internal/cassrepo"
 	"github.com/hmchangw/chat/history-service/internal/config"
@@ -18,6 +19,7 @@ import (
 	"github.com/hmchangw/chat/history-service/internal/readcache"
 	"github.com/hmchangw/chat/history-service/internal/service"
 	"github.com/hmchangw/chat/pkg/atrest"
+	"github.com/hmchangw/chat/pkg/bucketmetrics"
 	"github.com/hmchangw/chat/pkg/cassutil"
 	"github.com/hmchangw/chat/pkg/emoji"
 	"github.com/hmchangw/chat/pkg/health"
@@ -85,6 +87,13 @@ func main() {
 	meterShutdown, err := otelutil.InitMeter("history-service")
 	if err != nil {
 		slog.Error("init meter failed", "error", err)
+		os.Exit(1)
+	}
+	// Publish the configured bucket window so MESSAGE_BUCKET_HOURS drift between
+	// this reader and the message-worker writer is alertable (a mismatch
+	// silently returns incomplete history). See pkg/bucketmetrics.
+	if err := bucketmetrics.Register(otel.Meter("history-service"), cfg.MessageBucketHours); err != nil {
+		slog.Error("register bucket metric failed", "error", err)
 		os.Exit(1)
 	}
 
