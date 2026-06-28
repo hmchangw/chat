@@ -1386,6 +1386,67 @@ func TestEditMessage_Encrypted_NullsLegacyPlaintextColumns(t *testing.T) {
 	}
 }
 
+// TestEditMessage_Encrypted_PreservesQuotedParentMetadata verifies that
+// editing a quote message under the cipher-enabled path keeps the quoted
+// parent's metadata (message_id, sender, …) in the plaintext column while only
+// the body moves into enc_payload — the documented StripEncryptedFields
+// contract. Regression guard for the whole-column-null data loss (#385).
+func TestEditMessage_Encrypted_PreservesQuotedParentMetadata(t *testing.T) {
+	ctx := context.Background()
+	session := setupCassandra(t)
+	mongoDB := setupMongo(t)
+
+	wrapper := newTestVaultWrapper(t, ctx)
+	cipher := atrest.NewCipher(wrapper, atrest.NewMongoDEKStore(mongoDB.Collection(atrest.CollectionName)),
+		atrest.Config{DEKCacheSize: 100, DEKCacheTTL: time.Hour})
+	sizer := msgbucket.New(24 * time.Hour)
+	repo := NewRepository(session, sizer, 365, cipher)
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	roomID := "r-edit-quote-1"
+	parentCreatedAt := now.Add(-time.Minute)
+	quoted := &cassmodel.QuotedParentMessage{
+		MessageID:   "m-parent",
+		RoomID:      roomID,
+		Sender:      cassmodel.Participant{ID: "u-parent", Account: "bob"},
+		CreatedAt:   parentCreatedAt,
+		Msg:         "parent body",
+		MessageLink: "https://chat/m-parent",
+	}
+
+	// Seed an encrypted quote row: body in enc_payload, metadata in the
+	// plaintext quoted_parent_message column (as the write path stores it).
+	enc := atrest.SplitForEncryption(&cassmodel.Message{Msg: "child body", QuotedParentMessage: quoted})
+	payload, meta, err := cipher.Encrypt(ctx, roomID, enc)
+	require.NoError(t, err)
+	stored := *quoted
+	atrest.StripEncryptedFields(&cassmodel.Message{QuotedParentMessage: &stored})
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_room (room_id, bucket, created_at, message_id, enc_payload, enc_meta, quoted_parent_message, site_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		roomID, sizer.Of(now), now, "m-child", payload, &cassmodel.EncMeta{Nonce: meta.Nonce}, &stored, "site-a",
+	).Exec())
+	require.NoError(t, session.Query(
+		`INSERT INTO messages_by_id (message_id, created_at, room_id, enc_payload, enc_meta, quoted_parent_message, site_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"m-child", now, roomID, payload, &cassmodel.EncMeta{Nonce: meta.Nonce}, &stored, "site-a",
+	).Exec())
+
+	require.NoError(t, repo.UpdateMessageContent(ctx, &models.Message{
+		RoomID: roomID, MessageID: "m-child", CreatedAt: now,
+	}, "edited child body", now.Add(time.Minute)))
+
+	// Read back through the history read path (decrypt + struct scan).
+	got, err := repo.GetMessageByID(ctx, "m-child")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.NotNil(t, got.QuotedParentMessage, "quoted parent must survive the encrypted edit")
+	assert.Equal(t, "m-parent", got.QuotedParentMessage.MessageID, "quoted parent messageId must be intact")
+	assert.Equal(t, "u-parent", got.QuotedParentMessage.Sender.ID, "quoted parent sender must be intact")
+	assert.Equal(t, "https://chat/m-parent", got.QuotedParentMessage.MessageLink)
+	assert.True(t, got.QuotedParentMessage.CreatedAt.Equal(parentCreatedAt), "quoted parent createdAt must be intact")
+	assert.Equal(t, "parent body", got.QuotedParentMessage.Msg, "quoted parent body restored from enc_payload")
+	assert.Equal(t, "edited child body", got.Msg)
+}
+
 // TestEditMessage_Plaintext_NullsEncryptedColumns verifies that editing
 // an encrypted row through the cipher-disabled path nulls enc_payload and
 // enc_meta. Without this, a rollback of the at-rest rollout that edits a
@@ -1454,13 +1515,13 @@ func TestEditMessage_Plaintext_NullsEncryptedColumns(t *testing.T) {
 	}
 }
 
-// TestEditMessage_Encrypted_NullsLegacyQuotedParent verifies that editing
-// a legacy row with a plaintext quoted_parent_message UDT under the
-// cipher-enabled path nulls the on-disk UDT column. Without this, the
-// re-encryption cycle promotes the quoted body INTO the bundle (via
-// readEncryptedFields) but leaves the plaintext column on disk — defeating
-// the at-rest goal for the quoted parent body.
-func TestEditMessage_Encrypted_NullsLegacyQuotedParent(t *testing.T) {
+// TestEditMessage_Encrypted_PreservesLegacyQuotedParentMetadata verifies that
+// editing a legacy row with a plaintext quoted_parent_message UDT under the
+// cipher-enabled path keeps the parent's metadata in the plaintext column while
+// only the body sub-fields (msg, attachments) move into enc_payload — the
+// StripEncryptedFields contract. Regression guard for the whole-column-null
+// data loss (#385).
+func TestEditMessage_Encrypted_PreservesLegacyQuotedParentMetadata(t *testing.T) {
 	ctx := context.Background()
 	session := setupCassandra(t)
 	mongoDB := setupMongo(t)
@@ -1517,7 +1578,13 @@ func TestEditMessage_Encrypted_NullsLegacyQuotedParent(t *testing.T) {
 	} {
 		var got *cassmodel.QuotedParentMessage
 		require.NoError(t, session.Query(table.q, table.args...).Scan(&got), "select from %s", table.name)
-		assert.Nil(t, got, "%s: quoted_parent_message must be NULL after encrypted edit — the body has been promoted into enc_payload", table.name)
+		require.NotNil(t, got, "%s: quoted_parent_message metadata must survive the encrypted edit", table.name)
+		assert.Equal(t, "q-parent", got.MessageID, "%s: messageId preserved", table.name)
+		assert.Equal(t, roomID, got.RoomID, "%s: roomId preserved", table.name)
+		assert.Equal(t, "alice", got.Sender.Account, "%s: sender preserved", table.name)
+		assert.True(t, parentCreatedAt.Equal(got.CreatedAt), "%s: createdAt preserved", table.name)
+		assert.Empty(t, got.Msg, "%s: body moved into enc_payload", table.name)
+		assert.Nil(t, got.Attachments, "%s: body attachments moved into enc_payload", table.name)
 	}
 }
 
